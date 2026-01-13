@@ -1,0 +1,329 @@
+{
+  "success": true,
+  "message": "Product details retrieved successfully",
+  "data": {
+    "product": {
+      "id": "1",
+      "name": "وجبة فردية",
+      "nameAr": "وجبة فردية",
+      "nameEn": "Single Meal",
+      "image": "https://example.com/products/meal1.jpg",
+      "images": [
+        "https://example.com/products/meal1.jpg",
+        "https://example.com/products/meal1_2.jpg",
+        "https://example.com/products/meal1_3.jpg",
+        "https://example.com/products/meal1_4.jpg"
+      ],
+      "price": 4.5,
+      "originalPrice": 5.0,
+      "discount": "10",
+      "unit": "قطعة",
+      "unitAr": "قطعة",
+      "unitEn": "piece",
+      "category": "وجبات سريعة",
+      "categoryAr": "وجبات سريعة",
+      "categoryEn": "Fast Food",
+      "description": "استمتع بتجربة طعام لذيذة مع وجبة دجاج كرسبي المقرمشة. قطع دجاج مغطاة بطبقة خفيفة من البقسماط المقرمش، مقلاة حتى تصبح ذهبية اللون من الخارج وطرية من الداخل. تقدم مع صلصة لذيذة لإضفاء طابع خاص على كل قضمة. مثالية للأفراد الذين يفضلون وجبة سريعة ولذيذة مليئة بالنكهات.",
+      "descriptionAr": "استمتع بتجربة طعام لذيذة مع وجبة دجاج كرسبي المقرمشة. قطع دجاج مغطاة بطبقة خفيفة من البقسماط المقرمش، مقلاة حتى تصبح ذهبية اللون من الخارج وطرية من الداخل. تقدم مع صلصة لذيذة لإضفاء طابع خاص على كل قضمة. مثالية للأفراد الذين يفضلون وجبة سريعة ولذيذة مليئة بالنكهات.",
+      "descriptionEn": "Enjoy a delicious food experience with crispy chicken meal. Chicken pieces covered with a light layer of crispy breadcrumbs, fried until golden on the outside and tender on the inside. Served with a delicious sauce to add a special touch to every bite. Perfect for individuals who prefer a quick and delicious meal full of flavors.",
+      "stock": 5,
+      "isAvailable": true,
+      "nutritionalInfo": {
+        "calories": 450,
+        "protein": "25g",
+        "carbs": "35g",
+        "fat": "20g",
+        "fiber": "3g"
+      },
+      "ingredients": [
+        "دجاج",
+        "بقسماط",
+        "بهارات",
+        "زيت",
+        "صلصة خاصة"
+      ],
+      "ingredientsAr": [
+        "دجاج",
+        "بقسماط",
+        "بهارات",
+        "زيت",
+        "صلصة خاصة"
+      ],
+      "ingredientsEn": [
+        "Chicken",
+        "Breadcrumbs",
+        "Spices",
+        "Oil",
+        "Special Sauce"
+      ],
+      "allergens": [
+        "جلوتين",
+        "بيض"
+      ],
+      "allergensAr": [
+        "جلوتين",
+        "بيض"
+      ],
+      "allergensEn": [
+        "Gluten",
+        "Eggs"
+      ],
+      "preparationTime": "15-20 min",
+      "store": {
+        "id": "1",
+        "name": "كريسبي تشيكن",
+        "nameAr": "كريسبي تشيكن",
+        "nameEn": "Crispy Chicken",
+        "cover": "https://example.com/stores/crispy_cover.jpg",
+        "logo": "https://example.com/stores/crispy.png",
+        "rate": 4.9,
+        "numberOfReviews": 100,
+        "isFavorite": false,
+        "deliveryTime": "30-45 min",
+        "deliveryFee": 2.5,
+        "minimumOrder": 15.0,
+        "isOpen": true,
+        "address": "شارع الملك حسين، العقبة",
+        "addressAr": "شارع الملك حسين، العقبة",
+        "addressEn": "King Hussein Street, Aqaba",
+        "phone": "+962 3 201 2345"
+      },
+      "relatedProducts": [
+        {
+          "id": "2",
+          "name": "برجر كلاسيك",
+          "nameAr": "برجر كلاسيك",
+          "nameEn": "Classic Burger",
+          "image": "https://example.com/products/burger1.jpg",
+          "images": [
+            "https://example.com/products/burger1.jpg",
+            "https://example.com/products/burger1_2.jpg",
+            "https://example.com/products/burger1_3.jpg"
+          ],
+          "price": 6.0,
+          "originalPrice": 6.0,
+          "discount": null,
+          "unit": "قطعة",
+          "unitAr": "قطعة",
+          "unitEn": "piece",
+          "category": "وجبات سريعة",
+          "categoryAr": "وجبات سريعة",
+          "categoryEn": "Fast Food",
+          "stock": 10,
+          "isAvailable": true
+        },
+        {
+          "id": "3",
+          "name": "بطاطس مقلية",
+          "nameAr": "بطاطس مقلية",
+          "nameEn": "French Fries",
+          "image": "https://example.com/products/fries1.jpg",
+          "images": [
+            "https://example.com/products/fries1.jpg",
+            "https://example.com/products/fries1_2.jpg",
+            "https://example.com/products/fries1_3.jpg"
+          ],
+          "price": 2.5,
+          "originalPrice": 2.5,
+          "discount": null,
+          "unit": "طبق",
+          "unitAr": "طبق",
+          "unitEn": "plate",
+          "category": "وجبات سريعة",
+          "categoryAr": "وجبات سريعة",
+          "categoryEn": "Fast Food",
+          "stock": 15,
+          "isAvailable": true
+        },
+        {
+          "id": "4",
+          "name": "مشروب كولا",
+          "nameAr": "مشروب كولا",
+          "nameEn": "Cola Drink",
+          "image": "https://example.com/products/drink1.jpg",
+          "images": [
+            "https://example.com/products/drink1.jpg",
+            "https://example.com/products/drink1_2.jpg",
+            "https://example.com/products/drink1_3.jpg"
+          ],
+          "price": 1.5,
+          "originalPrice": 1.5,
+          "discount": null,
+          "unit": "علبة",
+          "unitAr": "علبة",
+          "unitEn": "can",
+          "category": "مشروبات",
+          "categoryAr": "مشروبات",
+          "categoryEn": "Drinks",
+          "stock": 50,
+          "isAvailable": true
+        },
+        {
+          "id": "5",
+          "name": "سلطة جانبية",
+          "nameAr": "سلطة جانبية",
+          "nameEn": "Side Salad",
+          "image": "https://example.com/products/salad1.jpg",
+          "images": [
+            "https://example.com/products/salad1.jpg",
+            "https://example.com/products/salad1_2.jpg",
+            "https://example.com/products/salad1_3.jpg"
+          ],
+          "price": 3.0,
+          "originalPrice": 3.0,
+          "discount": null,
+          "unit": "طبق",
+          "unitAr": "طبق",
+          "unitEn": "plate",
+          "category": "سلطات",
+          "categoryAr": "سلطات",
+          "categoryEn": "Salads",
+          "stock": 8,
+          "isAvailable": true
+        },
+        {
+          "id": "6",
+          "name": "صلصة خاصة",
+          "nameAr": "صلصة خاصة",
+          "nameEn": "Special Sauce",
+          "image": "https://example.com/products/sauce1.jpg",
+          "images": [
+            "https://example.com/products/sauce1.jpg",
+            "https://example.com/products/sauce1_2.jpg",
+            "https://example.com/products/sauce1_3.jpg"
+          ],
+          "price": 1.0,
+          "originalPrice": 1.0,
+          "discount": null,
+          "unit": "قطعة",
+          "unitAr": "قطعة",
+          "unitEn": "piece",
+          "category": "إضافات",
+          "categoryAr": "إضافات",
+          "categoryEn": "Extras",
+          "stock": 30,
+          "isAvailable": true
+        }
+      ],
+      "oftenOrderedWith": [
+        {
+          "id": "2",
+          "name": "برجر كلاسيك",
+          "nameAr": "برجر كلاسيك",
+          "nameEn": "Classic Burger",
+          "image": "https://example.com/products/burger1.jpg",
+          "images": [
+            "https://example.com/products/burger1.jpg",
+            "https://example.com/products/burger1_2.jpg",
+            "https://example.com/products/burger1_3.jpg"
+          ],
+          "price": 6.0,
+          "originalPrice": 6.0,
+          "discount": null,
+          "unit": "قطعة",
+          "unitAr": "قطعة",
+          "unitEn": "piece",
+          "category": "وجبات سريعة",
+          "categoryAr": "وجبات سريعة",
+          "categoryEn": "Fast Food",
+          "stock": 10,
+          "isAvailable": true
+        },
+        {
+          "id": "3",
+          "name": "بطاطس مقلية",
+          "nameAr": "بطاطس مقلية",
+          "nameEn": "French Fries",
+          "image": "https://example.com/products/fries1.jpg",
+          "images": [
+            "https://example.com/products/fries1.jpg",
+            "https://example.com/products/fries1_2.jpg",
+            "https://example.com/products/fries1_3.jpg"
+          ],
+          "price": 2.5,
+          "originalPrice": 2.5,
+          "discount": null,
+          "unit": "طبق",
+          "unitAr": "طبق",
+          "unitEn": "plate",
+          "category": "وجبات سريعة",
+          "categoryAr": "وجبات سريعة",
+          "categoryEn": "Fast Food",
+          "stock": 15,
+          "isAvailable": true
+        },
+        {
+          "id": "4",
+          "name": "مشروب كولا",
+          "nameAr": "مشروب كولا",
+          "nameEn": "Cola Drink",
+          "image": "https://example.com/products/drink1.jpg",
+          "images": [
+            "https://example.com/products/drink1.jpg",
+            "https://example.com/products/drink1_2.jpg",
+            "https://example.com/products/drink1_3.jpg"
+          ],
+          "price": 1.5,
+          "originalPrice": 1.5,
+          "discount": null,
+          "unit": "علبة",
+          "unitAr": "علبة",
+          "unitEn": "can",
+          "category": "مشروبات",
+          "categoryAr": "مشروبات",
+          "categoryEn": "Drinks",
+          "stock": 50,
+          "isAvailable": true
+        },
+        {
+          "id": "7",
+          "name": "حلوى الشوكولاتة",
+          "nameAr": "حلوى الشوكولاتة",
+          "nameEn": "Chocolate Dessert",
+          "image": "https://example.com/products/dessert1.jpg",
+          "images": [
+            "https://example.com/products/dessert1.jpg",
+            "https://example.com/products/dessert1_2.jpg",
+            "https://example.com/products/dessert1_3.jpg"
+          ],
+          "price": 3.5,
+          "originalPrice": 3.5,
+          "discount": null,
+          "unit": "قطعة",
+          "unitAr": "قطعة",
+          "unitEn": "piece",
+          "category": "حلويات",
+          "categoryAr": "حلويات",
+          "categoryEn": "Desserts",
+          "stock": 12,
+          "isAvailable": true
+        },
+        {
+          "id": "8",
+          "name": "سلطة قيصر",
+          "nameAr": "سلطة قيصر",
+          "nameEn": "Caesar Salad",
+          "image": "https://example.com/products/salad2.jpg",
+          "images": [
+            "https://example.com/products/salad2.jpg",
+            "https://example.com/products/salad2_2.jpg",
+            "https://example.com/products/salad2_3.jpg"
+          ],
+          "price": 7.0,
+          "originalPrice": 7.0,
+          "discount": null,
+          "unit": "طبق",
+          "unitAr": "طبق",
+          "unitEn": "plate",
+          "category": "سلطات",
+          "categoryAr": "سلطات",
+          "categoryEn": "Salads",
+          "stock": 8,
+          "isAvailable": true
+        }
+      ]
+    }
+  },
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+

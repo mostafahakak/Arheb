@@ -1,0 +1,390 @@
+{
+  "success": true,
+  "message": "Stores listing retrieved successfully",
+  "data": {
+    "stores": [
+      {
+        "id": "1",
+        "name": "كريسبي تشيكن",
+        "nameAr": "كريسبي تشيكن",
+        "nameEn": "Crispy Chicken",
+        "cover": "https://example.com/stores/crispy_cover.jpg",
+        "logo": "https://example.com/stores/crispy.png",
+        "rate": 4.9,
+        "numberOfReviews": 100,
+        "isFavorite": false,
+        "deliveryTime": "30-45 min",
+        "deliveryFee": 2.5,
+        "minimumOrder": 15.0,
+        "isOpen": true,
+        "openingHours": {
+          "open": "09:00",
+          "close": "23:00"
+        },
+        "address": "شارع الملك حسين، العقبة",
+        "addressAr": "شارع الملك حسين، العقبة",
+        "addressEn": "King Hussein Street, Aqaba",
+        "phone": "+962 3 201 2345",
+        "category": "restaurants",
+        "categoryAr": "مطاعم",
+        "categoryEn": "Restaurants"
+      },
+      {
+        "id": "2",
+        "name": "مطعم البيك",
+        "nameAr": "مطعم البيك",
+        "nameEn": "Al Baik Restaurant",
+        "cover": "https://example.com/stores/baik_cover.jpg",
+        "logo": "https://example.com/stores/baik.png",
+        "rate": 4.8,
+        "numberOfReviews": 250,
+        "isFavorite": true,
+        "deliveryTime": "25-40 min",
+        "deliveryFee": 3.0,
+        "minimumOrder": 20.0,
+        "isOpen": true,
+        "openingHours": {
+          "open": "10:00",
+          "close": "22:00"
+        },
+        "address": "طريق المطار، العقبة",
+        "addressAr": "طريق المطار، العقبة",
+        "addressEn": "Airport Road, Aqaba",
+        "phone": "+962 3 201 2346",
+        "category": "restaurants",
+        "categoryAr": "مطاعم",
+        "categoryEn": "Restaurants"
+      },
+      {
+        "id": "3",
+        "name": "ماكدونالدز",
+        "nameAr": "ماكدونالدز",
+        "nameEn": "McDonald's",
+        "cover": "https://example.com/stores/mcd_cover.jpg",
+        "logo": "https://example.com/stores/mcd.png",
+        "rate": 4.7,
+        "numberOfReviews": 500,
+        "isFavorite": false,
+        "deliveryTime": "20-35 min",
+        "deliveryFee": 2.0,
+        "minimumOrder": 10.0,
+        "isOpen": true,
+        "openingHours": {
+          "open": "08:00",
+          "close": "24:00"
+        },
+        "address": "مركز العقبة التجاري",
+        "addressAr": "مركز العقبة التجاري",
+        "addressEn": "Aqaba Commercial Center",
+        "phone": "+962 3 201 2347",
+        "category": "restaurants",
+        "categoryAr": "مطاعم",
+        "categoryEn": "Restaurants"
+      },
+      {
+        "id": "4",
+        "name": "كنتاكي",
+        "nameAr": "كنتاكي",
+        "nameEn": "KFC",
+        "cover": "https://example.com/stores/kfc_cover.jpg",
+        "logo": "https://example.com/stores/kfc.png",
+        "rate": 4.6,
+        "numberOfReviews": 300,
+        "isFavorite": false,
+        "deliveryTime": "30-45 min",
+        "deliveryFee": 2.5,
+        "minimumOrder": 15.0,
+        "isOpen": true,
+        "openingHours": {
+          "open": "09:00",
+          "close": "23:00"
+        },
+        "address": "شارع الشهيد، العقبة",
+        "addressAr": "شارع الشهيد، العقبة",
+        "addressEn": "Martyr Street, Aqaba",
+        "phone": "+962 3 201 2348",
+        "category": "restaurants",
+        "categoryAr": "مطاعم",
+        "categoryEn": "Restaurants"
+      },
+      {
+        "id": "5",
+        "name": "بيتزا هت",
+        "nameAr": "بيتزا هت",
+        "nameEn": "Pizza Hut",
+        "cover": "https://example.com/stores/pizzahut_cover.jpg",
+        "logo": "https://example.com/stores/pizzahut.png",
+        "rate": 4.5,
+        "numberOfReviews": 180,
+        "isFavorite": true,
+        "deliveryTime": "35-50 min",
+        "deliveryFee": 3.5,
+        "minimumOrder": 25.0,
+        "isOpen": true,
+        "openingHours": {
+          "open": "11:00",
+          "close": "23:00"
+        },
+        "address": "شارع البحر، العقبة",
+        "addressAr": "شارع البحر، العقبة",
+        "addressEn": "Sea Street, Aqaba",
+        "phone": "+962 3 201 2349",
+        "category": "restaurants",
+        "categoryAr": "مطاعم",
+        "categoryEn": "Restaurants"
+      },
+      {
+        "id": "6",
+        "name": "سوبر ماركت الكوثر",
+        "nameAr": "سوبر ماركت الكوثر",
+        "nameEn": "Al Kawthar Supermarket",
+        "cover": "https://example.com/stores/supermarket1_cover.jpg",
+        "logo": "https://example.com/stores/supermarket1.png",
+        "rate": 4.4,
+        "numberOfReviews": 150,
+        "isFavorite": false,
+        "deliveryTime": "40-60 min",
+        "deliveryFee": 1.5,
+        "minimumOrder": 5.0,
+        "isOpen": true,
+        "openingHours": {
+          "open": "07:00",
+          "close": "23:00"
+        },
+        "address": "شارع المدينة، العقبة",
+        "addressAr": "شارع المدينة، العقبة",
+        "addressEn": "City Street, Aqaba",
+        "phone": "+962 3 201 2350",
+        "category": "supermarket",
+        "categoryAr": "سوبر ماركت",
+        "categoryEn": "Supermarket"
+      },
+      {
+        "id": "7",
+        "name": "صيدلية النور",
+        "nameAr": "صيدلية النور",
+        "nameEn": "Al Noor Pharmacy",
+        "cover": "https://example.com/stores/pharmacy1_cover.jpg",
+        "logo": "https://example.com/stores/pharmacy1.png",
+        "rate": 4.8,
+        "numberOfReviews": 80,
+        "isFavorite": false,
+        "deliveryTime": "25-40 min",
+        "deliveryFee": 2.0,
+        "minimumOrder": 10.0,
+        "isOpen": true,
+        "openingHours": {
+          "open": "08:00",
+          "close": "22:00"
+        },
+        "address": "شارع الطبية، العقبة",
+        "addressAr": "شارع الطبية، العقبة",
+        "addressEn": "Medical Street, Aqaba",
+        "phone": "+962 3 201 2351",
+        "category": "pharmacy",
+        "categoryAr": "صيدلية",
+        "categoryEn": "Pharmacy"
+      },
+      {
+        "id": "8",
+        "name": "مخبز الحلويات",
+        "nameAr": "مخبز الحلويات",
+        "nameEn": "Sweet Bakery",
+        "cover": "https://example.com/stores/bakery1_cover.jpg",
+        "logo": "https://example.com/stores/bakery1.png",
+        "rate": 4.7,
+        "numberOfReviews": 120,
+        "isFavorite": true,
+        "deliveryTime": "30-45 min",
+        "deliveryFee": 2.5,
+        "minimumOrder": 12.0,
+        "isOpen": true,
+        "openingHours": {
+          "open": "06:00",
+          "close": "21:00"
+        },
+        "address": "شارع الحلويات، العقبة",
+        "addressAr": "شارع الحلويات، العقبة",
+        "addressEn": "Sweets Street, Aqaba",
+        "phone": "+962 3 201 2352",
+        "category": "sweets",
+        "categoryAr": "حلويات",
+        "categoryEn": "Sweets"
+      },
+      {
+        "id": "9",
+        "name": "مطعم الشاورما الذهبية",
+        "nameAr": "مطعم الشاورما الذهبية",
+        "nameEn": "Golden Shawerma Restaurant",
+        "cover": "https://example.com/stores/shawerma1_cover.jpg",
+        "logo": "https://example.com/stores/shawerma1.png",
+        "rate": 4.6,
+        "numberOfReviews": 200,
+        "isFavorite": false,
+        "deliveryTime": "25-40 min",
+        "deliveryFee": 2.0,
+        "minimumOrder": 8.0,
+        "isOpen": true,
+        "openingHours": {
+          "open": "10:00",
+          "close": "23:00"
+        },
+        "address": "شارع المطاعم، العقبة",
+        "addressAr": "شارع المطاعم، العقبة",
+        "addressEn": "Restaurants Street, Aqaba",
+        "phone": "+962 3 201 2353",
+        "category": "restaurants",
+        "categoryAr": "مطاعم",
+        "categoryEn": "Restaurants"
+      },
+      {
+        "id": "10",
+        "name": "مطعم البرجر الكلاسيكي",
+        "nameAr": "مطعم البرجر الكلاسيكي",
+        "nameEn": "Classic Burger Restaurant",
+        "cover": "https://example.com/stores/burger1_cover.jpg",
+        "logo": "https://example.com/stores/burger1.png",
+        "rate": 4.5,
+        "numberOfReviews": 150,
+        "isFavorite": false,
+        "deliveryTime": "20-35 min",
+        "deliveryFee": 2.5,
+        "minimumOrder": 12.0,
+        "isOpen": false,
+        "openingHours": {
+          "open": "11:00",
+          "close": "22:00"
+        },
+        "address": "شارع الوجبات السريعة، العقبة",
+        "addressAr": "شارع الوجبات السريعة، العقبة",
+        "addressEn": "Fast Food Street, Aqaba",
+        "phone": "+962 3 201 2354",
+        "category": "restaurants",
+        "categoryAr": "مطاعم",
+        "categoryEn": "Restaurants"
+      }
+    ],
+    "pagination": {
+      "currentPage": 1,
+      "totalPages": 5,
+      "totalItems": 50,
+      "itemsPerPage": 10,
+      "hasNextPage": true,
+      "hasPreviousPage": false
+    },
+    "sortingOptions": [
+      {
+        "key": "price_low_to_high",
+        "name": "price_low_to_high",
+        "nameAr": "السعر من الأقل للأعلى",
+        "nameEn": "Price: Low to High"
+      },
+      {
+        "key": "price_high_to_low",
+        "name": "price_high_to_low",
+        "nameAr": "السعر من الأعلى للأقل",
+        "nameEn": "Price: High to Low"
+      },
+      {
+        "key": "fastest_delivery",
+        "name": "fastest_delivery",
+        "nameAr": "أسرع توصيل",
+        "nameEn": "Fastest Delivery"
+      },
+      {
+        "key": "best_rated",
+        "name": "best_rated",
+        "nameAr": "الأعلى تقييماً",
+        "nameEn": "Best Rated"
+      }
+    ],
+    "filters": {
+      "categories": [
+        {
+          "id": "1",
+          "name": "supermarket",
+          "nameAr": "سوبر ماركت",
+          "nameEn": "Supermarket",
+          "count": 15
+        },
+        {
+          "id": "4",
+          "name": "pharmacy",
+          "nameAr": "صيدلية",
+          "nameEn": "Pharmacy",
+          "count": 8
+        },
+        {
+          "id": "5",
+          "name": "sweets",
+          "nameAr": "حلويات",
+          "nameEn": "Sweets",
+          "count": 12
+        },
+        {
+          "id": "6",
+          "name": "restaurants",
+          "nameAr": "مطاعم",
+          "nameEn": "Restaurants",
+          "count": 15
+        }
+      ],
+      "deliveryTime": [
+        {
+          "key": "fast",
+          "name": "fast",
+          "nameAr": "سريع (أقل من 30 دقيقة)",
+          "nameEn": "Fast (Less than 30 min)",
+          "maxMinutes": 30
+        },
+        {
+          "key": "medium",
+          "name": "medium",
+          "nameAr": "متوسط (30-45 دقيقة)",
+          "nameEn": "Medium (30-45 min)",
+          "maxMinutes": 45
+        },
+        {
+          "key": "slow",
+          "name": "slow",
+          "nameAr": "عادي (أكثر من 45 دقيقة)",
+          "nameEn": "Normal (More than 45 min)",
+          "maxMinutes": 999
+        }
+      ],
+      "rating": [
+        {
+          "key": "4.5+",
+          "minRating": 4.5,
+          "name": "4.5+",
+          "nameAr": "4.5+",
+          "nameEn": "4.5+"
+        },
+        {
+          "key": "4.0+",
+          "minRating": 4.0,
+          "name": "4.0+",
+          "nameAr": "4.0+",
+          "nameEn": "4.0+"
+        },
+        {
+          "key": "3.5+",
+          "minRating": 3.5,
+          "name": "3.5+",
+          "nameAr": "3.5+",
+          "nameEn": "3.5+"
+        }
+      ]
+    },
+    "location": {
+      "id": "1",
+      "city": "العقبة",
+      "cityAr": "العقبة",
+      "cityEn": "Aqaba",
+      "latitude": 29.5320,
+      "longitude": 35.0063
+    }
+  },
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+

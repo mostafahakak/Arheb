@@ -1,0 +1,385 @@
+{
+  "success": true,
+  "message": "Categories data retrieved successfully",
+  "data": {
+    "categories": [
+      {
+        "id": "1",
+        "name": "supermarket",
+        "nameAr": "سوبر ماركت",
+        "nameEn": "Supermarket",
+        "image": "https://example.com/categories/supermarket.png",
+        "isComingSoon": false,
+        "order": 1,
+        "subCategories": []
+      },
+      {
+        "id": "3",
+        "name": "pickup",
+        "nameAr": "استلام",
+        "nameEn": "Pickup",
+        "image": "https://example.com/categories/pickup.png",
+        "isComingSoon": false,
+        "order": 2,
+        "subCategories": []
+      },
+      {
+        "id": "4",
+        "name": "pharmacy",
+        "nameAr": "صيدلية",
+        "nameEn": "Pharmacy",
+        "image": "https://example.com/categories/pharmacy.png",
+        "isComingSoon": false,
+        "order": 3,
+        "subCategories": []
+      },
+      {
+        "id": "5",
+        "name": "sweets",
+        "nameAr": "حلويات",
+        "nameEn": "Sweets",
+        "image": "https://example.com/categories/sweets.png",
+        "isComingSoon": false,
+        "order": 4,
+        "subCategories": [
+          {
+            "id": "5a",
+            "name": "cakes",
+            "nameAr": "كيك",
+            "nameEn": "Cakes",
+            "image": "https://example.com/categories/cakes.png",
+            "isComingSoon": false,
+            "order": 1
+          },
+          {
+            "id": "5b",
+            "name": "chocolates",
+            "nameAr": "شوكولاتة",
+            "nameEn": "Chocolates",
+            "image": "https://example.com/categories/chocolates.png",
+            "isComingSoon": false,
+            "order": 2
+          },
+          {
+            "id": "5c",
+            "name": "ice_cream",
+            "nameAr": "آيس كريم",
+            "nameEn": "Ice Cream",
+            "image": "https://example.com/categories/ice_cream.png",
+            "isComingSoon": false,
+            "order": 3
+          }
+        ]
+      },
+      {
+        "id": "6",
+        "name": "restaurants",
+        "nameAr": "مطاعم",
+        "nameEn": "Restaurants",
+        "image": "https://example.com/categories/restaurants.png",
+        "isComingSoon": false,
+        "order": 5,
+        "subCategories": [
+          {
+            "id": "6a",
+            "name": "shawerma",
+            "nameAr": "شاورما",
+            "nameEn": "Shawerma",
+            "image": "https://example.com/categories/shawerma.png",
+            "isComingSoon": false,
+            "order": 1
+          },
+          {
+            "id": "6b",
+            "name": "burgers",
+            "nameAr": "برجر",
+            "nameEn": "Burgers",
+            "image": "https://example.com/categories/burgers.png",
+            "isComingSoon": false,
+            "order": 2
+          },
+          {
+            "id": "6c",
+            "name": "pizza",
+            "nameAr": "بيتزا",
+            "nameEn": "Pizza",
+            "image": "https://example.com/categories/pizza.png",
+            "isComingSoon": false,
+            "order": 3
+          }
+        ]
+      },
+      {
+        "id": "7",
+        "name": "electronics",
+        "nameAr": "إلكترونيات",
+        "nameEn": "Electronics",
+        "image": "https://example.com/categories/electronics.png",
+        "isComingSoon": true,
+        "order": 6,
+        "subCategories": []
+      },
+      {
+        "id": "8",
+        "name": "arheb_special",
+        "nameAr": "عرب خاص",
+        "nameEn": "Arheb Special",
+        "image": "https://example.com/categories/special.png",
+        "isComingSoon": false,
+        "order": 7,
+        "subCategories": []
+      }
+    ],
+    "mostPopularStores": [
+      {
+        "id": "1",
+        "name": "كريسبي تشيكن",
+        "nameAr": "كريسبي تشيكن",
+        "nameEn": "Crispy Chicken",
+        "cover": "https://example.com/stores/crispy_cover.jpg",
+        "logo": "https://example.com/stores/crispy.png",
+        "rate": 4.9,
+        "numberOfReviews": 100,
+        "isFavorite": false,
+        "deliveryTime": "30-45 min",
+        "deliveryFee": 2.5,
+        "minimumOrder": 15.0
+      },
+      {
+        "id": "2",
+        "name": "مطعم البيك",
+        "nameAr": "مطعم البيك",
+        "nameEn": "Al Baik Restaurant",
+        "cover": "https://example.com/stores/baik_cover.jpg",
+        "logo": "https://example.com/stores/baik.png",
+        "rate": 4.8,
+        "numberOfReviews": 250,
+        "isFavorite": true,
+        "deliveryTime": "25-40 min",
+        "deliveryFee": 3.0,
+        "minimumOrder": 20.0
+      },
+      {
+        "id": "3",
+        "name": "ماكدونالدز",
+        "nameAr": "ماكدونالدز",
+        "nameEn": "McDonald's",
+        "cover": "https://example.com/stores/mcd_cover.jpg",
+        "logo": "https://example.com/stores/mcd.png",
+        "rate": 4.7,
+        "numberOfReviews": 500,
+        "isFavorite": false,
+        "deliveryTime": "20-35 min",
+        "deliveryFee": 2.0,
+        "minimumOrder": 10.0
+      },
+      {
+        "id": "4",
+        "name": "كنتاكي",
+        "nameAr": "كنتاكي",
+        "nameEn": "KFC",
+        "cover": "https://example.com/stores/kfc_cover.jpg",
+        "logo": "https://example.com/stores/kfc.png",
+        "rate": 4.6,
+        "numberOfReviews": 300,
+        "isFavorite": false,
+        "deliveryTime": "30-45 min",
+        "deliveryFee": 2.5,
+        "minimumOrder": 15.0
+      },
+      {
+        "id": "5",
+        "name": "بيتزا هت",
+        "nameAr": "بيتزا هت",
+        "nameEn": "Pizza Hut",
+        "cover": "https://example.com/stores/pizzahut_cover.jpg",
+        "logo": "https://example.com/stores/pizzahut.png",
+        "rate": 4.5,
+        "numberOfReviews": 180,
+        "isFavorite": true,
+        "deliveryTime": "35-50 min",
+        "deliveryFee": 3.5,
+        "minimumOrder": 25.0
+      }
+    ],
+    "recentlyViewedProducts": [
+      {
+        "id": "1",
+        "name": "وجبة فردية",
+        "nameAr": "وجبة فردية",
+        "nameEn": "Single Meal",
+        "image": "https://example.com/products/meal1.jpg",
+        "images": [
+          "https://example.com/products/meal1.jpg",
+          "https://example.com/products/meal1_2.jpg",
+          "https://example.com/products/meal1_3.jpg"
+        ],
+        "price": 4.5,
+        "discount": "10",
+        "unit": "قطعة",
+        "unitAr": "قطعة",
+        "unitEn": "piece",
+        "category": "وجبات سريعة",
+        "categoryAr": "وجبات سريعة",
+        "categoryEn": "Fast Food",
+        "description": "استمتع بتجربة طعام لذيذة مع وجبة دجاج كرسبي المقرمشة. قطع دجاج مغطاة بطبقة خفيفة من البقسماط المقرمش، مقلاة حتى تصبح ذهبية اللون من الخارج وطرية من الداخل. تقدم مع صلصة لذيذة لإضفاء طابع خاص على كل قضمة. مثالية للأفراد الذين يفضلون وجبة سريعة ولذيذة مليئة بالنكهات.",
+        "descriptionAr": "استمتع بتجربة طعام لذيذة مع وجبة دجاج كرسبي المقرمشة. قطع دجاج مغطاة بطبقة خفيفة من البقسماط المقرمش، مقلاة حتى تصبح ذهبية اللون من الخارج وطرية من الداخل. تقدم مع صلصة لذيذة لإضفاء طابع خاص على كل قضمة. مثالية للأفراد الذين يفضلون وجبة سريعة ولذيذة مليئة بالنكهات.",
+        "descriptionEn": "Enjoy a delicious food experience with crispy chicken meal. Chicken pieces covered with a light layer of crispy breadcrumbs, fried until golden on the outside and tender on the inside. Served with a delicious sauce to add a special touch to every bite. Perfect for individuals who prefer a quick and delicious meal full of flavors.",
+        "stock": 5,
+        "store": {
+          "id": "1",
+          "name": "كريسبي تشيكن",
+          "nameAr": "كريسبي تشيكن",
+          "nameEn": "Crispy Chicken",
+          "cover": "https://example.com/stores/crispy_cover.jpg",
+          "logo": "https://example.com/stores/crispy.png",
+          "rate": 4.9,
+          "numberOfReviews": 100,
+          "isFavorite": false
+        }
+      },
+      {
+        "id": "2",
+        "name": "برجر كلاسيك",
+        "nameAr": "برجر كلاسيك",
+        "nameEn": "Classic Burger",
+        "image": "https://example.com/products/burger1.jpg",
+        "images": [
+          "https://example.com/products/burger1.jpg",
+          "https://example.com/products/burger1_2.jpg",
+          "https://example.com/products/burger1_3.jpg"
+        ],
+        "price": 6.0,
+        "discount": null,
+        "unit": "قطعة",
+        "unitAr": "قطعة",
+        "unitEn": "piece",
+        "category": "وجبات سريعة",
+        "categoryAr": "وجبات سريعة",
+        "categoryEn": "Fast Food",
+        "description": "برجر لذيذ مع لحم طازج وخضار طازجة",
+        "descriptionAr": "برجر لذيذ مع لحم طازج وخضار طازجة",
+        "descriptionEn": "Delicious burger with fresh meat and fresh vegetables",
+        "stock": 10,
+        "store": {
+          "id": "2",
+          "name": "مطعم البيك",
+          "nameAr": "مطعم البيك",
+          "nameEn": "Al Baik Restaurant",
+          "cover": "https://example.com/stores/baik_cover.jpg",
+          "logo": "https://example.com/stores/baik.png",
+          "rate": 4.8,
+          "numberOfReviews": 250,
+          "isFavorite": true
+        }
+      },
+      {
+        "id": "3",
+        "name": "بيتزا مارجريتا",
+        "nameAr": "بيتزا مارجريتا",
+        "nameEn": "Margherita Pizza",
+        "image": "https://example.com/products/pizza1.jpg",
+        "images": [
+          "https://example.com/products/pizza1.jpg",
+          "https://example.com/products/pizza1_2.jpg",
+          "https://example.com/products/pizza1_3.jpg"
+        ],
+        "price": 8.5,
+        "discount": "15",
+        "unit": "قطعة",
+        "unitAr": "قطعة",
+        "unitEn": "piece",
+        "category": "بيتزا",
+        "categoryAr": "بيتزا",
+        "categoryEn": "Pizza",
+        "description": "بيتزا إيطالية أصيلة مع جبن موتزاريلا وطماطم طازجة",
+        "descriptionAr": "بيتزا إيطالية أصيلة مع جبن موتزاريلا وطماطم طازجة",
+        "descriptionEn": "Authentic Italian pizza with mozzarella cheese and fresh tomatoes",
+        "stock": 7,
+        "store": {
+          "id": "5",
+          "name": "بيتزا هت",
+          "nameAr": "بيتزا هت",
+          "nameEn": "Pizza Hut",
+          "cover": "https://example.com/stores/pizzahut_cover.jpg",
+          "logo": "https://example.com/stores/pizzahut.png",
+          "rate": 4.5,
+          "numberOfReviews": 180,
+          "isFavorite": true
+        }
+      },
+      {
+        "id": "4",
+        "name": "شاورما دجاج",
+        "nameAr": "شاورما دجاج",
+        "nameEn": "Chicken Shawerma",
+        "image": "https://example.com/products/shawerma1.jpg",
+        "images": [
+          "https://example.com/products/shawerma1.jpg",
+          "https://example.com/products/shawerma1_2.jpg",
+          "https://example.com/products/shawerma1_3.jpg"
+        ],
+        "price": 5.0,
+        "discount": "5",
+        "unit": "قطعة",
+        "unitAr": "قطعة",
+        "unitEn": "piece",
+        "category": "شاورما",
+        "categoryAr": "شاورما",
+        "categoryEn": "Shawerma",
+        "description": "شاورما دجاج طازجة مع خضار وصلصة خاصة",
+        "descriptionAr": "شاورما دجاج طازجة مع خضار وصلصة خاصة",
+        "descriptionEn": "Fresh chicken shawerma with vegetables and special sauce",
+        "stock": 12,
+        "store": {
+          "id": "3",
+          "name": "ماكدونالدز",
+          "nameAr": "ماكدونالدز",
+          "nameEn": "McDonald's",
+          "cover": "https://example.com/stores/mcd_cover.jpg",
+          "logo": "https://example.com/stores/mcd.png",
+          "rate": 4.7,
+          "numberOfReviews": 500,
+          "isFavorite": false
+        }
+      },
+      {
+        "id": "5",
+        "name": "آيس كريم فانيليا",
+        "nameAr": "آيس كريم فانيليا",
+        "nameEn": "Vanilla Ice Cream",
+        "image": "https://example.com/products/icecream1.jpg",
+        "images": [
+          "https://example.com/products/icecream1.jpg",
+          "https://example.com/products/icecream1_2.jpg",
+          "https://example.com/products/icecream1_3.jpg"
+        ],
+        "price": 2.5,
+        "discount": null,
+        "unit": "كوب",
+        "unitAr": "كوب",
+        "unitEn": "cup",
+        "category": "حلويات",
+        "categoryAr": "حلويات",
+        "categoryEn": "Desserts",
+        "description": "آيس كريم فانيليا كريمي ولذيذ",
+        "descriptionAr": "آيس كريم فانيليا كريمي ولذيذ",
+        "descriptionEn": "Creamy and delicious vanilla ice cream",
+        "stock": 20,
+        "store": {
+          "id": "1",
+          "name": "كريسبي تشيكن",
+          "nameAr": "كريسبي تشيكن",
+          "nameEn": "Crispy Chicken",
+          "cover": "https://example.com/stores/crispy_cover.jpg",
+          "logo": "https://example.com/stores/crispy.png",
+          "rate": 4.9,
+          "numberOfReviews": 100,
+          "isFavorite": false
+        }
+      }
+    ]
+  },
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+

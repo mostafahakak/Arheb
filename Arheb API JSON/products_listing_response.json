@@ -1,0 +1,487 @@
+{
+  "success": true,
+  "message": "Products listing retrieved successfully",
+  "data": {
+    "products": [
+      {
+        "id": "1",
+        "name": "وجبة فردية",
+        "nameAr": "وجبة فردية",
+        "nameEn": "Single Meal",
+        "image": "https://example.com/products/meal1.jpg",
+        "images": [
+          "https://example.com/products/meal1.jpg",
+          "https://example.com/products/meal1_2.jpg",
+          "https://example.com/products/meal1_3.jpg"
+        ],
+        "price": 4.5,
+        "originalPrice": 5.0,
+        "discount": "10",
+        "unit": "قطعة",
+        "unitAr": "قطعة",
+        "unitEn": "piece",
+        "category": "وجبات سريعة",
+        "categoryAr": "وجبات سريعة",
+        "categoryEn": "Fast Food",
+        "description": "استمتع بتجربة طعام لذيذة مع وجبة دجاج كرسبي المقرمشة. قطع دجاج مغطاة بطبقة خفيفة من البقسماط المقرمش، مقلاة حتى تصبح ذهبية اللون من الخارج وطرية من الداخل. تقدم مع صلصة لذيذة لإضفاء طابع خاص على كل قضمة. مثالية للأفراد الذين يفضلون وجبة سريعة ولذيذة مليئة بالنكهات.",
+        "descriptionAr": "استمتع بتجربة طعام لذيذة مع وجبة دجاج كرسبي المقرمشة. قطع دجاج مغطاة بطبقة خفيفة من البقسماط المقرمش، مقلاة حتى تصبح ذهبية اللون من الخارج وطرية من الداخل. تقدم مع صلصة لذيذة لإضفاء طابع خاص على كل قضمة. مثالية للأفراد الذين يفضلون وجبة سريعة ولذيذة مليئة بالنكهات.",
+        "descriptionEn": "Enjoy a delicious food experience with crispy chicken meal. Chicken pieces covered with a light layer of crispy breadcrumbs, fried until golden on the outside and tender on the inside. Served with a delicious sauce to add a special touch to every bite. Perfect for individuals who prefer a quick and delicious meal full of flavors.",
+        "stock": 5,
+        "isAvailable": true,
+        "store": {
+          "id": "1",
+          "name": "كريسبي تشيكن",
+          "nameAr": "كريسبي تشيكن",
+          "nameEn": "Crispy Chicken",
+          "cover": "https://example.com/stores/crispy_cover.jpg",
+          "logo": "https://example.com/stores/crispy.png",
+          "rate": 4.9,
+          "numberOfReviews": 100,
+          "isFavorite": false
+        }
+      },
+      {
+        "id": "2",
+        "name": "برجر كلاسيك",
+        "nameAr": "برجر كلاسيك",
+        "nameEn": "Classic Burger",
+        "image": "https://example.com/products/burger1.jpg",
+        "images": [
+          "https://example.com/products/burger1.jpg",
+          "https://example.com/products/burger1_2.jpg",
+          "https://example.com/products/burger1_3.jpg"
+        ],
+        "price": 6.0,
+        "originalPrice": 6.0,
+        "discount": null,
+        "unit": "قطعة",
+        "unitAr": "قطعة",
+        "unitEn": "piece",
+        "category": "وجبات سريعة",
+        "categoryAr": "وجبات سريعة",
+        "categoryEn": "Fast Food",
+        "description": "برجر لذيذ مع لحم طازج وخضار طازجة",
+        "descriptionAr": "برجر لذيذ مع لحم طازج وخضار طازجة",
+        "descriptionEn": "Delicious burger with fresh meat and fresh vegetables",
+        "stock": 10,
+        "isAvailable": true,
+        "store": {
+          "id": "2",
+          "name": "مطعم البيك",
+          "nameAr": "مطعم البيك",
+          "nameEn": "Al Baik Restaurant",
+          "cover": "https://example.com/stores/baik_cover.jpg",
+          "logo": "https://example.com/stores/baik.png",
+          "rate": 4.8,
+          "numberOfReviews": 250,
+          "isFavorite": true
+        }
+      },
+      {
+        "id": "3",
+        "name": "بيتزا مارجريتا",
+        "nameAr": "بيتزا مارجريتا",
+        "nameEn": "Margherita Pizza",
+        "image": "https://example.com/products/pizza1.jpg",
+        "images": [
+          "https://example.com/products/pizza1.jpg",
+          "https://example.com/products/pizza1_2.jpg",
+          "https://example.com/products/pizza1_3.jpg"
+        ],
+        "price": 8.5,
+        "originalPrice": 10.0,
+        "discount": "15",
+        "unit": "قطعة",
+        "unitAr": "قطعة",
+        "unitEn": "piece",
+        "category": "بيتزا",
+        "categoryAr": "بيتزا",
+        "categoryEn": "Pizza",
+        "description": "بيتزا إيطالية أصيلة مع جبن موتزاريلا وطماطم طازجة",
+        "descriptionAr": "بيتزا إيطالية أصيلة مع جبن موتزاريلا وطماطم طازجة",
+        "descriptionEn": "Authentic Italian pizza with mozzarella cheese and fresh tomatoes",
+        "stock": 7,
+        "isAvailable": true,
+        "store": {
+          "id": "5",
+          "name": "بيتزا هت",
+          "nameAr": "بيتزا هت",
+          "nameEn": "Pizza Hut",
+          "cover": "https://example.com/stores/pizzahut_cover.jpg",
+          "logo": "https://example.com/stores/pizzahut.png",
+          "rate": 4.5,
+          "numberOfReviews": 180,
+          "isFavorite": true
+        }
+      },
+      {
+        "id": "4",
+        "name": "شاورما دجاج",
+        "nameAr": "شاورما دجاج",
+        "nameEn": "Chicken Shawerma",
+        "image": "https://example.com/products/shawerma1.jpg",
+        "images": [
+          "https://example.com/products/shawerma1.jpg",
+          "https://example.com/products/shawerma1_2.jpg",
+          "https://example.com/products/shawerma1_3.jpg"
+        ],
+        "price": 5.0,
+        "originalPrice": 5.25,
+        "discount": "5",
+        "unit": "قطعة",
+        "unitAr": "قطعة",
+        "unitEn": "piece",
+        "category": "شاورما",
+        "categoryAr": "شاورما",
+        "categoryEn": "Shawerma",
+        "description": "شاورما دجاج طازجة مع خضار وصلصة خاصة",
+        "descriptionAr": "شاورما دجاج طازجة مع خضار وصلصة خاصة",
+        "descriptionEn": "Fresh chicken shawerma with vegetables and special sauce",
+        "stock": 12,
+        "isAvailable": true,
+        "store": {
+          "id": "3",
+          "name": "ماكدونالدز",
+          "nameAr": "ماكدونالدز",
+          "nameEn": "McDonald's",
+          "cover": "https://example.com/stores/mcd_cover.jpg",
+          "logo": "https://example.com/stores/mcd.png",
+          "rate": 4.7,
+          "numberOfReviews": 500,
+          "isFavorite": false
+        }
+      },
+      {
+        "id": "5",
+        "name": "آيس كريم فانيليا",
+        "nameAr": "آيس كريم فانيليا",
+        "nameEn": "Vanilla Ice Cream",
+        "image": "https://example.com/products/icecream1.jpg",
+        "images": [
+          "https://example.com/products/icecream1.jpg",
+          "https://example.com/products/icecream1_2.jpg",
+          "https://example.com/products/icecream1_3.jpg"
+        ],
+        "price": 2.5,
+        "originalPrice": 2.5,
+        "discount": null,
+        "unit": "كوب",
+        "unitAr": "كوب",
+        "unitEn": "cup",
+        "category": "حلويات",
+        "categoryAr": "حلويات",
+        "categoryEn": "Desserts",
+        "description": "آيس كريم فانيليا كريمي ولذيذ",
+        "descriptionAr": "آيس كريم فانيليا كريمي ولذيذ",
+        "descriptionEn": "Creamy and delicious vanilla ice cream",
+        "stock": 20,
+        "isAvailable": true,
+        "store": {
+          "id": "1",
+          "name": "كريسبي تشيكن",
+          "nameAr": "كريسبي تشيكن",
+          "nameEn": "Crispy Chicken",
+          "cover": "https://example.com/stores/crispy_cover.jpg",
+          "logo": "https://example.com/stores/crispy.png",
+          "rate": 4.9,
+          "numberOfReviews": 100,
+          "isFavorite": false
+        }
+      },
+      {
+        "id": "6",
+        "name": "سلطة قيصر",
+        "nameAr": "سلطة قيصر",
+        "nameEn": "Caesar Salad",
+        "image": "https://example.com/products/salad1.jpg",
+        "images": [
+          "https://example.com/products/salad1.jpg",
+          "https://example.com/products/salad1_2.jpg",
+          "https://example.com/products/salad1_3.jpg"
+        ],
+        "price": 7.0,
+        "originalPrice": 7.0,
+        "discount": null,
+        "unit": "طبق",
+        "unitAr": "طبق",
+        "unitEn": "plate",
+        "category": "سلطات",
+        "categoryAr": "سلطات",
+        "categoryEn": "Salads",
+        "description": "سلطة قيصر طازجة مع خس وجبن وكرتون",
+        "descriptionAr": "سلطة قيصر طازجة مع خس وجبن وكرتون",
+        "descriptionEn": "Fresh Caesar salad with lettuce, cheese and croutons",
+        "stock": 8,
+        "isAvailable": true,
+        "store": {
+          "id": "2",
+          "name": "مطعم البيك",
+          "nameAr": "مطعم البيك",
+          "nameEn": "Al Baik Restaurant",
+          "cover": "https://example.com/stores/baik_cover.jpg",
+          "logo": "https://example.com/stores/baik.png",
+          "rate": 4.8,
+          "numberOfReviews": 250,
+          "isFavorite": true
+        }
+      },
+      {
+        "id": "7",
+        "name": "مشروب كولا",
+        "nameAr": "مشروب كولا",
+        "nameEn": "Cola Drink",
+        "image": "https://example.com/products/drink1.jpg",
+        "images": [
+          "https://example.com/products/drink1.jpg",
+          "https://example.com/products/drink1_2.jpg",
+          "https://example.com/products/drink1_3.jpg"
+        ],
+        "price": 1.5,
+        "originalPrice": 1.5,
+        "discount": null,
+        "unit": "علبة",
+        "unitAr": "علبة",
+        "unitEn": "can",
+        "category": "مشروبات",
+        "categoryAr": "مشروبات",
+        "categoryEn": "Drinks",
+        "description": "مشروب كولا منعش",
+        "descriptionAr": "مشروب كولا منعش",
+        "descriptionEn": "Refreshing cola drink",
+        "stock": 50,
+        "isAvailable": true,
+        "store": {
+          "id": "3",
+          "name": "ماكدونالدز",
+          "nameAr": "ماكدونالدز",
+          "nameEn": "McDonald's",
+          "cover": "https://example.com/stores/mcd_cover.jpg",
+          "logo": "https://example.com/stores/mcd.png",
+          "rate": 4.7,
+          "numberOfReviews": 500,
+          "isFavorite": false
+        }
+      },
+      {
+        "id": "8",
+        "name": "دجاج مشوي",
+        "nameAr": "دجاج مشوي",
+        "nameEn": "Grilled Chicken",
+        "image": "https://example.com/products/chicken1.jpg",
+        "images": [
+          "https://example.com/products/chicken1.jpg",
+          "https://example.com/products/chicken1_2.jpg",
+          "https://example.com/products/chicken1_3.jpg"
+        ],
+        "price": 9.0,
+        "originalPrice": 10.0,
+        "discount": "10",
+        "unit": "قطعة",
+        "unitAr": "قطعة",
+        "unitEn": "piece",
+        "category": "وجبات سريعة",
+        "categoryAr": "وجبات سريعة",
+        "categoryEn": "Fast Food",
+        "description": "دجاج مشوي طازج مع بهارات خاصة",
+        "descriptionAr": "دجاج مشوي طازج مع بهارات خاصة",
+        "descriptionEn": "Fresh grilled chicken with special spices",
+        "stock": 6,
+        "isAvailable": true,
+        "store": {
+          "id": "1",
+          "name": "كريسبي تشيكن",
+          "nameAr": "كريسبي تشيكن",
+          "nameEn": "Crispy Chicken",
+          "cover": "https://example.com/stores/crispy_cover.jpg",
+          "logo": "https://example.com/stores/crispy.png",
+          "rate": 4.9,
+          "numberOfReviews": 100,
+          "isFavorite": false
+        }
+      },
+      {
+        "id": "9",
+        "name": "ساندويتش تونا",
+        "nameAr": "ساندويتش تونا",
+        "nameEn": "Tuna Sandwich",
+        "image": "https://example.com/products/sandwich1.jpg",
+        "images": [
+          "https://example.com/products/sandwich1.jpg",
+          "https://example.com/products/sandwich1_2.jpg",
+          "https://example.com/products/sandwich1_3.jpg"
+        ],
+        "price": 4.0,
+        "originalPrice": 4.0,
+        "discount": null,
+        "unit": "قطعة",
+        "unitAr": "قطعة",
+        "unitEn": "piece",
+        "category": "ساندويتشات",
+        "categoryAr": "ساندويتشات",
+        "categoryEn": "Sandwiches",
+        "description": "ساندويتش تونا طازج مع خضار",
+        "descriptionAr": "ساندويتش تونا طازج مع خضار",
+        "descriptionEn": "Fresh tuna sandwich with vegetables",
+        "stock": 15,
+        "isAvailable": true,
+        "store": {
+          "id": "2",
+          "name": "مطعم البيك",
+          "nameAr": "مطعم البيك",
+          "nameEn": "Al Baik Restaurant",
+          "cover": "https://example.com/stores/baik_cover.jpg",
+          "logo": "https://example.com/stores/baik.png",
+          "rate": 4.8,
+          "numberOfReviews": 250,
+          "isFavorite": true
+        }
+      },
+      {
+        "id": "10",
+        "name": "كيك شوكولاتة",
+        "nameAr": "كيك شوكولاتة",
+        "nameEn": "Chocolate Cake",
+        "image": "https://example.com/products/cake1.jpg",
+        "images": [
+          "https://example.com/products/cake1.jpg",
+          "https://example.com/products/cake1_2.jpg",
+          "https://example.com/products/cake1_3.jpg"
+        ],
+        "price": 12.0,
+        "originalPrice": 15.0,
+        "discount": "20",
+        "unit": "قطعة",
+        "unitAr": "قطعة",
+        "unitEn": "piece",
+        "category": "حلويات",
+        "categoryAr": "حلويات",
+        "categoryEn": "Desserts",
+        "description": "كيك شوكولاتة كريمي ولذيذ",
+        "descriptionAr": "كيك شوكولاتة كريمي ولذيذ",
+        "descriptionEn": "Creamy and delicious chocolate cake",
+        "stock": 3,
+        "isAvailable": true,
+        "store": {
+          "id": "8",
+          "name": "مخبز الحلويات",
+          "nameAr": "مخبز الحلويات",
+          "nameEn": "Sweet Bakery",
+          "cover": "https://example.com/stores/bakery1_cover.jpg",
+          "logo": "https://example.com/stores/bakery1.png",
+          "rate": 4.7,
+          "numberOfReviews": 120,
+          "isFavorite": true
+        }
+      }
+    ],
+    "pagination": {
+      "currentPage": 1,
+      "totalPages": 3,
+      "totalItems": 25,
+      "itemsPerPage": 10,
+      "hasNextPage": true,
+      "hasPreviousPage": false
+    },
+    "filters": {
+      "categories": [
+        {
+          "id": "1",
+          "name": "fast_food",
+          "nameAr": "وجبات سريعة",
+          "nameEn": "Fast Food",
+          "count": 8
+        },
+        {
+          "id": "2",
+          "name": "pizza",
+          "nameAr": "بيتزا",
+          "nameEn": "Pizza",
+          "count": 3
+        },
+        {
+          "id": "3",
+          "name": "shawerma",
+          "nameAr": "شاورما",
+          "nameEn": "Shawerma",
+          "count": 5
+        },
+        {
+          "id": "4",
+          "name": "desserts",
+          "nameAr": "حلويات",
+          "nameEn": "Desserts",
+          "count": 4
+        },
+        {
+          "id": "5",
+          "name": "drinks",
+          "nameAr": "مشروبات",
+          "nameEn": "Drinks",
+          "count": 10
+        },
+        {
+          "id": "6",
+          "name": "salads",
+          "nameAr": "سلطات",
+          "nameEn": "Salads",
+          "count": 6
+        }
+      ],
+      "priceRange": {
+        "min": 1.5,
+        "max": 15.0
+      },
+      "hasDiscount": true,
+      "inStock": true
+    },
+    "sortingOptions": [
+      {
+        "key": "price_low_to_high",
+        "name": "price_low_to_high",
+        "nameAr": "السعر من الأقل للأعلى",
+        "nameEn": "Price: Low to High"
+      },
+      {
+        "key": "price_high_to_low",
+        "name": "price_high_to_low",
+        "nameAr": "السعر من الأعلى للأقل",
+        "nameEn": "Price: High to Low"
+      },
+      {
+        "key": "name_asc",
+        "name": "name_asc",
+        "nameAr": "الاسم من أ إلى ي",
+        "nameEn": "Name: A to Z"
+      },
+      {
+        "key": "name_desc",
+        "name": "name_desc",
+        "nameAr": "الاسم من ي إلى أ",
+        "nameEn": "Name: Z to A"
+      },
+      {
+        "key": "newest",
+        "name": "newest",
+        "nameAr": "الأحدث",
+        "nameEn": "Newest"
+      }
+    ],
+    "store": {
+      "id": "1",
+      "name": "كريسبي تشيكن",
+      "nameAr": "كريسبي تشيكن",
+      "nameEn": "Crispy Chicken",
+      "cover": "https://example.com/stores/crispy_cover.jpg",
+      "logo": "https://example.com/stores/crispy.png",
+      "rate": 4.9,
+      "numberOfReviews": 100,
+      "isFavorite": false,
+      "deliveryTime": "30-45 min",
+      "deliveryFee": 2.5,
+      "minimumOrder": 15.0,
+      "isOpen": true
+    }
+  },
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+

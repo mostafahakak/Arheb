@@ -1,0 +1,272 @@
+{
+  "success": true,
+  "message": "Home data retrieved successfully",
+  "data": {
+    "banners": [
+      {
+        "id": "1",
+        "image": "https://example.com/banners/banner1.png",
+        "title": "Banner 1",
+        "link": "https://example.com/promotion1",
+        "order": 1
+      },
+      {
+        "id": "2",
+        "image": "https://example.com/banners/banner2.png",
+        "title": "Banner 2",
+        "link": "https://example.com/promotion2",
+        "order": 2
+      },
+      {
+        "id": "3",
+        "image": "https://example.com/banners/banner3.png",
+        "title": "Banner 3",
+        "link": "https://example.com/promotion3",
+        "order": 3
+      }
+    ],
+    "categories": [
+      {
+        "id": "1",
+        "name": "supermarket",
+        "nameAr": "سوبر ماركت",
+        "nameEn": "Supermarket",
+        "image": "https://example.com/categories/supermarket.png",
+        "isComingSoon": false,
+        "order": 1,
+        "subCategories": []
+      },
+      {
+        "id": "3",
+        "name": "pickup",
+        "nameAr": "استلام",
+        "nameEn": "Pickup",
+        "image": "https://example.com/categories/pickup.png",
+        "isComingSoon": false,
+        "order": 2,
+        "subCategories": []
+      },
+      {
+        "id": "4",
+        "name": "pharmacy",
+        "nameAr": "صيدلية",
+        "nameEn": "Pharmacy",
+        "image": "https://example.com/categories/pharmacy.png",
+        "isComingSoon": false,
+        "order": 3,
+        "subCategories": []
+      },
+      {
+        "id": "5",
+        "name": "sweets",
+        "nameAr": "حلويات",
+        "nameEn": "Sweets",
+        "image": "https://example.com/categories/sweets.png",
+        "isComingSoon": false,
+        "order": 4,
+        "subCategories": [
+          {
+            "id": "5a",
+            "name": "cakes",
+            "nameAr": "كيك",
+            "nameEn": "Cakes",
+            "image": "https://example.com/categories/cakes.png",
+            "isComingSoon": false,
+            "order": 1
+          },
+          {
+            "id": "5b",
+            "name": "chocolates",
+            "nameAr": "شوكولاتة",
+            "nameEn": "Chocolates",
+            "image": "https://example.com/categories/chocolates.png",
+            "isComingSoon": false,
+            "order": 2
+          },
+          {
+            "id": "5c",
+            "name": "ice_cream",
+            "nameAr": "آيس كريم",
+            "nameEn": "Ice Cream",
+            "image": "https://example.com/categories/ice_cream.png",
+            "isComingSoon": false,
+            "order": 3
+          }
+        ]
+      },
+      {
+        "id": "6",
+        "name": "restaurants",
+        "nameAr": "مطاعم",
+        "nameEn": "Restaurants",
+        "image": "https://example.com/categories/restaurants.png",
+        "isComingSoon": false,
+        "order": 5,
+        "subCategories": [
+          {
+            "id": "6a",
+            "name": "shawerma",
+            "nameAr": "شاورما",
+            "nameEn": "Shawerma",
+            "image": "https://example.com/categories/shawerma.png",
+            "isComingSoon": false,
+            "order": 1
+          },
+          {
+            "id": "6b",
+            "name": "burgers",
+            "nameAr": "برجر",
+            "nameEn": "Burgers",
+            "image": "https://example.com/categories/burgers.png",
+            "isComingSoon": false,
+            "order": 2
+          },
+          {
+            "id": "6c",
+            "name": "pizza",
+            "nameAr": "بيتزا",
+            "nameEn": "Pizza",
+            "image": "https://example.com/categories/pizza.png",
+            "isComingSoon": false,
+            "order": 3
+          }
+        ]
+      },
+      {
+        "id": "7",
+        "name": "electronics",
+        "nameAr": "إلكترونيات",
+        "nameEn": "Electronics",
+        "image": "https://example.com/categories/electronics.png",
+        "isComingSoon": true,
+        "order": 6,
+        "subCategories": []
+      },
+      {
+        "id": "8",
+        "name": "arheb_special",
+        "nameAr": "عرب خاص",
+        "nameEn": "Arheb Special",
+        "image": "https://example.com/categories/special.png",
+        "isComingSoon": false,
+        "order": 7,
+        "subCategories": []
+      }
+    ],
+    "mostPopularStores": [
+      {
+        "id": "1",
+        "name": "كريسبي تشيكن",
+        "nameAr": "كريسبي تشيكن",
+        "nameEn": "Crispy Chicken",
+        "cover": "https://example.com/stores/crispy_cover.jpg",
+        "logo": "https://example.com/stores/crispy.png",
+        "rate": 4.9,
+        "numberOfReviews": 100,
+        "isFavorite": false,
+        "deliveryTime": "30-45 min",
+        "deliveryFee": 2.5,
+        "minimumOrder": 15.0
+      },
+      {
+        "id": "2",
+        "name": "مطعم البيك",
+        "nameAr": "مطعم البيك",
+        "nameEn": "Al Baik Restaurant",
+        "cover": "https://example.com/stores/baik_cover.jpg",
+        "logo": "https://example.com/stores/baik.png",
+        "rate": 4.8,
+        "numberOfReviews": 250,
+        "isFavorite": true,
+        "deliveryTime": "25-40 min",
+        "deliveryFee": 3.0,
+        "minimumOrder": 20.0
+      },
+      {
+        "id": "3",
+        "name": "ماكدونالدز",
+        "nameAr": "ماكدونالدز",
+        "nameEn": "McDonald's",
+        "cover": "https://example.com/stores/mcd_cover.jpg",
+        "logo": "https://example.com/stores/mcd.png",
+        "rate": 4.7,
+        "numberOfReviews": 500,
+        "isFavorite": false,
+        "deliveryTime": "20-35 min",
+        "deliveryFee": 2.0,
+        "minimumOrder": 10.0
+      },
+      {
+        "id": "4",
+        "name": "كنتاكي",
+        "nameAr": "كنتاكي",
+        "nameEn": "KFC",
+        "cover": "https://example.com/stores/kfc_cover.jpg",
+        "logo": "https://example.com/stores/kfc.png",
+        "rate": 4.6,
+        "numberOfReviews": 300,
+        "isFavorite": false,
+        "deliveryTime": "30-45 min",
+        "deliveryFee": 2.5,
+        "minimumOrder": 15.0
+      },
+      {
+        "id": "5",
+        "name": "بيتزا هت",
+        "nameAr": "بيتزا هت",
+        "nameEn": "Pizza Hut",
+        "cover": "https://example.com/stores/pizzahut_cover.jpg",
+        "logo": "https://example.com/stores/pizzahut.png",
+        "rate": 4.5,
+        "numberOfReviews": 180,
+        "isFavorite": true,
+        "deliveryTime": "35-50 min",
+        "deliveryFee": 3.5,
+        "minimumOrder": 25.0
+      }
+    ],
+    "offers": [
+      {
+        "id": "1",
+        "image": "https://example.com/offers/offer1.png",
+        "title": "Special Offer 1",
+        "titleAr": "عرض خاص 1",
+        "titleEn": "Special Offer 1",
+        "description": "Get 20% off on all items",
+        "descriptionAr": "احصل على خصم 20% على جميع العناصر",
+        "descriptionEn": "Get 20% off on all items",
+        "link": "https://example.com/offers/1",
+        "validUntil": "2024-12-31T23:59:59Z",
+        "order": 1
+      },
+      {
+        "id": "2",
+        "image": "https://example.com/offers/offer2.png",
+        "title": "Special Offer 2",
+        "titleAr": "عرض خاص 2",
+        "titleEn": "Special Offer 2",
+        "description": "Buy 2 Get 1 Free",
+        "descriptionAr": "اشتري 2 واحصل على 1 مجاناً",
+        "descriptionEn": "Buy 2 Get 1 Free",
+        "link": "https://example.com/offers/2",
+        "validUntil": "2024-12-31T23:59:59Z",
+        "order": 2
+      },
+      {
+        "id": "3",
+        "image": "https://example.com/offers/offer3.png",
+        "title": "Special Offer 3",
+        "titleAr": "عرض خاص 3",
+        "titleEn": "Special Offer 3",
+        "description": "Free delivery on orders over 50",
+        "descriptionAr": "توصيل مجاني للطلبات أكثر من 50",
+        "descriptionEn": "Free delivery on orders over 50",
+        "link": "https://example.com/offers/3",
+        "validUntil": "2024-12-31T23:59:59Z",
+        "order": 3
+      }
+    ]
+  },
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+
