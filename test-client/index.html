@@ -133,6 +133,14 @@
     </div>
 
     <div class="field">
+      <label>Delete user</label>
+      <div class="row">
+        <button id="deleteUserBtn" class="secondary">Delete registered user</button>
+      </div>
+      <div id="deleteStatus">(requires verification first)</div>
+    </div>
+
+    <div class="field">
       <label>Verify response</label>
       <div id="verifyResult">(waiting)</div>
     </div>
@@ -185,6 +193,10 @@
       "./vendor/firebase-app-compat.js",
       "./vendor/firebase-auth-compat.js",
     ];
+    const backendBase = window.location.origin;
+    let lastAppToken = "";
+    let lastFirebaseToken = "";
+    let deleteStatus;
 
     function loadScript(url) {
       return new Promise((resolve, reject) => {
@@ -218,7 +230,7 @@
       const sessionInfoInput = document.getElementById("sessionInfoInput");
       const verifyResult = document.getElementById("verifyResult");
       const otpInput = document.getElementById("otpInput");
-      const backendBase = window.location.origin;
+      deleteStatus = document.getElementById("deleteStatus");
 
       let verifier;
 
@@ -259,7 +271,7 @@
           const recaptchaToken = await verifier.verify();
           console.log("reCAPTCHA token obtained", recaptchaToken);
           setStatus("Sending request to backend...");
-          const response = await fetch(`${backendBase}/api/auth/register`, {
+        const response = await fetch(`${backendBase}/api/auth/register`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -268,7 +280,7 @@
             }),
           });
 
-          const data = await response.json();
+        const data = await response.json();
           setStatus(
             response.ok ? data.message || "OTP request sent" : data.message || "Failed"
           );
@@ -295,7 +307,7 @@
         try {
           console.log("Verifying OTP for sessionInfo", sessionInfo);
           verifyResult.textContent = "Verifying OTP...";
-          const response = await fetch(`${backendBase}/api/auth/verify-otp`, {
+        const response = await fetch(`${backendBase}/api/auth/verify-otp`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -305,8 +317,15 @@
             }),
           });
 
-          const data = await response.json();
+        const data = await response.json();
           verifyResult.textContent = JSON.stringify(data, null, 2);
+        if (data.success) {
+          lastAppToken = data.token;
+          lastFirebaseToken = data.firebaseToken ?? "";
+          deleteStatus.textContent = data.token
+            ? "Ready to delete – token stored"
+            : "(JWT missing)";
+        }
         } catch (error) {
           console.error(error);
           verifyResult.textContent = "Error: " + error.message;
@@ -331,6 +350,39 @@
       document
         .getElementById("fetchStoresBtn")
         .addEventListener("click", () => fetchPreview('/api/stores', 'storesOutput'));
+      async function deleteUser() {
+        console.log("Delete button clicked", { lastAppToken: !!lastAppToken, lastFirebaseToken: !!lastFirebaseToken });
+        if (!lastAppToken || !lastFirebaseToken) {
+          deleteStatus.textContent =
+            "Verify OTP first so we can store your tokens.";
+          return;
+        }
+
+        deleteStatus.textContent = "Deleting user...";
+        try {
+          console.log("Sending delete request...");
+          const response = await fetch(`${backendBase}/api/auth/user`, {
+            method: "DELETE",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: lastAppToken,
+            },
+            body: JSON.stringify({
+              firebaseIdToken: lastFirebaseToken,
+            }),
+          });
+          const data = await response.json();
+          console.log("Delete response:", data);
+          deleteStatus.textContent = JSON.stringify(data, null, 2);
+        } catch (error) {
+          console.error("Delete error:", error);
+          deleteStatus.textContent = "Error: " + error.message;
+        }
+      }
+
+      document
+        .getElementById("deleteUserBtn")
+        .addEventListener("click", deleteUser);
 
       window.addEventListener("load", () => {
         setupVerifier();

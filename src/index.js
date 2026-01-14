@@ -94,20 +94,14 @@ app.post('/api/auth/register', async (req, res) => {
     return res.status(400).json({ message: 'phoneNumber is required', case: 2 });
   }
 
-  const normalizedPhone = phoneNumber.trim();
-  const existingUser = findUserByPhone.get(normalizedPhone);
-
-  if (existingUser) {
-    return res
-      .status(200)
-      .json({ message: 'Phone number already exist try Login', case: 0 });
-  }
-
   try {
+    const normalizedPhone = phoneNumber.trim();
+    const existingUser = findUserByPhone.get(normalizedPhone);
     const sessionInfo = await sendPhoneOtp(normalizedPhone, recaptchaToken);
     return res.status(200).json({
       message: 'OTP SENT SUCCESSFUL',
       case: 1,
+      alreadyRegistered: Boolean(existingUser),
       sessionInfo,
     });
   } catch (error) {
@@ -117,6 +111,21 @@ app.post('/api/auth/register', async (req, res) => {
     });
   }
 });
+
+function authenticateRequest(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    return res.status(401).json({ message: 'Missing Authorization header' });
+  }
+
+  const token = authHeader.replace('Bearer ', '').trim();
+  try {
+    req.user = jwt.verify(token, JWT_SECRET);
+    next();
+  } catch (error) {
+    return res.status(401).json({ message: 'Invalid token' });
+  }
+}
 
 app.post('/api/auth/verify-otp', async (req, res) => {
   const { phoneNumber, sessionInfo, otp } = req.body;
@@ -144,10 +153,37 @@ app.post('/api/auth/verify-otp', async (req, res) => {
     return res.status(200).json({
       success: true,
       token: `Bearer ${token}`,
+      firebaseToken: verification.idToken ?? null,
       phoneNumber: firebasePhone,
     });
   } catch (error) {
     return res.status(401).json({
+      success: false,
+      message: extractFirebaseError(error),
+    });
+  }
+});
+
+async function deleteFirebaseUser(firebaseIdToken) {
+  const url = `https://identitytoolkit.googleapis.com/v1/accounts:delete?key=${FIREBASE_API_KEY}`;
+  await axios.post(url, { idToken: firebaseIdToken });
+}
+
+app.delete('/api/auth/user', authenticateRequest, async (req, res) => {
+  const { firebaseIdToken } = req.body;
+  if (!firebaseIdToken) {
+    return res.status(400).json({ message: 'firebaseIdToken is required' });
+  }
+
+  try {
+    await deleteFirebaseUser(firebaseIdToken);
+    db.prepare('DELETE FROM users WHERE phoneNumber = ?').run(req.user.phoneNumber);
+    return res.status(200).json({
+      success: true,
+      message: 'User deleted',
+    });
+  } catch (error) {
+    return res.status(500).json({
       success: false,
       message: extractFirebaseError(error),
     });
