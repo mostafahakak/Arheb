@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: arheb-backend
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: PORT
+        value: "4000"
+      - key: FIREBASE_API_KEY
+        fromSecret: FIREBASE_API_KEY
+      - key: JWT_SECRET
+        fromSecret: JWT_SECRET
