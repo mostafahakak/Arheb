@@ -15,8 +15,15 @@ This backend provides authentication via Firebase phone OTP and serves product, 
 - [Data Endpoints](#data-endpoints)
   - [Categories](#categories)
   - [Products](#products)
+  - [Product Details](#product-details)
   - [Stores](#stores)
   - [Home](#home)
+- [Profile Endpoints](#profile-endpoints)
+  - [Get Profile](#get-profile)
+  - [Update Profile](#update-profile)
+- [Checkout Endpoints](#checkout-endpoints)
+  - [Create Order](#create-order)
+  - [Get Order](#get-order)
 
 ---
 
@@ -298,6 +305,64 @@ console.log(data.data.products);
 
 ---
 
+### Product Details
+
+Get detailed information about a specific product by ID.
+
+**Endpoint:** `GET /api/products/:id`
+
+**Parameters:**
+- `id` (path parameter) - Product ID
+
+**Response (Success):**
+```json
+{
+  "success": true,
+  "message": "Product details retrieved successfully",
+  "data": {
+    "product": {
+      "id": "1",
+      "name": "وجبة فردية",
+      "nameAr": "وجبة فردية",
+      "nameEn": "Single Meal",
+      "image": "https://example.com/products/meal1.jpg",
+      "price": 4.5,
+      "originalPrice": 5.0,
+      "discount": "10",
+      "unit": "قطعة",
+      "category": "وجبات سريعة",
+      "description": "...",
+      "stock": 5,
+      "isAvailable": true,
+      "store": {
+        "id": "1",
+        "name": "كريسبي تشيكن",
+        "nameAr": "كريسبي تشيكن",
+        "nameEn": "Crispy Chicken"
+      }
+    }
+  },
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+**Response (Not Found):**
+```json
+{
+  "success": false,
+  "message": "Product not found"
+}
+```
+
+**Example:**
+```javascript
+const response = await fetch('https://arheb-backend.onrender.com/api/products/1');
+const data = await response.json();
+console.log(data.data.product);
+```
+
+---
+
 ### Stores
 
 Get stores listing with filters and sorting options.
@@ -393,6 +458,352 @@ console.log(data.data.banners);
 console.log(data.data.categories);
 console.log(data.data.mostPopularStores);
 console.log(data.data.offers);
+```
+
+---
+
+## Profile Endpoints
+
+All profile endpoints require authentication via Bearer token.
+
+### Get Profile
+
+Get the authenticated user's profile information.
+
+**Endpoint:** `GET /api/profile`
+
+**Headers:**
+```
+Authorization: Bearer <token-from-verify-otp>
+```
+
+**Response (Success):**
+```json
+{
+  "success": true,
+  "message": "Profile retrieved successfully",
+  "data": {
+    "profile": {
+      "phoneNumber": "+201500157920",
+      "name": "John Doe",
+      "addressName": "Home Address",
+      "addressLong": 35.0063,
+      "addressLat": 29.5320
+    }
+  },
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+**Response (Error):**
+```json
+{
+  "success": false,
+  "message": "User not found"
+}
+```
+
+**Example:**
+```javascript
+const response = await fetch('https://arheb-backend.onrender.com/api/profile', {
+  method: 'GET',
+  headers: {
+    'Authorization': 'Bearer your-jwt-token-here'
+  }
+});
+
+const data = await response.json();
+console.log(data.data.profile);
+```
+
+---
+
+### Update Profile
+
+Update the authenticated user's profile information.
+
+**Endpoint:** `PUT /api/profile`
+
+**Headers:**
+```
+Authorization: Bearer <token-from-verify-otp>
+Content-Type: application/json
+```
+
+**Request Body (all fields optional):**
+```json
+{
+  "name": "John Doe",
+  "addressName": "Home Address",
+  "addressLong": 35.0063,
+  "addressLat": 29.5320
+}
+```
+
+**Response (Success):**
+```json
+{
+  "success": true,
+  "message": "Profile updated successfully",
+  "data": {
+    "profile": {
+      "phoneNumber": "+201500157920",
+      "name": "John Doe",
+      "addressName": "Home Address",
+      "addressLong": 35.0063,
+      "addressLat": 29.5320
+    }
+  },
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+**Example:**
+```javascript
+const response = await fetch('https://arheb-backend.onrender.com/api/profile', {
+  method: 'PUT',
+  headers: {
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer your-jwt-token-here'
+  },
+  body: JSON.stringify({
+    name: 'John Doe',
+    addressName: 'Work Address',
+    addressLong: 35.0063,
+    addressLat: 29.5320
+  })
+});
+
+const data = await response.json();
+console.log(data.data.profile);
+```
+
+---
+
+## Checkout Endpoints
+
+All checkout endpoints require authentication via Bearer token.
+
+### Create Order
+
+Create a new order with items, customer information, and delivery details.
+
+**Endpoint:** `POST /api/checkout`
+
+**Headers:**
+```
+Authorization: Bearer <token-from-verify-otp>
+Content-Type: application/json
+```
+
+**Request Body:**
+```json
+{
+  "items": [
+    {
+      "id": "1",
+      "name": "وجبة فردية",
+      "price": 4.5,
+      "quantity": 2
+    },
+    {
+      "id": "2",
+      "name": "برجر كلاسيك",
+      "price": 6.0,
+      "quantity": 1
+    }
+  ],
+  "name": "John Doe",
+  "phoneNumber": "+201500157920",
+  "addressName": "Home Address",
+  "addressLong": 35.0063,
+  "addressLat": 29.5320,
+  "discount": 2.0,
+  "deliveryFee": 2.5,
+  "totalAmount": 15.5,
+  "paymentType": "cash",
+  "nearby": "Near the shopping mall",
+  "notes": "Please call before delivery"
+}
+```
+
+**Required Fields:**
+- `items` (array) - Array of order items, each with `id`, `name`, `price`, `quantity`
+- `phoneNumber` (string) - Customer phone number
+- `totalAmount` (number) - Total order amount
+- `deliveryFee` (number) - Delivery fee
+- `paymentType` (string) - Payment method (e.g., "cash", "card")
+
+**Optional Fields:**
+- `name` (string) - Customer name
+- `addressName` (string) - Address name/description
+- `addressLong` (number) - Longitude coordinate
+- `addressLat` (number) - Latitude coordinate
+- `discount` (number) - Discount amount (default: 0)
+- `nearby` (string) - Nearby landmark
+- `notes` (string) - Additional notes
+
+**Note:** The `status` field is automatically set to "Waiting confirmation" and cannot be specified in the request.
+
+**Response (Success):**
+```json
+{
+  "success": true,
+  "message": "Order created successfully",
+  "data": {
+    "orderId": 1,
+    "order": {
+      "id": 1,
+      "userId": "+201500157920",
+      "phoneNumber": "+201500157920",
+      "name": "John Doe",
+      "addressName": "Home Address",
+      "addressLong": 35.0063,
+      "addressLat": 29.5320,
+      "discount": 2.0,
+      "deliveryFee": 2.5,
+      "totalAmount": 15.5,
+      "status": "Waiting confirmation",
+      "paymentType": "cash",
+      "nearby": "Near the shopping mall",
+      "notes": "Please call before delivery",
+      "createdAt": "2024-01-15T10:30:00Z",
+      "items": [
+        {
+          "id": "1",
+          "name": "وجبة فردية",
+          "price": 4.5,
+          "quantity": 2
+        },
+        {
+          "id": "2",
+          "name": "برجر كلاسيك",
+          "price": 6.0,
+          "quantity": 1
+        }
+      ]
+    }
+  },
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+**Example:**
+```javascript
+const response = await fetch('https://arheb-backend.onrender.com/api/checkout', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer your-jwt-token-here'
+  },
+  body: JSON.stringify({
+    items: [
+      { id: "1", name: "وجبة فردية", price: 4.5, quantity: 2 },
+      { id: "2", name: "برجر كلاسيك", price: 6.0, quantity: 1 }
+    ],
+    phoneNumber: '+201500157920',
+    name: 'John Doe',
+    addressName: 'Home Address',
+    addressLong: 35.0063,
+    addressLat: 29.5320,
+    discount: 2.0,
+    deliveryFee: 2.5,
+    totalAmount: 15.5,
+    paymentType: 'cash',
+    nearby: 'Near the shopping mall',
+    notes: 'Please call before delivery'
+  })
+});
+
+const data = await response.json();
+console.log('Order ID:', data.data.orderId);
+```
+
+---
+
+### Get Order
+
+Retrieve order details by order ID. Only returns orders that belong to the authenticated user.
+
+**Endpoint:** `GET /api/checkout/:orderId`
+
+**Headers:**
+```
+Authorization: Bearer <token-from-verify-otp>
+```
+
+**Parameters:**
+- `orderId` (path parameter) - Order ID
+
+**Response (Success):**
+```json
+{
+  "success": true,
+  "message": "Order retrieved successfully",
+  "data": {
+    "order": {
+      "id": 1,
+      "userId": "+201500157920",
+      "phoneNumber": "+201500157920",
+      "name": "John Doe",
+      "addressName": "Home Address",
+      "addressLong": 35.0063,
+      "addressLat": 29.5320,
+      "discount": 2.0,
+      "deliveryFee": 2.5,
+      "totalAmount": 15.5,
+      "status": "Waiting confirmation",
+      "paymentType": "cash",
+      "nearby": "Near the shopping mall",
+      "notes": "Please call before delivery",
+      "createdAt": "2024-01-15T10:30:00Z",
+      "items": [
+        {
+          "id": "1",
+          "name": "وجبة فردية",
+          "price": 4.5,
+          "quantity": 2
+        },
+        {
+          "id": "2",
+          "name": "برجر كلاسيك",
+          "price": 6.0,
+          "quantity": 1
+        }
+      ]
+    }
+  },
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+**Response (Not Found):**
+```json
+{
+  "success": false,
+  "message": "Order not found"
+}
+```
+
+**Response (Access Denied):**
+```json
+{
+  "success": false,
+  "message": "Access denied"
+}
+```
+
+**Example:**
+```javascript
+const response = await fetch('https://arheb-backend.onrender.com/api/checkout/1', {
+  method: 'GET',
+  headers: {
+    'Authorization': 'Bearer your-jwt-token-here'
+  }
+});
+
+const data = await response.json();
+console.log(data.data.order);
 ```
 
 ---

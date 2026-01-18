@@ -185,6 +185,35 @@
       <pre id="storesOutput">(no data yet)</pre>
     </div>
 
+    <div class="field">
+      <label>Profile API (requires login)</label>
+      <div class="row">
+        <button id="getProfileBtn" class="secondary">Get Profile</button>
+        <button id="updateProfileBtn" class="secondary">Update Profile</button>
+      </div>
+      <pre id="profileOutput">(requires login first)</pre>
+      <div style="margin-top: 0.5rem;">
+        <input id="profileNameInput" placeholder="Name" style="margin-bottom: 0.5rem;" />
+        <input id="profileAddressNameInput" placeholder="Address Name" style="margin-bottom: 0.5rem;" />
+        <input id="profileAddressLongInput" placeholder="Address Longitude" type="number" step="any" style="margin-bottom: 0.5rem;" />
+        <input id="profileAddressLatInput" placeholder="Address Latitude" type="number" step="any" />
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Checkout API (requires login)</label>
+      <div class="row">
+        <button id="fillDummyDataBtn" class="secondary">Fill Dummy Data</button>
+        <button id="createOrderBtn" class="secondary">Create Order</button>
+      </div>
+      <pre id="checkoutOutput">(requires login first)</pre>
+      <textarea id="checkoutDataInput" rows="10" placeholder='{"items": [{"id": "1", "name": "Product", "price": 10.5, "quantity": 2}], "phoneNumber": "+201500157920", "name": "John Doe", "addressName": "Home", "addressLong": 35.0063, "addressLat": 29.5320, "totalAmount": 21.0, "paymentType": "cash"}' style="margin-top: 0.5rem;"></textarea>
+      <div class="row" style="margin-top: 0.5rem;">
+        <input id="orderIdInput" type="number" placeholder="Order ID" style="flex: 1;" />
+        <button id="getOrderBtn" class="secondary">Get Order</button>
+      </div>
+    </div>
+
     <div id="recaptcha-container"></div>
   </main>
 
@@ -231,6 +260,8 @@
       const verifyResult = document.getElementById("verifyResult");
       const otpInput = document.getElementById("otpInput");
       deleteStatus = document.getElementById("deleteStatus");
+      const profileOutput = document.getElementById("profileOutput");
+      const checkoutOutput = document.getElementById("checkoutOutput");
 
       let verifier;
 
@@ -325,6 +356,8 @@
           deleteStatus.textContent = data.token
             ? "Ready to delete – token stored"
             : "(JWT missing)";
+          profileOutput.textContent = "Logged in! Token saved. Click Get Profile or Update Profile to test.";
+          checkoutOutput.textContent = "Logged in! Token saved. Fill in order data and click Create Order to test.";
         }
         } catch (error) {
           console.error(error);
@@ -383,6 +416,183 @@
       document
         .getElementById("deleteUserBtn")
         .addEventListener("click", deleteUser);
+
+      async function getProfile() {
+        if (!lastAppToken) {
+          profileOutput.textContent = "Please login first by verifying OTP.";
+          return;
+        }
+
+        profileOutput.textContent = "Fetching profile...";
+        try {
+          const response = await fetch(`${backendBase}/api/profile`, {
+            method: "GET",
+            headers: {
+              "Authorization": lastAppToken
+            }
+          });
+          const data = await response.json();
+          profileOutput.textContent = JSON.stringify(data, null, 2);
+        } catch (error) {
+          console.error(error);
+          profileOutput.textContent = "Error: " + error.message;
+        }
+      }
+
+      async function updateProfile() {
+        if (!lastAppToken) {
+          profileOutput.textContent = "Please login first by verifying OTP.";
+          return;
+        }
+
+        const name = document.getElementById("profileNameInput").value.trim() || null;
+        const addressName = document.getElementById("profileAddressNameInput").value.trim() || null;
+        const addressLong = document.getElementById("profileAddressLongInput").value.trim();
+        const addressLat = document.getElementById("profileAddressLatInput").value.trim();
+
+        const updateData = {};
+        if (name) updateData.name = name;
+        if (addressName) updateData.addressName = addressName;
+        if (addressLong) updateData.addressLong = parseFloat(addressLong);
+        if (addressLat) updateData.addressLat = parseFloat(addressLat);
+
+        if (Object.keys(updateData).length === 0) {
+          profileOutput.textContent = "Please fill in at least one field to update.";
+          return;
+        }
+
+        profileOutput.textContent = "Updating profile...";
+        try {
+          const response = await fetch(`${backendBase}/api/profile`, {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": lastAppToken
+            },
+            body: JSON.stringify(updateData)
+          });
+          const data = await response.json();
+          profileOutput.textContent = JSON.stringify(data, null, 2);
+        } catch (error) {
+          console.error(error);
+          profileOutput.textContent = "Error: " + error.message;
+        }
+      }
+
+      function fillDummyData() {
+        const dummyData = {
+          items: [
+            {
+              id: "1",
+              name: "وجبة فردية",
+              price: 4.5,
+              quantity: 2
+            },
+            {
+              id: "2",
+              name: "برجر كلاسيك",
+              price: 6.0,
+              quantity: 1
+            }
+          ],
+          phoneNumber: phoneInput.value.trim() || "+201500157920",
+          name: "John Doe",
+          addressName: "Home Address",
+          addressLong: 35.0063,
+          addressLat: 29.5320,
+          discount: 2.0,
+          deliveryFee: 2.5,
+          totalAmount: 15.5,
+          paymentType: "cash",
+          nearby: "Near the shopping mall",
+          notes: "Please call before delivery"
+        };
+        
+        document.getElementById("checkoutDataInput").value = JSON.stringify(dummyData, null, 2);
+        checkoutOutput.textContent = "Dummy data filled! Click Create Order to submit.";
+      }
+
+      async function getOrder() {
+        if (!lastAppToken) {
+          checkoutOutput.textContent = "Please login first by verifying OTP.";
+          return;
+        }
+
+        const orderId = document.getElementById("orderIdInput").value.trim();
+        if (!orderId) {
+          checkoutOutput.textContent = "Please enter an Order ID.";
+          return;
+        }
+
+        checkoutOutput.textContent = "Fetching order...";
+        try {
+          const response = await fetch(`${backendBase}/api/checkout/${orderId}`, {
+            method: "GET",
+            headers: {
+              "Authorization": lastAppToken
+            }
+          });
+          const data = await response.json();
+          checkoutOutput.textContent = JSON.stringify(data, null, 2);
+        } catch (error) {
+          console.error(error);
+          checkoutOutput.textContent = "Error: " + error.message;
+        }
+      }
+
+      async function createOrder() {
+        if (!lastAppToken) {
+          checkoutOutput.textContent = "Please login first by verifying OTP.";
+          return;
+        }
+
+        const checkoutDataText = document.getElementById("checkoutDataInput").value.trim();
+        if (!checkoutDataText) {
+          checkoutOutput.textContent = "Please provide order data in JSON format or click Fill Dummy Data.";
+          return;
+        }
+
+        let checkoutData;
+        try {
+          checkoutData = JSON.parse(checkoutDataText);
+        } catch (error) {
+          checkoutOutput.textContent = "Invalid JSON format: " + error.message;
+          return;
+        }
+
+        checkoutOutput.textContent = "Creating order...";
+        try {
+          const response = await fetch(`${backendBase}/api/checkout`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": lastAppToken
+            },
+            body: JSON.stringify(checkoutData)
+          });
+          const data = await response.json();
+          checkoutOutput.textContent = JSON.stringify(data, null, 2);
+        } catch (error) {
+          console.error(error);
+          checkoutOutput.textContent = "Error: " + error.message;
+        }
+      }
+
+      document
+        .getElementById("getProfileBtn")
+        .addEventListener("click", getProfile);
+      document
+        .getElementById("updateProfileBtn")
+        .addEventListener("click", updateProfile);
+      document
+        .getElementById("fillDummyDataBtn")
+        .addEventListener("click", fillDummyData);
+      document
+        .getElementById("createOrderBtn")
+        .addEventListener("click", createOrder);
+      document
+        .getElementById("getOrderBtn")
+        .addEventListener("click", getOrder);
 
       window.addEventListener("load", () => {
         setupVerifier();

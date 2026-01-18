@@ -9,6 +9,8 @@ const attachCategoriesRoutes = require('./categories');
 const attachProductsRoutes = require('./products');
 const attachHomeRoutes = require('./home');
 const attachStoresRoutes = require('./stores');
+const attachProfileRoutes = require('./profile');
+const attachCheckoutRoutes = require('./checkout');
 
 dotenv.config();
 
@@ -38,9 +40,35 @@ db.exec(`
     phoneNumber TEXT UNIQUE NOT NULL,
     firebaseUid TEXT,
     token TEXT,
+    name TEXT,
+    addressName TEXT,
+    addressLong REAL,
+    addressLat REAL,
     createdAt TEXT DEFAULT CURRENT_TIMESTAMP
   )
 `);
+
+// Add new columns if they don't exist (for existing databases)
+try {
+  db.exec(`ALTER TABLE users ADD COLUMN name TEXT`);
+} catch (e) {
+  // Column already exists
+}
+try {
+  db.exec(`ALTER TABLE users ADD COLUMN addressName TEXT`);
+} catch (e) {
+  // Column already exists
+}
+try {
+  db.exec(`ALTER TABLE users ADD COLUMN addressLong REAL`);
+} catch (e) {
+  // Column already exists
+}
+try {
+  db.exec(`ALTER TABLE users ADD COLUMN addressLat REAL`);
+} catch (e) {
+  // Column already exists
+}
 
 const upsertUser = db.prepare(`
   INSERT INTO users (phoneNumber, firebaseUid, token)
@@ -126,6 +154,9 @@ function authenticateRequest(req, res, next) {
     return res.status(401).json({ message: 'Invalid token' });
   }
 }
+
+attachProfileRoutes(app, db, authenticateRequest);
+attachCheckoutRoutes(app, db, authenticateRequest);
 
 app.post('/api/auth/verify-otp', async (req, res) => {
   const { phoneNumber, sessionInfo, otp } = req.body;
