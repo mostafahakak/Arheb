@@ -11,6 +11,7 @@ const attachHomeRoutes = require('./home');
 const attachStoresRoutes = require('./stores');
 const attachProfileRoutes = require('./profile');
 const attachCheckoutRoutes = require('./checkout');
+const attachContactRoutes = require('./contact');
 
 dotenv.config();
 
@@ -66,6 +67,11 @@ try {
 }
 try {
   db.exec(`ALTER TABLE users ADD COLUMN addressLat REAL`);
+} catch (e) {
+  // Column already exists
+}
+try {
+  db.exec(`ALTER TABLE users ADD COLUMN type TEXT DEFAULT 'user'`);
 } catch (e) {
   // Column already exists
 }
@@ -157,6 +163,7 @@ function authenticateRequest(req, res, next) {
 
 attachProfileRoutes(app, db, authenticateRequest);
 attachCheckoutRoutes(app, db, authenticateRequest);
+attachContactRoutes(app, db, authenticateRequest);
 
 app.post('/api/auth/verify-otp', async (req, res) => {
   const { phoneNumber, sessionInfo, otp } = req.body;

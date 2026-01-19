@@ -168,5 +168,103 @@ module.exports = function attachStoresRoutes(app, db) {
 
     return res.status(200).json(storesResponse);
   });
+
+  app.get('/api/stores/top-rated', (req, res) => {
+    if (!storesResponse || storesList.length === 0) {
+      return res.status(500).json({
+        success: false,
+        message: 'Stores payload is unavailable'
+      });
+    }
+
+    // Get optional limit parameter (default to all stores if not specified)
+    const limit = req.query.limit ? parseInt(req.query.limit) : null;
+
+    // Filter stores that have a valid rate and sort by rate (highest first)
+    const topRatedStores = storesList
+      .filter(store => store.rate != null && typeof store.rate === 'number')
+      .sort((a, b) => {
+        // Sort by rate descending (highest first)
+        // If rates are equal, sort by number of reviews (more reviews first)
+        if (b.rate !== a.rate) {
+          return b.rate - a.rate;
+        }
+        return (b.numberOfReviews || 0) - (a.numberOfReviews || 0);
+      })
+      .slice(0, limit || storesList.length); // Apply limit if specified
+
+    return res.status(200).json({
+      success: true,
+      message: 'Top rated stores retrieved successfully',
+      data: {
+        stores: topRatedStores,
+        count: topRatedStores.length,
+        limit: limit || 'all'
+      },
+      timestamp: new Date().toISOString()
+    });
+  });
+
+  app.get('/api/stores/:id/products', (req, res) => {
+    const storeId = req.params.id;
+
+    // Load products response
+    const productsResponsePath = path.resolve(
+      __dirname,
+      '..',
+      '..',
+      'Arheb API JSON',
+      'products_listing_response.json'
+    );
+
+    let productsResponse;
+    try {
+      const raw = fs.readFileSync(productsResponsePath, 'utf-8');
+      productsResponse = JSON.parse(raw);
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: 'Products payload is unavailable'
+      });
+    }
+
+    if (!productsResponse) {
+      return res.status(500).json({
+        success: false,
+        message: 'Products payload is unavailable'
+      });
+    }
+
+    // Check if store exists in stores listing
+    const store = storesList.find(s => s.id === storeId);
+    if (!store) {
+      return res.status(404).json({
+        success: false,
+        message: 'Store not found'
+      });
+    }
+
+    // Filter products by store ID
+    const products = productsResponse?.data?.products ?? [];
+    const storeProducts = products.filter(p => p.store?.id === storeId);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Store products retrieved successfully',
+      data: {
+        store: {
+          id: store.id,
+          name: store.name,
+          nameAr: store.nameAr,
+          nameEn: store.nameEn,
+          logo: store.logo,
+          cover: store.cover
+        },
+        products: storeProducts,
+        count: storeProducts.length
+      },
+      timestamp: new Date().toISOString()
+    });
+  });
 };
 
