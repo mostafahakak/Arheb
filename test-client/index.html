@@ -3,219 +3,600 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Phone OTP Tester</title>
+  <title>Arheb API Test Client</title>
   <style>
+    * {
+      box-sizing: border-box;
+    }
+
     body {
-      font-family: system-ui, "Segoe UI", sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif;
       margin: 0;
       min-height: 100vh;
-      background: #f5f5f5;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 2rem;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      padding: 1rem;
+      color: #1a202c;
     }
 
-    main {
-      width: min(680px, 100%);
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
       background: white;
-      border-radius: 18px;
+      border-radius: 16px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      overflow: hidden;
+    }
+
+    header {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
       padding: 2rem;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+      text-align: center;
     }
 
-    h1 {
-      margin-top: 0;
-      font-size: 1.6rem;
+    header h1 {
+      margin: 0 0 0.5rem 0;
+      font-size: 2rem;
+      font-weight: 700;
     }
 
-    .field {
+    header p {
+      margin: 0;
+      opacity: 0.9;
+      font-size: 1rem;
+    }
+
+    .content {
+      display: grid;
+      grid-template-columns: 300px 1fr;
+      min-height: calc(100vh - 200px);
+    }
+
+    .sidebar {
+      background: #f7fafc;
+      border-right: 1px solid #e2e8f0;
+      padding: 1.5rem;
+      overflow-y: auto;
+      max-height: calc(100vh - 200px);
+    }
+
+    .sidebar h2 {
+      font-size: 0.875rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #718096;
+      margin: 0 0 1rem 0;
+      padding-bottom: 0.5rem;
+      border-bottom: 2px solid #e2e8f0;
+    }
+
+    .nav-item {
+      display: block;
+      padding: 0.75rem 1rem;
+      margin-bottom: 0.5rem;
+      background: white;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      text-decoration: none;
+      color: #2d3748;
+      font-size: 0.9rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .nav-item:hover {
+      background: #edf2f7;
+      border-color: #667eea;
+      transform: translateX(4px);
+    }
+
+    .nav-item.active {
+      background: #667eea;
+      color: white;
+      border-color: #667eea;
+    }
+
+    .main-content {
+      padding: 2rem;
+      overflow-y: auto;
+      max-height: calc(100vh - 200px);
+    }
+
+    .section {
+      display: none;
+      animation: fadeIn 0.3s;
+    }
+
+    .section.active {
+      display: block;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .section h2 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin: 0 0 1.5rem 0;
+      color: #1a202c;
+      padding-bottom: 0.5rem;
+      border-bottom: 2px solid #e2e8f0;
+    }
+
+    .card {
+      background: white;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    }
+
+    .card h3 {
+      font-size: 1.125rem;
+      font-weight: 600;
+      margin: 0 0 1rem 0;
+      color: #2d3748;
+    }
+
+    .form-group {
       margin-bottom: 1rem;
     }
 
     label {
       display: block;
-      font-size: 0.9rem;
-      color: #555;
-      margin-bottom: 0.35rem;
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: #4a5568;
+      margin-bottom: 0.5rem;
     }
 
     input,
-    textarea {
-      font-size: 1rem;
+    textarea,
+    select {
       width: 100%;
-      padding: 0.65rem;
+      padding: 0.75rem;
+      border: 1px solid #cbd5e0;
       border-radius: 8px;
-      border: 1px solid #d1d5db;
-      box-sizing: border-box;
+      font-size: 0.95rem;
+      transition: all 0.2s;
     }
 
-    button {
-      font-size: 1rem;
-      padding: 0.8rem 1.2rem;
-      border-radius: 8px;
-      border: none;
-      cursor: pointer;
-      font-weight: 600;
-      background: #2563eb;
-      color: white;
+    input:focus,
+    textarea:focus,
+    select:focus {
+      outline: none;
+      border-color: #667eea;
+      box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
     }
 
-    button.secondary {
-      background: #4b5563;
+    textarea {
+      resize: vertical;
+      font-family: 'Courier New', monospace;
+      font-size: 0.85rem;
     }
 
     .row {
       display: flex;
-      gap: 0.5rem;
+      gap: 0.75rem;
       flex-wrap: wrap;
     }
 
-    #status,
-    #verifyResult {
-      min-height: 2rem;
-      font-size: 0.95rem;
-      color: #1f2937;
+    .row input {
+      flex: 1;
+      min-width: 200px;
     }
 
-    #sessionInfo,
-    #sessionInfoOutput {
-      background: #f8fafc;
+    button {
+      padding: 0.75rem 1.5rem;
+      border: none;
       border-radius: 8px;
-      padding: 0.65rem;
-      min-height: 2.25rem;
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      background: #667eea;
+      color: white;
+    }
+
+    button:hover {
+      background: #5568d3;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    }
+
+    button:active {
+      transform: translateY(0);
+    }
+
+    button.secondary {
+      background: #718096;
+    }
+
+    button.secondary:hover {
+      background: #5a67d8;
+    }
+
+    button.danger {
+      background: #e53e3e;
+    }
+
+    button.danger:hover {
+      background: #c53030;
+    }
+
+    button.success {
+      background: #38a169;
+    }
+
+    button.success:hover {
+      background: #2f855a;
+    }
+
+    .output {
+      background: #1a202c;
+      color: #68d391;
+      padding: 1rem;
+      border-radius: 8px;
+      font-family: 'Courier New', monospace;
+      font-size: 0.85rem;
+      max-height: 400px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin-top: 1rem;
+    }
+
+    .status {
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      font-size: 0.875rem;
+      margin-top: 0.5rem;
+      display: inline-block;
+    }
+
+    .status.success {
+      background: #c6f6d5;
+      color: #22543d;
+    }
+
+    .status.error {
+      background: #fed7d7;
+      color: #742a2a;
+    }
+
+    .status.info {
+      background: #bee3f8;
+      color: #2c5282;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 0.25rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      margin-left: 0.5rem;
+    }
+
+    .badge.auth {
+      background: #fed7d7;
+      color: #742a2a;
+    }
+
+    .badge.public {
+      background: #c6f6d5;
+      color: #22543d;
+    }
+
+    .badge.admin {
+      background: #feebc8;
+      color: #7c2d12;
     }
 
     #recaptcha-container {
       margin-top: 1rem;
+      display: flex;
+      justify-content: center;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 1rem;
+    }
+
+    .alert {
+      padding: 1rem;
+      border-radius: 8px;
+      margin-bottom: 1rem;
+      border-left: 4px solid;
+    }
+
+    .alert.info {
+      background: #ebf8ff;
+      border-color: #3182ce;
+      color: #2c5282;
+    }
+
+    @media (max-width: 768px) {
+      .content {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        border-right: none;
+        border-bottom: 1px solid #e2e8f0;
+        max-height: 300px;
+      }
     }
   </style>
 </head>
 <body>
-  <main>
-    <h1>Firebase OTP tester</h1>
-    <p>
-      This page obtains a reCAPTCHA token for your phone test number and hits your backend.
-      Add <code>+201500157920</code> as a Firebase test number with OTP <strong>111111</strong>.
-    </p>
+  <div class="container">
+    <header>
+      <h1>🚀 Arheb API Test Client</h1>
+      <p>Comprehensive testing interface for all API endpoints</p>
+    </header>
 
-    <div class="field">
-      <label for="phoneInput">Phone number</label>
-      <input id="phoneInput" value="+201500157920" />
-    </div>
+    <div class="content">
+      <nav class="sidebar">
+        <h2>Navigation</h2>
+        <a class="nav-item active" data-section="auth">🔐 Authentication</a>
+        <a class="nav-item" data-section="products">📦 Products</a>
+        <a class="nav-item" data-section="stores">🏪 Stores</a>
+        <a class="nav-item" data-section="categories">📂 Categories</a>
+        <a class="nav-item" data-section="home">🏠 Home</a>
+        <a class="nav-item" data-section="profile">👤 Profile</a>
+        <a class="nav-item" data-section="checkout">🛒 Checkout & Orders</a>
+        <a class="nav-item" data-section="promo">🎫 Promo Codes</a>
+        <a class="nav-item" data-section="contact">📞 Contact</a>
+      </nav>
 
-    <div class="field row">
-      <button id="sendOtpBtn">Request OTP via backend</button>
-    </div>
+      <div class="main-content">
+        <!-- Authentication Section -->
+        <section id="auth" class="section active">
+          <h2>Authentication <span class="badge public">Public</span></h2>
+          
+          <div class="card">
+            <h3>Register / Send OTP</h3>
+            <div class="form-group">
+              <label for="phoneInput">Phone Number</label>
+              <input id="phoneInput" type="tel" value="+201500157920" placeholder="+201500157920" />
+            </div>
+            <button id="sendOtpBtn">Request OTP</button>
+            <div id="registerStatus" class="status info" style="display: none;"></div>
+            <div id="registerOutput" class="output" style="display: none;"></div>
+          </div>
 
-    <div class="field">
-      <label>Last status</label>
-      <div id="status">idle</div>
-    </div>
+          <div class="card">
+            <h3>Verify OTP</h3>
+            <div class="form-group">
+              <label for="sessionInfoInput">Session Info</label>
+              <textarea id="sessionInfoInput" rows="3" placeholder="Paste sessionInfo from register response"></textarea>
+            </div>
+            <div class="form-group">
+              <label for="otpInput">OTP Code</label>
+              <input id="otpInput" type="text" value="111111" placeholder="111111" />
+            </div>
+            <button id="verifyOtpBtn" class="secondary">Verify OTP</button>
+            <div id="verifyStatus" class="status info" style="display: none;"></div>
+            <div id="verifyOutput" class="output" style="display: none;"></div>
+          </div>
 
-    <div class="field">
-      <label>Register response</label>
-      <div id="sessionInfoOutput">(waiting for response)</div>
-    </div>
+          <div class="card">
+            <h3>Delete User <span class="badge auth">Auth Required</span></h3>
+            <button id="deleteUserBtn" class="danger">Delete User</button>
+            <div id="deleteOutput" class="output" style="display: none;"></div>
+          </div>
 
-    <div class="field">
-      <label for="sessionInfoInput">Session info (paste only the sessionInfo value if needed)</label>
-      <textarea id="sessionInfoInput" rows="3"></textarea>
-    </div>
+          <div id="recaptcha-container"></div>
+        </section>
 
-    <div class="field">
-      <label for="otpInput">OTP (test value: 111111)</label>
-      <div class="row">
-        <input id="otpInput" value="111111" />
-        <button id="verifyOtpBtn" class="secondary">Verify OTP</button>
+        <!-- Products Section -->
+        <section id="products" class="section">
+          <h2>Products <span class="badge public">Public</span></h2>
+          
+          <div class="card">
+            <h3>Get Products (Paginated)</h3>
+            <div class="form-group">
+              <label for="productsPage">Page Number</label>
+              <input id="productsPage" type="number" value="1" min="1" />
+            </div>
+            <button id="fetchProductsBtn">Fetch Products</button>
+            <div id="productsOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Get Product by ID</h3>
+            <div class="form-group">
+              <label for="productId">Product ID</label>
+              <input id="productId" type="text" placeholder="Enter product ID" />
+            </div>
+            <button id="getProductByIdBtn" class="secondary">Get Product</button>
+            <div id="productByIdOutput" class="output" style="display: none;"></div>
+          </div>
+        </section>
+
+        <!-- Stores Section -->
+        <section id="stores" class="section">
+          <h2>Stores <span class="badge public">Public</span></h2>
+          
+          <div class="card">
+            <h3>Get All Stores</h3>
+            <button id="fetchStoresBtn">Fetch All Stores</button>
+            <div id="storesOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Get Top Rated Stores</h3>
+            <div class="form-group">
+              <label for="topRatedLimit">Limit (optional)</label>
+              <input id="topRatedLimit" type="number" placeholder="Leave empty for all" />
+            </div>
+            <button id="fetchTopRatedBtn" class="secondary">Fetch Top Rated</button>
+            <div id="topRatedOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Get Store Products</h3>
+            <div class="form-group">
+              <label for="storeIdForProducts">Store ID</label>
+              <input id="storeIdForProducts" type="text" placeholder="Enter store ID" />
+            </div>
+            <button id="getStoreProductsBtn" class="secondary">Get Store Products</button>
+            <div id="storeProductsOutput" class="output" style="display: none;"></div>
+          </div>
+        </section>
+
+        <!-- Categories Section -->
+        <section id="categories" class="section">
+          <h2>Categories <span class="badge public">Public</span></h2>
+          <div class="card">
+            <h3>Get All Categories</h3>
+            <button id="fetchCategoriesBtn">Fetch Categories</button>
+            <div id="categoriesOutput" class="output" style="display: none;"></div>
+          </div>
+        </section>
+
+        <!-- Home Section -->
+        <section id="home" class="section">
+          <h2>Home <span class="badge public">Public</span></h2>
+          <div class="card">
+            <h3>Get Home Data</h3>
+            <button id="fetchHomeBtn">Fetch Home Data</button>
+            <div id="homeOutput" class="output" style="display: none;"></div>
+          </div>
+        </section>
+
+        <!-- Profile Section -->
+        <section id="profile" class="section">
+          <h2>Profile <span class="badge auth">Auth Required</span></h2>
+          
+          <div class="card">
+            <h3>Get Profile</h3>
+            <button id="getProfileBtn">Get My Profile</button>
+            <div id="profileOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Update Profile</h3>
+            <div class="form-group">
+              <label for="profileNameInput">Name</label>
+              <input id="profileNameInput" type="text" placeholder="Full name" />
+            </div>
+            <div class="form-group">
+              <label for="profileAddressNameInput">Address Name</label>
+              <input id="profileAddressNameInput" type="text" placeholder="Home, Work, etc." />
+            </div>
+            <div class="row">
+              <div class="form-group" style="flex: 1;">
+                <label for="profileAddressLongInput">Longitude</label>
+                <input id="profileAddressLongInput" type="number" step="any" placeholder="35.0063" />
+              </div>
+              <div class="form-group" style="flex: 1;">
+                <label for="profileAddressLatInput">Latitude</label>
+                <input id="profileAddressLatInput" type="number" step="any" placeholder="29.5320" />
+              </div>
+            </div>
+            <button id="updateProfileBtn" class="secondary">Update Profile</button>
+          </div>
+        </section>
+
+        <!-- Checkout Section -->
+        <section id="checkout" class="section">
+          <h2>Checkout & Orders <span class="badge auth">Auth Required</span></h2>
+          
+          <div class="card">
+            <h3>Create Order</h3>
+            <div class="form-group">
+              <label for="checkoutDataInput">Order Data (JSON)</label>
+              <textarea id="checkoutDataInput" rows="12" placeholder='{"items": [...], "phoneNumber": "...", "totalAmount": 15.5, "deliveryFee": 2.5, "paymentType": "cash"}'></textarea>
+            </div>
+            <div class="row">
+              <button id="fillDummyDataBtn" class="secondary">Fill Dummy Data</button>
+              <button id="createOrderBtn" class="success">Create Order</button>
+            </div>
+            <div id="checkoutOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Get All Orders</h3>
+            <button id="getAllOrdersBtn" class="secondary">Get My Orders</button>
+            <div id="allOrdersOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="grid-2">
+            <div class="card">
+              <h3>Get Order by ID</h3>
+              <div class="form-group">
+                <label for="orderIdInput">Order ID</label>
+                <input id="orderIdInput" type="number" placeholder="1" />
+              </div>
+              <button id="getOrderBtn" class="secondary">Get Order</button>
+              <div id="orderByIdOutput" class="output" style="display: none;"></div>
+            </div>
+
+            <div class="card">
+              <h3>Rate Order</h3>
+              <div class="form-group">
+                <label for="rateOrderId">Order ID</label>
+                <input id="rateOrderId" type="number" placeholder="1" />
+              </div>
+              <div class="form-group">
+                <label for="orderRating">Rating (1-5)</label>
+                <input id="orderRating" type="number" min="1" max="5" value="5" />
+              </div>
+              <button id="rateOrderBtn" class="success">Rate Order</button>
+              <div id="rateOrderOutput" class="output" style="display: none;"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Promo Codes Section -->
+        <section id="promo" class="section">
+          <h2>Promo Codes <span class="badge public">Public</span></h2>
+          <div class="card">
+            <h3>Validate Promo Code</h3>
+            <div class="form-group">
+              <label for="promoCodeInput">Promo Code</label>
+              <input id="promoCodeInput" type="text" placeholder="SAVE10" />
+            </div>
+            <button id="validatePromoBtn">Validate Promo Code</button>
+            <div id="promoOutput" class="output" style="display: none;"></div>
+          </div>
+        </section>
+
+        <!-- Contact Section -->
+        <section id="contact" class="section">
+          <h2>Contact <span class="badge public">Public / <span class="badge admin">Admin</span></span></h2>
+          
+          <div class="card">
+            <h3>Get Contact Information</h3>
+            <button id="getContactBtn">Get Contact Info</button>
+            <div id="contactOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Update Contact Information <span class="badge admin">Admin Only</span></h3>
+            <div class="form-group">
+              <label for="contactEmail">Email</label>
+              <input id="contactEmail" type="email" placeholder="contact@arheb.com" />
+            </div>
+            <div class="form-group">
+              <label for="contactPhone">Phone</label>
+              <input id="contactPhone" type="tel" placeholder="+201234567890" />
+            </div>
+            <button id="updateContactBtn" class="secondary">Update Contact</button>
+            <div id="updateContactOutput" class="output" style="display: none;"></div>
+          </div>
+        </section>
       </div>
     </div>
-
-    <div class="field">
-      <label>Delete user</label>
-      <div class="row">
-        <button id="deleteUserBtn" class="secondary">Delete registered user</button>
-      </div>
-      <div id="deleteStatus">(requires verification first)</div>
-    </div>
-
-    <div class="field">
-      <label>Verify response</label>
-      <div id="verifyResult">(waiting)</div>
-    </div>
-
-    <div class="field">
-      <label>Categories preview</label>
-      <div class="row">
-        <button id="fetchCategoriesBtn" class="secondary">
-          Fetch `/api/categories`
-        </button>
-      </div>
-      <pre id="categoriesOutput">(no data yet)</pre>
-    </div>
-
-    <div class="field">
-      <label>Products preview</label>
-      <div class="row">
-        <button id="fetchProductsBtn" class="secondary">
-          Fetch `/api/products`
-        </button>
-      </div>
-      <pre id="productsOutput">(no data yet)</pre>
-    </div>
-
-    <div class="field">
-      <label>Home preview</label>
-      <div class="row">
-        <button id="fetchHomeBtn" class="secondary">
-          Fetch `/api/home`
-        </button>
-      </div>
-      <pre id="homeOutput">(no data yet)</pre>
-    </div>
-
-    <div class="field">
-      <label>Stores preview</label>
-      <div class="row">
-        <button id="fetchStoresBtn" class="secondary">
-          Fetch `/api/stores`
-        </button>
-      </div>
-      <pre id="storesOutput">(no data yet)</pre>
-    </div>
-
-    <div class="field">
-      <label>Profile API (requires login)</label>
-      <div class="row">
-        <button id="getProfileBtn" class="secondary">Get Profile</button>
-        <button id="updateProfileBtn" class="secondary">Update Profile</button>
-      </div>
-      <pre id="profileOutput">(requires login first)</pre>
-      <div style="margin-top: 0.5rem;">
-        <input id="profileNameInput" placeholder="Name" style="margin-bottom: 0.5rem;" />
-        <input id="profileAddressNameInput" placeholder="Address Name" style="margin-bottom: 0.5rem;" />
-        <input id="profileAddressLongInput" placeholder="Address Longitude" type="number" step="any" style="margin-bottom: 0.5rem;" />
-        <input id="profileAddressLatInput" placeholder="Address Latitude" type="number" step="any" />
-      </div>
-    </div>
-
-    <div class="field">
-      <label>Checkout API (requires login)</label>
-      <div class="row">
-        <button id="fillDummyDataBtn" class="secondary">Fill Dummy Data</button>
-        <button id="createOrderBtn" class="secondary">Create Order</button>
-      </div>
-      <pre id="checkoutOutput">(requires login first)</pre>
-      <textarea id="checkoutDataInput" rows="10" placeholder='{"items": [{"id": "1", "name": "Product", "price": 10.5, "quantity": 2}], "phoneNumber": "+201500157920", "name": "John Doe", "addressName": "Home", "addressLong": 35.0063, "addressLat": 29.5320, "totalAmount": 21.0, "paymentType": "cash"}' style="margin-top: 0.5rem;"></textarea>
-      <div class="row" style="margin-top: 0.5rem;">
-        <input id="orderIdInput" type="number" placeholder="Order ID" style="flex: 1;" />
-        <button id="getOrderBtn" class="secondary">Get Order</button>
-      </div>
-    </div>
-
-    <div id="recaptcha-container"></div>
-  </main>
+  </div>
 
   <script>
     const sdkUrls = [
@@ -225,7 +606,33 @@
     const backendBase = window.location.origin;
     let lastAppToken = "";
     let lastFirebaseToken = "";
-    let deleteStatus;
+    let verifier;
+
+    // Navigation
+    document.querySelectorAll('.nav-item').forEach(item => {
+      item.addEventListener('click', (e) => {
+        e.preventDefault();
+        const section = item.dataset.section;
+        document.querySelectorAll('.nav-item').forEach(nav => nav.classList.remove('active'));
+        document.querySelectorAll('.section').forEach(sec => sec.classList.remove('active'));
+        item.classList.add('active');
+        document.getElementById(section).classList.add('active');
+      });
+    });
+
+    // Helper functions
+    function showOutput(elementId, data) {
+      const el = document.getElementById(elementId);
+      el.textContent = JSON.stringify(data, null, 2);
+      el.style.display = 'block';
+    }
+
+    function showStatus(elementId, message, type = 'info') {
+      const el = document.getElementById(elementId);
+      el.textContent = message;
+      el.className = `status ${type}`;
+      el.style.display = 'block';
+    }
 
     function loadScript(url) {
       return new Promise((resolve, reject) => {
@@ -253,249 +660,227 @@
 
       firebase.initializeApp(firebaseConfig);
 
-      const phoneInput = document.getElementById("phoneInput");
-      const statusEl = document.getElementById("status");
-      const sessionInfoOutput = document.getElementById("sessionInfoOutput");
-      const sessionInfoInput = document.getElementById("sessionInfoInput");
-      const verifyResult = document.getElementById("verifyResult");
-      const otpInput = document.getElementById("otpInput");
-      deleteStatus = document.getElementById("deleteStatus");
-      const profileOutput = document.getElementById("profileOutput");
-      const checkoutOutput = document.getElementById("checkoutOutput");
-
-      let verifier;
-
-      function setStatus(message, isError = false) {
-        statusEl.textContent = message;
-        statusEl.style.color = isError ? "#be123c" : "#1f2937";
-      }
-
       function setupVerifier() {
-        if (verifier) {
-          verifier.clear();
-        }
-
+        if (verifier) verifier.clear();
         verifier = new firebase.auth.RecaptchaVerifier("recaptcha-container", {
           size: "normal",
-          callback: () => {
-            // will be handled in request flow
-          },
         });
-
-        verifier.render().catch((error) => {
-          console.error("recaptcha render failed", error);
-        });
+        verifier.render().catch(console.error);
       }
 
-      async function requestRegister() {
-        if (!verifier) {
-          setStatus(
-            "reCAPTCHA verifier not ready—check your console or reload the page.",
-            true
-          );
-          return;
-        }
-
-        console.log("Requesting register for", phoneInput.value);
-        setStatus("Preparing reCAPTCHA...");
+      // Authentication
+      document.getElementById('sendOtpBtn').addEventListener('click', async () => {
+        const phone = document.getElementById('phoneInput').value.trim();
+        showStatus('registerStatus', 'Preparing reCAPTCHA...', 'info');
         try {
           const recaptchaToken = await verifier.verify();
-          console.log("reCAPTCHA token obtained", recaptchaToken);
-          setStatus("Sending request to backend...");
-        const response = await fetch(`${backendBase}/api/auth/register`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              phoneNumber: phoneInput.value.trim(),
-              recaptchaToken,
-            }),
+          showStatus('registerStatus', 'Sending request...', 'info');
+          const res = await fetch(`${backendBase}/api/auth/register`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phoneNumber: phone, recaptchaToken }),
           });
-
-        const data = await response.json();
-          setStatus(
-            response.ok ? data.message || "OTP request sent" : data.message || "Failed"
-          );
-          sessionInfoOutput.textContent = JSON.stringify(data, null, 2);
+          const data = await res.json();
+          showOutput('registerOutput', data);
           if (data.sessionInfo) {
-            sessionInfoInput.value = data.sessionInfo;
+            document.getElementById('sessionInfoInput').value = data.sessionInfo;
           }
+          showStatus('registerStatus', res.ok ? 'OTP sent successfully!' : 'Failed to send OTP', res.ok ? 'success' : 'error');
         } catch (error) {
-          console.error(error);
-          setStatus("Error: " + error.message, true);
+          showStatus('registerStatus', `Error: ${error.message}`, 'error');
         } finally {
           setupVerifier();
         }
-      }
+      });
 
-      async function verifyOtp() {
-        const sessionInfo = sessionInfoInput.value.trim();
+      document.getElementById('verifyOtpBtn').addEventListener('click', async () => {
+        const sessionInfo = document.getElementById('sessionInfoInput').value.trim();
+        const otp = document.getElementById('otpInput').value.trim();
+        const phone = document.getElementById('phoneInput').value.trim();
         if (!sessionInfo) {
-          verifyResult.textContent =
-            "Paste the sessionInfo from the register response first.";
+          showStatus('verifyStatus', 'Please paste sessionInfo first', 'error');
           return;
         }
-
+        showStatus('verifyStatus', 'Verifying OTP...', 'info');
         try {
-          console.log("Verifying OTP for sessionInfo", sessionInfo);
-          verifyResult.textContent = "Verifying OTP...";
-        const response = await fetch(`${backendBase}/api/auth/verify-otp`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              phoneNumber: phoneInput.value.trim(),
-              sessionInfo,
-              otp: otpInput.value.trim(),
-            }),
+          const res = await fetch(`${backendBase}/api/auth/verify-otp`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phoneNumber: phone, sessionInfo, otp }),
           });
-
-        const data = await response.json();
-          verifyResult.textContent = JSON.stringify(data, null, 2);
-        if (data.success) {
-          lastAppToken = data.token;
-          lastFirebaseToken = data.firebaseToken ?? "";
-          deleteStatus.textContent = data.token
-            ? "Ready to delete – token stored"
-            : "(JWT missing)";
-          profileOutput.textContent = "Logged in! Token saved. Click Get Profile or Update Profile to test.";
-          checkoutOutput.textContent = "Logged in! Token saved. Fill in order data and click Create Order to test.";
-        }
+          const data = await res.json();
+          showOutput('verifyOutput', data);
+          if (data.success) {
+            lastAppToken = data.token;
+            lastFirebaseToken = data.firebaseToken || '';
+            showStatus('verifyStatus', 'Logged in successfully! Token saved.', 'success');
+          } else {
+            showStatus('verifyStatus', 'Verification failed', 'error');
+          }
         } catch (error) {
-          console.error(error);
-          verifyResult.textContent = "Error: " + error.message;
+          showStatus('verifyStatus', `Error: ${error.message}`, 'error');
         }
-      }
+      });
 
-      document
-        .getElementById("sendOtpBtn")
-        .addEventListener("click", requestRegister);
-      document
-        .getElementById("verifyOtpBtn")
-        .addEventListener("click", verifyOtp);
-      document
-        .getElementById("fetchCategoriesBtn")
-        .addEventListener("click", fetchCategories);
-      document
-        .getElementById("fetchProductsBtn")
-        .addEventListener("click", () => fetchPreview('/api/products', 'productsOutput'));
-      document
-        .getElementById("fetchHomeBtn")
-        .addEventListener("click", () => fetchPreview('/api/home', 'homeOutput'));
-      document
-        .getElementById("fetchStoresBtn")
-        .addEventListener("click", () => fetchPreview('/api/stores', 'storesOutput'));
-      async function deleteUser() {
-        console.log("Delete button clicked", { lastAppToken: !!lastAppToken, lastFirebaseToken: !!lastFirebaseToken });
+      document.getElementById('deleteUserBtn').addEventListener('click', async () => {
         if (!lastAppToken || !lastFirebaseToken) {
-          deleteStatus.textContent =
-            "Verify OTP first so we can store your tokens.";
+          showOutput('deleteOutput', { error: 'Please verify OTP first' });
           return;
         }
-
-        deleteStatus.textContent = "Deleting user...";
         try {
-          console.log("Sending delete request...");
-          const response = await fetch(`${backendBase}/api/auth/user`, {
-            method: "DELETE",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: lastAppToken,
-            },
-            body: JSON.stringify({
-              firebaseIdToken: lastFirebaseToken,
-            }),
+          const res = await fetch(`${backendBase}/api/auth/user`, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json', 'Authorization': lastAppToken },
+            body: JSON.stringify({ firebaseIdToken: lastFirebaseToken }),
           });
-          const data = await response.json();
-          console.log("Delete response:", data);
-          deleteStatus.textContent = JSON.stringify(data, null, 2);
+          const data = await res.json();
+          showOutput('deleteOutput', data);
         } catch (error) {
-          console.error("Delete error:", error);
-          deleteStatus.textContent = "Error: " + error.message;
+          showOutput('deleteOutput', { error: error.message });
         }
-      }
+      });
 
-      document
-        .getElementById("deleteUserBtn")
-        .addEventListener("click", deleteUser);
-
-      async function getProfile() {
-        if (!lastAppToken) {
-          profileOutput.textContent = "Please login first by verifying OTP.";
-          return;
-        }
-
-        profileOutput.textContent = "Fetching profile...";
+      // Products
+      document.getElementById('fetchProductsBtn').addEventListener('click', async () => {
+        const page = document.getElementById('productsPage').value || 1;
         try {
-          const response = await fetch(`${backendBase}/api/profile`, {
-            method: "GET",
-            headers: {
-              "Authorization": lastAppToken
-            }
-          });
-          const data = await response.json();
-          profileOutput.textContent = JSON.stringify(data, null, 2);
+          const res = await fetch(`${backendBase}/api/products?page=${page}`);
+          const data = await res.json();
+          showOutput('productsOutput', data);
         } catch (error) {
-          console.error(error);
-          profileOutput.textContent = "Error: " + error.message;
+          showOutput('productsOutput', { error: error.message });
         }
-      }
+      });
 
-      async function updateProfile() {
-        if (!lastAppToken) {
-          profileOutput.textContent = "Please login first by verifying OTP.";
+      document.getElementById('getProductByIdBtn').addEventListener('click', async () => {
+        const id = document.getElementById('productId').value.trim();
+        if (!id) {
+          showOutput('productByIdOutput', { error: 'Please enter product ID' });
           return;
         }
+        try {
+          const res = await fetch(`${backendBase}/api/products/${id}`);
+          const data = await res.json();
+          showOutput('productByIdOutput', data);
+        } catch (error) {
+          showOutput('productByIdOutput', { error: error.message });
+        }
+      });
 
-        const name = document.getElementById("profileNameInput").value.trim() || null;
-        const addressName = document.getElementById("profileAddressNameInput").value.trim() || null;
-        const addressLong = document.getElementById("profileAddressLongInput").value.trim();
-        const addressLat = document.getElementById("profileAddressLatInput").value.trim();
+      // Stores
+      document.getElementById('fetchStoresBtn').addEventListener('click', async () => {
+        try {
+          const res = await fetch(`${backendBase}/api/stores`);
+          const data = await res.json();
+          showOutput('storesOutput', data);
+        } catch (error) {
+          showOutput('storesOutput', { error: error.message });
+        }
+      });
 
+      document.getElementById('fetchTopRatedBtn').addEventListener('click', async () => {
+        const limit = document.getElementById('topRatedLimit').value.trim();
+        const url = limit ? `${backendBase}/api/stores/top-rated?limit=${limit}` : `${backendBase}/api/stores/top-rated`;
+        try {
+          const res = await fetch(url);
+          const data = await res.json();
+          showOutput('topRatedOutput', data);
+        } catch (error) {
+          showOutput('topRatedOutput', { error: error.message });
+        }
+      });
+
+      document.getElementById('getStoreProductsBtn').addEventListener('click', async () => {
+        const storeId = document.getElementById('storeIdForProducts').value.trim();
+        if (!storeId) {
+          showOutput('storeProductsOutput', { error: 'Please enter store ID' });
+          return;
+        }
+        try {
+          const res = await fetch(`${backendBase}/api/stores/${storeId}/products`);
+          const data = await res.json();
+          showOutput('storeProductsOutput', data);
+        } catch (error) {
+          showOutput('storeProductsOutput', { error: error.message });
+        }
+      });
+
+      // Categories
+      document.getElementById('fetchCategoriesBtn').addEventListener('click', async () => {
+        try {
+          const res = await fetch(`${backendBase}/api/categories`);
+          const data = await res.json();
+          showOutput('categoriesOutput', data);
+        } catch (error) {
+          showOutput('categoriesOutput', { error: error.message });
+        }
+      });
+
+      // Home
+      document.getElementById('fetchHomeBtn').addEventListener('click', async () => {
+        try {
+          const res = await fetch(`${backendBase}/api/home`);
+          const data = await res.json();
+          showOutput('homeOutput', data);
+        } catch (error) {
+          showOutput('homeOutput', { error: error.message });
+        }
+      });
+
+      // Profile
+      document.getElementById('getProfileBtn').addEventListener('click', async () => {
+        if (!lastAppToken) {
+          showOutput('profileOutput', { error: 'Please login first' });
+          return;
+        }
+        try {
+          const res = await fetch(`${backendBase}/api/profile`, {
+            headers: { 'Authorization': lastAppToken },
+          });
+          const data = await res.json();
+          showOutput('profileOutput', data);
+        } catch (error) {
+          showOutput('profileOutput', { error: error.message });
+        }
+      });
+
+      document.getElementById('updateProfileBtn').addEventListener('click', async () => {
+        if (!lastAppToken) {
+          showOutput('profileOutput', { error: 'Please login first' });
+          return;
+        }
         const updateData = {};
+        const name = document.getElementById('profileNameInput').value.trim();
+        const addressName = document.getElementById('profileAddressNameInput').value.trim();
+        const addressLong = document.getElementById('profileAddressLongInput').value.trim();
+        const addressLat = document.getElementById('profileAddressLatInput').value.trim();
         if (name) updateData.name = name;
         if (addressName) updateData.addressName = addressName;
         if (addressLong) updateData.addressLong = parseFloat(addressLong);
         if (addressLat) updateData.addressLat = parseFloat(addressLat);
-
         if (Object.keys(updateData).length === 0) {
-          profileOutput.textContent = "Please fill in at least one field to update.";
+          showOutput('profileOutput', { error: 'Please fill at least one field' });
           return;
         }
-
-        profileOutput.textContent = "Updating profile...";
         try {
-          const response = await fetch(`${backendBase}/api/profile`, {
-            method: "PUT",
-            headers: {
-              "Content-Type": "application/json",
-              "Authorization": lastAppToken
-            },
-            body: JSON.stringify(updateData)
+          const res = await fetch(`${backendBase}/api/profile`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', 'Authorization': lastAppToken },
+            body: JSON.stringify(updateData),
           });
-          const data = await response.json();
-          profileOutput.textContent = JSON.stringify(data, null, 2);
+          const data = await res.json();
+          showOutput('profileOutput', data);
         } catch (error) {
-          console.error(error);
-          profileOutput.textContent = "Error: " + error.message;
+          showOutput('profileOutput', { error: error.message });
         }
-      }
+      });
 
-      function fillDummyData() {
+      // Checkout
+      document.getElementById('fillDummyDataBtn').addEventListener('click', () => {
+        const phone = document.getElementById('phoneInput').value.trim() || '+201500157920';
         const dummyData = {
-          items: [
-            {
-              id: "1",
-              name: "وجبة فردية",
-              price: 4.5,
-              quantity: 2
-            },
-            {
-              id: "2",
-              name: "برجر كلاسيك",
-              price: 6.0,
-              quantity: 1
-            }
-          ],
-          phoneNumber: phoneInput.value.trim() || "+201500157920",
+          items: [{ id: "1", name: "وجبة فردية", price: 4.5, quantity: 2 }],
+          phoneNumber: phone,
           name: "John Doe",
           addressName: "Home Address",
           addressLong: 35.0063,
@@ -504,127 +889,157 @@
           deliveryFee: 2.5,
           totalAmount: 15.5,
           paymentType: "cash",
+          promoCode: "SAVE10",
+          storeId: "1",
           nearby: "Near the shopping mall",
           notes: "Please call before delivery"
         };
-        
-        document.getElementById("checkoutDataInput").value = JSON.stringify(dummyData, null, 2);
-        checkoutOutput.textContent = "Dummy data filled! Click Create Order to submit.";
-      }
-
-      async function getOrder() {
-        if (!lastAppToken) {
-          checkoutOutput.textContent = "Please login first by verifying OTP.";
-          return;
-        }
-
-        const orderId = document.getElementById("orderIdInput").value.trim();
-        if (!orderId) {
-          checkoutOutput.textContent = "Please enter an Order ID.";
-          return;
-        }
-
-        checkoutOutput.textContent = "Fetching order...";
-        try {
-          const response = await fetch(`${backendBase}/api/checkout/${orderId}`, {
-            method: "GET",
-            headers: {
-              "Authorization": lastAppToken
-            }
-          });
-          const data = await response.json();
-          checkoutOutput.textContent = JSON.stringify(data, null, 2);
-        } catch (error) {
-          console.error(error);
-          checkoutOutput.textContent = "Error: " + error.message;
-        }
-      }
-
-      async function createOrder() {
-        if (!lastAppToken) {
-          checkoutOutput.textContent = "Please login first by verifying OTP.";
-          return;
-        }
-
-        const checkoutDataText = document.getElementById("checkoutDataInput").value.trim();
-        if (!checkoutDataText) {
-          checkoutOutput.textContent = "Please provide order data in JSON format or click Fill Dummy Data.";
-          return;
-        }
-
-        let checkoutData;
-        try {
-          checkoutData = JSON.parse(checkoutDataText);
-        } catch (error) {
-          checkoutOutput.textContent = "Invalid JSON format: " + error.message;
-          return;
-        }
-
-        checkoutOutput.textContent = "Creating order...";
-        try {
-          const response = await fetch(`${backendBase}/api/checkout`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Authorization": lastAppToken
-            },
-            body: JSON.stringify(checkoutData)
-          });
-          const data = await response.json();
-          checkoutOutput.textContent = JSON.stringify(data, null, 2);
-        } catch (error) {
-          console.error(error);
-          checkoutOutput.textContent = "Error: " + error.message;
-        }
-      }
-
-      document
-        .getElementById("getProfileBtn")
-        .addEventListener("click", getProfile);
-      document
-        .getElementById("updateProfileBtn")
-        .addEventListener("click", updateProfile);
-      document
-        .getElementById("fillDummyDataBtn")
-        .addEventListener("click", fillDummyData);
-      document
-        .getElementById("createOrderBtn")
-        .addEventListener("click", createOrder);
-      document
-        .getElementById("getOrderBtn")
-        .addEventListener("click", getOrder);
-
-      window.addEventListener("load", () => {
-        setupVerifier();
+        document.getElementById('checkoutDataInput').value = JSON.stringify(dummyData, null, 2);
       });
-    }
 
-    async function fetchCategories() {
-      await fetchPreview('/api/categories', 'categoriesOutput');
-    }
+      document.getElementById('createOrderBtn').addEventListener('click', async () => {
+        if (!lastAppToken) {
+          showOutput('checkoutOutput', { error: 'Please login first' });
+          return;
+        }
+        try {
+          const checkoutData = JSON.parse(document.getElementById('checkoutDataInput').value);
+          const res = await fetch(`${backendBase}/api/checkout`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': lastAppToken },
+            body: JSON.stringify(checkoutData),
+          });
+          const data = await res.json();
+          showOutput('checkoutOutput', data);
+        } catch (error) {
+          showOutput('checkoutOutput', { error: error.message });
+        }
+      });
 
-    async function fetchPreview(endpoint, outputId) {
-      const output = document.getElementById(outputId);
-      output.textContent = `Loading ${endpoint}...`;
-      try {
-        const response = await fetch(`${window.location.origin}${endpoint}`);
-        const data = await response.json();
-        output.textContent = JSON.stringify(data, null, 2);
-      } catch (error) {
-        console.error(error);
-        output.textContent = "Error: " + error.message;
-      }
+      document.getElementById('getAllOrdersBtn').addEventListener('click', async () => {
+        if (!lastAppToken) {
+          showOutput('allOrdersOutput', { error: 'Please login first' });
+          return;
+        }
+        try {
+          const res = await fetch(`${backendBase}/api/checkout`, {
+            headers: { 'Authorization': lastAppToken },
+          });
+          const data = await res.json();
+          showOutput('allOrdersOutput', data);
+        } catch (error) {
+          showOutput('allOrdersOutput', { error: error.message });
+        }
+      });
+
+      document.getElementById('getOrderBtn').addEventListener('click', async () => {
+        if (!lastAppToken) {
+          showOutput('orderByIdOutput', { error: 'Please login first' });
+          return;
+        }
+        const orderId = document.getElementById('orderIdInput').value.trim();
+        if (!orderId) {
+          showOutput('orderByIdOutput', { error: 'Please enter order ID' });
+          return;
+        }
+        try {
+          const res = await fetch(`${backendBase}/api/checkout/${orderId}`, {
+            headers: { 'Authorization': lastAppToken },
+          });
+          const data = await res.json();
+          showOutput('orderByIdOutput', data);
+        } catch (error) {
+          showOutput('orderByIdOutput', { error: error.message });
+        }
+      });
+
+      document.getElementById('rateOrderBtn').addEventListener('click', async () => {
+        if (!lastAppToken) {
+          showOutput('rateOrderOutput', { error: 'Please login first' });
+          return;
+        }
+        const orderId = document.getElementById('rateOrderId').value.trim();
+        const rating = document.getElementById('orderRating').value;
+        if (!orderId) {
+          showOutput('rateOrderOutput', { error: 'Please enter order ID' });
+          return;
+        }
+        try {
+          const res = await fetch(`${backendBase}/api/checkout/${orderId}/rate`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', 'Authorization': lastAppToken },
+            body: JSON.stringify({ rating: parseInt(rating) }),
+          });
+          const data = await res.json();
+          showOutput('rateOrderOutput', data);
+        } catch (error) {
+          showOutput('rateOrderOutput', { error: error.message });
+        }
+      });
+
+      // Promo Codes
+      document.getElementById('validatePromoBtn').addEventListener('click', async () => {
+        const code = document.getElementById('promoCodeInput').value.trim();
+        if (!code) {
+          showOutput('promoOutput', { error: 'Please enter promo code' });
+          return;
+        }
+        try {
+          const res = await fetch(`${backendBase}/api/promo-codes/${code}`);
+          const data = await res.json();
+          showOutput('promoOutput', data);
+        } catch (error) {
+          showOutput('promoOutput', { error: error.message });
+        }
+      });
+
+      // Contact
+      document.getElementById('getContactBtn').addEventListener('click', async () => {
+        try {
+          const res = await fetch(`${backendBase}/api/contact`);
+          const data = await res.json();
+          showOutput('contactOutput', data);
+        } catch (error) {
+          showOutput('contactOutput', { error: error.message });
+        }
+      });
+
+      document.getElementById('updateContactBtn').addEventListener('click', async () => {
+        if (!lastAppToken) {
+          showOutput('updateContactOutput', { error: 'Please login first' });
+          return;
+        }
+        const updateData = {};
+        const email = document.getElementById('contactEmail').value.trim();
+        const phone = document.getElementById('contactPhone').value.trim();
+        if (email) updateData.email = email;
+        if (phone) updateData.phone = phone;
+        if (Object.keys(updateData).length === 0) {
+          showOutput('updateContactOutput', { error: 'Please fill at least one field' });
+          return;
+        }
+        try {
+          const res = await fetch(`${backendBase}/api/contact`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', 'Authorization': lastAppToken },
+            body: JSON.stringify(updateData),
+          });
+          const data = await res.json();
+          showOutput('updateContactOutput', data);
+        } catch (error) {
+          showOutput('updateContactOutput', { error: error.message });
+        }
+      });
+
+      setupVerifier();
     }
 
     bootstrap().catch((error) => {
-      console.error("Failed to initialize Firebase tester", error);
-      const statusEl = document.getElementById("status");
-      if (statusEl) {
-        statusEl.textContent = "Unable to initialize Firebase SDK";
-        statusEl.style.color = "#be123c";
-      }
+      console.error("Failed to initialize Firebase", error);
+      document.getElementById('registerStatus').textContent = "Unable to initialize Firebase SDK";
+      document.getElementById('registerStatus').className = 'status error';
+      document.getElementById('registerStatus').style.display = 'block';
     });
   </script>
 </body>
 </html>
-
