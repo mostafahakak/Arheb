@@ -1,6 +1,8 @@
 const path = require('path');
 const fs = require('fs');
 const express = require('express');
+const { createServer } = require('http');
+const { Server } = require('socket.io');
 const axios = require('axios');
 const Database = require('better-sqlite3');
 const jwt = require('jsonwebtoken');
@@ -12,6 +14,7 @@ const attachStoresRoutes = require('./stores');
 const attachProfileRoutes = require('./profile');
 const attachCheckoutRoutes = require('./checkout');
 const attachContactRoutes = require('./contact');
+const attachOrderTrackingRoutes = require('./order');
 
 dotenv.config();
 
@@ -29,6 +32,15 @@ if (!JWT_SECRET) {
 
 const app = express();
 app.use(express.json());
+
+// Create HTTP server for Socket.IO
+const httpServer = createServer(app);
+const io = new Server(httpServer, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
+});
 
 const dataDir = path.resolve(__dirname, '..', 'data');
 fs.mkdirSync(dataDir, { recursive: true });
@@ -164,6 +176,7 @@ function authenticateRequest(req, res, next) {
 attachProfileRoutes(app, db, authenticateRequest);
 attachCheckoutRoutes(app, db, authenticateRequest);
 attachContactRoutes(app, db, authenticateRequest);
+attachOrderTrackingRoutes(io, app, db, authenticateRequest, JWT_SECRET);
 
 app.post('/api/auth/verify-otp', async (req, res) => {
   const { phoneNumber, sessionInfo, otp } = req.body;
@@ -238,7 +251,8 @@ app.use((err, req, res, next) => {
   next();
 });
 
-app.listen(PORT, () => {
+httpServer.listen(PORT, () => {
   console.log(`Auth backend listening on http://localhost:${PORT}`);
+  console.log(`WebSocket server ready for order tracking`);
 });
 

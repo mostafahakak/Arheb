@@ -3,7 +3,10 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Arheb API Test Client</title>
+    <title>Arheb API Test Client</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
   <style>
     * {
       box-sizing: border-box;
@@ -322,6 +325,16 @@
       color: #2c5282;
     }
 
+    #mapContainer {
+      position: relative;
+    }
+
+    .location-marker {
+      font-size: 32px;
+      transform: rotate(0deg);
+      transition: transform 0.3s ease;
+    }
+
     @media (max-width: 768px) {
       .content {
         grid-template-columns: 1fr;
@@ -352,6 +365,7 @@
         <a class="nav-item" data-section="home">🏠 Home</a>
         <a class="nav-item" data-section="profile">👤 Profile</a>
         <a class="nav-item" data-section="checkout">🛒 Checkout & Orders</a>
+        <a class="nav-item" data-section="tracking">🚚 Order Tracking</a>
         <a class="nav-item" data-section="promo">🎫 Promo Codes</a>
         <a class="nav-item" data-section="contact">📞 Contact</a>
       </nav>
@@ -553,6 +567,43 @@
               <button id="rateOrderBtn" class="success">Rate Order</button>
               <div id="rateOrderOutput" class="output" style="display: none;"></div>
             </div>
+          </div>
+        </section>
+
+        <!-- Order Tracking Section -->
+        <section id="tracking" class="section">
+          <h2>Order Tracking <span class="badge auth">Auth Required</span></h2>
+          
+          <div class="card">
+            <h3>Connect to Order Tracking</h3>
+            <div class="form-group">
+              <label for="trackingOrderId">Order ID</label>
+              <input id="trackingOrderId" type="number" placeholder="1" />
+            </div>
+            <div class="row">
+              <button id="connectAsDriverBtn" class="success">Connect as Driver</button>
+              <button id="connectAsCustomerBtn" class="secondary">Connect as Customer</button>
+              <button id="disconnectTrackingBtn" class="danger">Disconnect</button>
+            </div>
+            <div id="trackingStatus" class="status info" style="display: none; margin-top: 0.5rem;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Map View (Customer)</h3>
+            <div id="mapContainer" style="height: 500px; width: 100%; border-radius: 8px; overflow: hidden; border: 1px solid #e2e8f0; display: none;">
+              <div id="trackingMap" style="height: 100%; width: 100%;"></div>
+            </div>
+            <div id="trackingInfo" style="margin-top: 1rem; display: none;">
+              <div class="status info">
+                <strong>Last Update:</strong> <span id="lastUpdateTime">-</span><br>
+                <strong>Coordinates:</strong> <span id="currentCoords">-</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>Driver Location Log</h3>
+            <div id="trackingOutput" class="output" style="max-height: 300px; display: none;"></div>
           </div>
         </section>
 
@@ -1030,6 +1081,289 @@
           showOutput('updateContactOutput', { error: error.message });
         }
       });
+
+      // Order Tracking - WebSocket
+      let trackingSocket = null;
+      let trackingMap = null;
+      let driverMarker = null;
+      let driverInterval = null;
+      let currentRole = null;
+      let currentOrderId = null;
+      let locationHistory = [];
+
+      // Aqaba, Jordan coordinates
+      const aqabaCenter = [29.5320, 35.0063];
+      
+      // Simulated route through Aqaba (moving from center to different locations)
+      const aqabaRoute = [
+        [29.5320, 35.0063], // Aqaba Center
+        [29.5340, 35.0080],
+        [29.5360, 35.0100],
+        [29.5380, 35.0120],
+        [29.5400, 35.0140],
+        [29.5420, 35.0160],
+        [29.5440, 35.0180],
+        [29.5460, 35.0200],
+      ];
+      let routeIndex = 0;
+
+      function initMap() {
+        if (trackingMap) return;
+        
+        document.getElementById('mapContainer').style.display = 'block';
+        
+        trackingMap = L.map('trackingMap').setView(aqabaCenter, 13);
+        
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '© OpenStreetMap contributors'
+        }).addTo(trackingMap);
+
+        // Add customer location marker (Aqaba Center - delivery address)
+        const customerIcon = L.divIcon({
+          html: '<div style="background: #667eea; width: 20px; height: 20px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.3);"></div>',
+          className: '',
+          iconSize: [20, 20],
+          iconAnchor: [10, 10]
+        });
+        
+        L.marker(aqabaCenter, { icon: customerIcon })
+          .addTo(trackingMap)
+          .bindPopup('Delivery Address<br>Aqaba, Jordan');
+
+        // Add driver marker (motorcycle icon)
+        const driverIcon = L.divIcon({
+          html: '<div class="location-marker">🏍️</div>',
+          className: '',
+          iconSize: [40, 40],
+          iconAnchor: [20, 20]
+        });
+        
+        driverMarker = L.marker(aqabaCenter, { icon: driverIcon })
+          .addTo(trackingMap)
+          .bindPopup('Driver Location');
+
+        document.getElementById('trackingInfo').style.display = 'block';
+      }
+
+      function updateMapLocation(lat, lng, timestamp) {
+        if (!trackingMap || !driverMarker) return;
+
+        const newLatLng = [lat, lng];
+        
+        // Smoothly move marker
+        driverMarker.setLatLng(newLatLng);
+        
+        // Calculate bearing for rotation
+        if (locationHistory.length > 0) {
+          const lastLoc = locationHistory[locationHistory.length - 1];
+          const bearing = calculateBearing(
+            lastLoc.latitude, 
+            lastLoc.longitude, 
+            lat, 
+            lng
+          );
+          
+          const markerElement = driverMarker.getElement();
+          if (markerElement) {
+            markerElement.querySelector('.location-marker').style.transform = `rotate(${bearing}deg)`;
+          }
+        }
+
+        // Pan map to follow driver
+        trackingMap.panTo(newLatLng, { animate: true, duration: 1 });
+
+        // Update info
+        document.getElementById('lastUpdateTime').textContent = new Date(timestamp).toLocaleTimeString();
+        document.getElementById('currentCoords').textContent = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+
+        // Add to history
+        locationHistory.push({ latitude: lat, longitude: lng, timestamp });
+        if (locationHistory.length > 50) {
+          locationHistory.shift();
+        }
+      }
+
+      function calculateBearing(lat1, lon1, lat2, lon2) {
+        const dLon = (lon2 - lon1) * Math.PI / 180;
+        const lat1Rad = lat1 * Math.PI / 180;
+        const lat2Rad = lat2 * Math.PI / 180;
+        
+        const y = Math.sin(dLon) * Math.cos(lat2Rad);
+        const x = Math.cos(lat1Rad) * Math.sin(lat2Rad) - 
+                  Math.sin(lat1Rad) * Math.cos(lat2Rad) * Math.cos(dLon);
+        
+        let bearing = Math.atan2(y, x) * 180 / Math.PI;
+        bearing = (bearing + 360) % 360;
+        return bearing;
+      }
+
+      function connectAsDriver() {
+        if (!lastAppToken) {
+          showStatus('trackingStatus', 'Please login first', 'error');
+          return;
+        }
+
+        const orderId = document.getElementById('trackingOrderId').value.trim();
+        if (!orderId) {
+          showStatus('trackingStatus', 'Please enter Order ID', 'error');
+          return;
+        }
+
+        if (trackingSocket) {
+          trackingSocket.disconnect();
+        }
+
+        currentOrderId = parseInt(orderId);
+        currentRole = 'driver';
+
+        trackingSocket = io(backendBase, {
+          auth: {
+            token: lastAppToken,
+            orderId: currentOrderId
+          }
+        });
+
+        trackingSocket.on('connect', () => {
+          showStatus('trackingStatus', 'Connected as Driver', 'success');
+          
+          // Initialize map
+          initMap();
+          
+          // Start sending location updates every 3 seconds
+          routeIndex = 0;
+          driverInterval = setInterval(() => {
+            if (!trackingSocket || !trackingSocket.connected) {
+              clearInterval(driverInterval);
+              return;
+            }
+
+            // Move along route (cycling back)
+            const location = aqabaRoute[routeIndex % aqabaRoute.length];
+            const [lat, lng] = location;
+            
+            // Add slight random variation for realism
+            const latWithVariation = lat + (Math.random() - 0.5) * 0.001;
+            const lngWithVariation = lng + (Math.random() - 0.5) * 0.001;
+
+            trackingSocket.emit('driver_location', {
+              longitude: lngWithVariation,
+              latitude: latWithVariation
+            });
+
+            // Update route index
+            routeIndex++;
+          }, 3000);
+
+          // Send first location immediately
+          const firstLocation = aqabaRoute[0];
+          trackingSocket.emit('driver_location', {
+            longitude: firstLocation[1],
+            latitude: firstLocation[0]
+          });
+        });
+
+        trackingSocket.on('connected', (data) => {
+          showOutput('trackingOutput', { event: 'connected', data });
+        });
+
+        trackingSocket.on('location_sent', (data) => {
+          showOutput('trackingOutput', { event: 'location_sent', data, timestamp: new Date().toISOString() });
+        });
+
+        trackingSocket.on('error', (error) => {
+          showStatus('trackingStatus', `Error: ${error.message}`, 'error');
+          showOutput('trackingOutput', { event: 'error', error });
+        });
+
+        trackingSocket.on('disconnect', () => {
+          showStatus('trackingStatus', 'Disconnected', 'info');
+          if (driverInterval) {
+            clearInterval(driverInterval);
+            driverInterval = null;
+          }
+        });
+      }
+
+      function connectAsCustomer() {
+        if (!lastAppToken) {
+          showStatus('trackingStatus', 'Please login first', 'error');
+          return;
+        }
+
+        const orderId = document.getElementById('trackingOrderId').value.trim();
+        if (!orderId) {
+          showStatus('trackingStatus', 'Please enter Order ID', 'error');
+          return;
+        }
+
+        if (trackingSocket) {
+          trackingSocket.disconnect();
+        }
+
+        currentOrderId = parseInt(orderId);
+        currentRole = 'customer';
+
+        trackingSocket = io(backendBase, {
+          auth: {
+            token: lastAppToken,
+            orderId: currentOrderId
+          }
+        });
+
+        trackingSocket.on('connect', () => {
+          showStatus('trackingStatus', 'Connected as Customer - Waiting for driver location...', 'success');
+          
+          // Initialize map
+          initMap();
+        });
+
+        trackingSocket.on('connected', (data) => {
+          showOutput('trackingOutput', { event: 'connected', data });
+          
+          if (data.lastLocation) {
+            updateMapLocation(
+              data.lastLocation.latitude,
+              data.lastLocation.longitude,
+              data.lastLocation.timestamp
+            );
+          }
+        });
+
+        trackingSocket.on('location_update', (data) => {
+          showOutput('trackingOutput', { event: 'location_update', data, timestamp: new Date().toISOString() });
+          updateMapLocation(data.latitude, data.longitude, data.timestamp);
+        });
+
+        trackingSocket.on('error', (error) => {
+          showStatus('trackingStatus', `Error: ${error.message}`, 'error');
+          showOutput('trackingOutput', { event: 'error', error });
+        });
+
+        trackingSocket.on('disconnect', () => {
+          showStatus('trackingStatus', 'Disconnected', 'info');
+        });
+      }
+
+      function disconnectTracking() {
+        if (trackingSocket) {
+          trackingSocket.disconnect();
+          trackingSocket = null;
+        }
+        
+        if (driverInterval) {
+          clearInterval(driverInterval);
+          driverInterval = null;
+        }
+
+        showStatus('trackingStatus', 'Disconnected', 'info');
+        currentRole = null;
+        currentOrderId = null;
+        locationHistory = [];
+      }
+
+      document.getElementById('connectAsDriverBtn').addEventListener('click', connectAsDriver);
+      document.getElementById('connectAsCustomerBtn').addEventListener('click', connectAsCustomer);
+      document.getElementById('disconnectTrackingBtn').addEventListener('click', disconnectTracking);
 
       setupVerifier();
     }

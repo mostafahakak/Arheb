@@ -38,6 +38,11 @@
   - [Get All Orders](#get-all-orders)
   - [Get Order by ID](#get-order-by-id)
   - [Rate Order](#rate-order)
+- [Order Tracking (WebSocket)](#order-tracking-websocket)
+  - [Connection](#connection)
+  - [Driver Events](#driver-events)
+  - [Customer Events](#customer-events)
+  - [Get Tracking Status](#get-tracking-status)
 - [Promo Codes](#promo-codes)
   - [Validate Promo Code](#validate-promo-code)
 - [Contact](#contact)
@@ -59,6 +64,7 @@ Arheb Backend is a comprehensive REST API for an e-commerce platform built with 
 - ⭐ Rating System
 - 👤 User Profile Management
 - 📞 Contact Management
+- 🚚 Real-time Order Tracking (WebSocket)
 
 ### Key Features
 
@@ -68,6 +74,7 @@ Arheb Backend is a comprehensive REST API for an e-commerce platform built with 
 - **Order Management**: Complete order lifecycle management
 - **Admin Controls**: Admin-only endpoints for contact management
 - **Promo Codes**: Promo code validation and automatic discount application
+- **Real-time Tracking**: WebSocket-based order tracking with driver location updates every 3 seconds
 
 ---
 
@@ -813,6 +820,340 @@ const response = await fetch('https://arheb-backend.onrender.com/api/checkout/1/
 
 ---
 
+## Order Tracking (WebSocket)
+
+The Order Tracking system allows real-time tracking of orders using WebSocket connections. Drivers send location updates every 3 seconds, and customers receive these updates in real-time to track their delivery.
+
+### Connection
+
+To connect to the order tracking system, you need to establish a WebSocket connection with authentication.
+
+**WebSocket URL:** `wss://arheb-backend.onrender.com` (or `ws://localhost:4000` for local development)
+
+**Connection Requirements:**
+- `token` - Bearer JWT token from authentication
+- `orderId` - Order ID to track
+
+**Connection Example (Socket.IO):**
+```javascript
+const socket = io('https://arheb-backend.onrender.com', {
+  auth: {
+    token: 'Bearer your-jwt-token-here',
+    orderId: 1
+  }
+});
+```
+
+**Connection Events:**
+- `connect` - Fired when connection is established
+- `connected` - Server confirmation with role information
+- `error` - Connection/authentication errors
+- `disconnect` - Connection closed
+
+**Connection Response:**
+```javascript
+socket.on('connected', (data) => {
+  console.log(data);
+  // {
+  //   role: 'driver' | 'customer',
+  //   orderId: 1,
+  //   message: 'Connected to order tracking'
+  // }
+});
+```
+
+---
+
+### Driver Events
+
+Drivers send location updates to the server, which are then broadcasted to connected customers.
+
+#### Send Driver Location
+
+**Event:** `driver_location`
+
+**Frequency:** Every 3 seconds (client-side implementation)
+
+**Payload:**
+```json
+{
+  "longitude": 35.0063,
+  "latitude": 29.5320
+}
+```
+
+**Example:**
+```javascript
+// Connect as driver
+const socket = io('https://arheb-backend.onrender.com', {
+  auth: {
+    token: 'Bearer your-jwt-token-here',
+    orderId: 1
+  }
+});
+
+socket.on('connected', (data) => {
+  console.log('Connected as driver');
+  
+  // Send location every 3 seconds
+  setInterval(() => {
+    socket.emit('driver_location', {
+      longitude: 35.0063,
+      latitude: 29.5320
+    });
+  }, 3000);
+});
+
+// Receive confirmation
+socket.on('location_sent', (data) => {
+  console.log('Location sent:', data);
+  // { success: true, message: 'Location updated successfully' }
+});
+
+// Handle errors
+socket.on('error', (error) => {
+  console.error('Error:', error.message);
+});
+```
+
+**Location Sent Confirmation:**
+```javascript
+socket.on('location_sent', (data) => {
+  // {
+  //   success: true,
+  //   message: 'Location updated successfully'
+  // }
+});
+```
+
+**Note:** 
+- Only users who are NOT the order owner (customer) can connect as driver
+- Coordinates must be valid numbers (longitude, latitude)
+- Invalid coordinates will return an error
+
+---
+
+### Customer Events
+
+Customers receive real-time location updates from the driver.
+
+#### Receive Location Updates
+
+**Event:** `location_update`
+
+**Payload:**
+```json
+{
+  "orderId": 1,
+  "longitude": 35.0063,
+  "latitude": 29.5320,
+  "timestamp": "2024-01-15T10:30:00.000Z"
+}
+```
+
+**Example:**
+```javascript
+// Connect as customer (order owner)
+const socket = io('https://arheb-backend.onrender.com', {
+  auth: {
+    token: 'Bearer your-jwt-token-here',
+    orderId: 1
+  }
+});
+
+socket.on('connected', (data) => {
+  console.log('Connected as customer');
+  
+  // If driver already sent location, last known location is received
+  if (data.lastLocation) {
+    console.log('Last known location:', data.lastLocation);
+  }
+});
+
+// Receive location updates
+socket.on('location_update', (data) => {
+  console.log('Driver location:', data);
+  // {
+  //   orderId: 1,
+  //   longitude: 35.0063,
+  //   latitude: 29.5320,
+  //   timestamp: "2024-01-15T10:30:00.000Z"
+  // }
+  
+  // Update map marker
+  updateMapMarker(data.latitude, data.longitude);
+});
+
+// Handle errors
+socket.on('error', (error) => {
+  console.error('Error:', error.message);
+});
+```
+
+**Note:**
+- Only the order owner (customer) can connect as customer
+- Customers receive the last known location upon connection (if available)
+- Location updates are received every 3 seconds when driver sends updates
+- Multiple customers can track the same order
+
+---
+
+### Get Tracking Status
+
+Retrieves the current tracking status for an order (REST endpoint).
+
+**Endpoint:** `GET /api/orders/:orderId/tracking`
+
+**Authentication:** Required (Bearer token)
+
+**Path Parameters:**
+- `orderId` - Order ID
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "message": "Tracking data retrieved successfully",
+  "data": {
+    "orderId": 1,
+    "isTracking": true,
+    "location": {
+      "longitude": 35.0063,
+      "latitude": 29.5320,
+      "timestamp": "2024-01-15T10:30:00.000Z"
+    },
+    "driverConnected": true,
+    "customerConnected": false
+  },
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+**No Tracking Data Response:**
+```json
+{
+  "success": true,
+  "message": "No tracking data available yet",
+  "data": {
+    "orderId": 1,
+    "isTracking": false,
+    "location": null
+  },
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+**Access Denied Response (403):**
+```json
+{
+  "success": false,
+  "message": "Access denied"
+}
+```
+
+**Example:**
+```javascript
+const response = await fetch('https://arheb-backend.onrender.com/api/orders/1/tracking', {
+  headers: {
+    'Authorization': 'Bearer your-jwt-token-here'
+  }
+});
+
+const data = await response.json();
+console.log(data);
+```
+
+---
+
+### Complete Example: Driver and Customer
+
+**Driver Side (Sending Locations):**
+```javascript
+const socket = io('https://arheb-backend.onrender.com', {
+  auth: {
+    token: 'Bearer driver-jwt-token',
+    orderId: 1
+  }
+});
+
+socket.on('connected', (data) => {
+  if (data.role === 'driver') {
+    // Start sending location updates every 3 seconds
+    const interval = setInterval(() => {
+      // Get current GPS coordinates (in production, use device GPS)
+      const location = getCurrentLocation(); // Your GPS implementation
+      
+      socket.emit('driver_location', {
+        longitude: location.longitude,
+        latitude: location.latitude
+      });
+    }, 3000);
+    
+    // Clean up on disconnect
+    socket.on('disconnect', () => {
+      clearInterval(interval);
+    });
+  }
+});
+```
+
+**Customer Side (Receiving Locations):**
+```javascript
+const socket = io('https://arheb-backend.onrender.com', {
+  auth: {
+    token: 'Bearer customer-jwt-token',
+    orderId: 1
+  }
+});
+
+socket.on('connected', (data) => {
+  if (data.role === 'customer') {
+    console.log('Tracking order', data.orderId);
+    
+    // Initialize map
+    initializeMap();
+  }
+});
+
+socket.on('location_update', (data) => {
+  // Update map marker with driver location
+  updateDriverMarker(data.latitude, data.longitude);
+  
+  // Update UI
+  document.getElementById('driver-location').textContent = 
+    `Driver: ${data.latitude.toFixed(6)}, ${data.longitude.toFixed(6)}`;
+  document.getElementById('last-update').textContent = 
+    `Updated: ${new Date(data.timestamp).toLocaleTimeString()}`;
+});
+```
+
+---
+
+### WebSocket Connection States
+
+| State | Description |
+|-------|-------------|
+| `connected` | Successfully connected and authenticated |
+| `disconnect` | Connection closed (driver/customer disconnected) |
+| `error` | Connection or authentication error |
+
+### Error Handling
+
+**Authentication Errors:**
+- `Authentication failed: Token and orderId are required`
+- `Authentication failed: Invalid token`
+- `Order not found`
+- `Unauthorized: You are not authorized to track this order`
+
+**Driver Location Errors:**
+- `Only drivers can send location updates`
+- `Invalid coordinates`
+
+**Customer Errors:**
+- `Access denied` (not order owner)
+
+---
+
 ## Promo Codes
 
 ### Validate Promo Code
@@ -969,6 +1310,7 @@ This interactive interface allows you to:
 - ✅ Browse all data endpoints (categories, products, stores, home)
 - ✅ Test profile management
 - ✅ Create and manage orders
+- ✅ Test real-time order tracking (WebSocket) with map visualization
 - ✅ Validate promo codes
 - ✅ Test contact endpoints (admin)
 
@@ -1020,6 +1362,8 @@ const profileResponse = await fetch('https://arheb-backend.onrender.com/api/prof
 - ⭐ Store ratings are calculated dynamically when orders are rated
 - 💰 Promo codes automatically apply discount when used in checkout
 - 👨‍💼 Admin users have access to contact management endpoints
+- 🚚 Real-time order tracking uses WebSocket (Socket.IO) for live location updates
+- 📍 Drivers send location updates every 3 seconds, customers receive updates in real-time
 
 ---
 
