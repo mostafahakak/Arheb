@@ -1,0 +1,115 @@
+module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS arheb_box_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      phoneNumber TEXT NOT NULL,
+      userName TEXT,
+      pickup TEXT NOT NULL,
+      dropoff TEXT NOT NULL,
+      notes TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  const findUserByPhone = db.prepare('SELECT * FROM users WHERE phoneNumber = ?');
+  const insertRequest = db.prepare(`
+    INSERT INTO arheb_box_requests (phoneNumber, userName, pickup, dropoff, notes, status)
+    VALUES (@phoneNumber, @userName, @pickup, @dropoff, @notes, @status)
+  `);
+
+  app.post('/api/arheb-box', authenticateRequest, (req, res) => {
+    try {
+      const phoneNumber = req.user.phoneNumber;
+      const user = findUserByPhone.get(phoneNumber);
+      const userName = user?.name || null;
+
+      const { pickup, dropoff, notes } = req.body || {};
+
+      if (!pickup || typeof pickup !== 'object') {
+        return res.status(400).json({
+          success: false,
+          message: 'pickup is required and must be an object with latitude, longitude, address'
+        });
+      }
+      if (typeof pickup.latitude !== 'number' || isNaN(pickup.latitude)) {
+        return res.status(400).json({
+          success: false,
+          message: 'pickup.latitude must be a valid number'
+        });
+      }
+      if (typeof pickup.longitude !== 'number' || isNaN(pickup.longitude)) {
+        return res.status(400).json({
+          success: false,
+          message: 'pickup.longitude must be a valid number'
+        });
+      }
+
+      if (!dropoff || typeof dropoff !== 'object') {
+        return res.status(400).json({
+          success: false,
+          message: 'dropoff is required and must be an object with latitude, longitude, address'
+        });
+      }
+      if (typeof dropoff.latitude !== 'number' || isNaN(dropoff.latitude)) {
+        return res.status(400).json({
+          success: false,
+          message: 'dropoff.latitude must be a valid number'
+        });
+      }
+      if (typeof dropoff.longitude !== 'number' || isNaN(dropoff.longitude)) {
+        return res.status(400).json({
+          success: false,
+          message: 'dropoff.longitude must be a valid number'
+        });
+      }
+
+      const pickupJson = JSON.stringify({
+        latitude: pickup.latitude,
+        longitude: pickup.longitude,
+        address: pickup.address != null ? String(pickup.address) : ''
+      });
+      const dropoffJson = JSON.stringify({
+        latitude: dropoff.latitude,
+        longitude: dropoff.longitude,
+        address: dropoff.address != null ? String(dropoff.address) : ''
+      });
+      const notesStr = notes != null ? String(notes) : '';
+
+      const result = insertRequest.run({
+        phoneNumber,
+        userName,
+        pickup: pickupJson,
+        dropoff: dropoffJson,
+        notes: notesStr,
+        status: 'pending'
+      });
+
+      const row = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(result.lastInsertRowid);
+
+      return res.status(201).json({
+        success: true,
+        message: 'Arheb box request received successfully',
+        data: {
+          request: {
+            id: row.id,
+            phoneNumber: row.phoneNumber,
+            userName: row.userName,
+            pickup: JSON.parse(row.pickup),
+            dropoff: JSON.parse(row.dropoff),
+            notes: row.notes,
+            status: row.status,
+            createdAt: row.createdAt
+          }
+        },
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error('Arheb box error:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Internal server error'
+      });
+    }
+  });
+};

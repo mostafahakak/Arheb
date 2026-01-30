@@ -1,0 +1,14 @@
+{
+  "pickup": {
+    "latitude": 29.5320,
+    "longitude": 35.0063,
+    "address": "العقبة، الأردن"
+  },
+  "dropoff": {
+    "latitude": 31.9539,
+    "longitude": 35.9106,
+    "address": "عمان، الأردن"
+  },
+  "notes": "يرجى التوصيل قبل الساعة 5 مساءً"
+}
+

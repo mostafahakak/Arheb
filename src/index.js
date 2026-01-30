@@ -1,6 +1,7 @@
 const path = require('path');
 const fs = require('fs');
 const express = require('express');
+const cors = require('cors');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
 const axios = require('axios');
@@ -15,6 +16,9 @@ const attachProfileRoutes = require('./profile');
 const attachCheckoutRoutes = require('./checkout');
 const attachContactRoutes = require('./contact');
 const attachOrderTrackingRoutes = require('./order');
+const attachAdmin = require('./admin');
+const attachPopupRoutes = require('./popup');
+const attachArhebBoxRoutes = require('./arhebBox');
 
 dotenv.config();
 
@@ -31,6 +35,7 @@ if (!JWT_SECRET) {
 }
 
 const app = express();
+app.use(cors());
 app.use(express.json());
 
 // Create HTTP server for Socket.IO
@@ -87,6 +92,11 @@ try {
 } catch (e) {
   // Column already exists
 }
+try {
+  db.exec(`ALTER TABLE users ADD COLUMN addresses TEXT DEFAULT '[]'`);
+} catch (e) {
+  // Column already exists
+}
 
 const upsertUser = db.prepare(`
   INSERT INTO users (phoneNumber, firebaseUid, token)
@@ -107,6 +117,8 @@ attachCategoriesRoutes(app, db);
 attachProductsRoutes(app, db);
 attachHomeRoutes(app, db);
 attachStoresRoutes(app, db);
+attachPopupRoutes(app);
+attachAdmin(app, db, JWT_SECRET);
 
 function extractFirebaseError(error) {
   return (
@@ -176,6 +188,7 @@ function authenticateRequest(req, res, next) {
 attachProfileRoutes(app, db, authenticateRequest);
 attachCheckoutRoutes(app, db, authenticateRequest);
 attachContactRoutes(app, db, authenticateRequest);
+attachArhebBoxRoutes(app, db, authenticateRequest);
 attachOrderTrackingRoutes(io, app, db, authenticateRequest, JWT_SECRET);
 
 app.post('/api/auth/verify-otp', async (req, res) => {

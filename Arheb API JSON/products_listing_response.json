@@ -15,7 +15,7 @@
           "https://example.com/products/meal1_3.jpg"
         ],
         "price": 4.5,
-        "originalPrice": 5.0,
+        "originalPrice": 5,
         "discount": "10",
         "unit": "قطعة",
         "unitAr": "قطعة",
@@ -51,8 +51,8 @@
           "https://example.com/products/burger1_2.jpg",
           "https://example.com/products/burger1_3.jpg"
         ],
-        "price": 6.0,
-        "originalPrice": 6.0,
+        "price": 6,
+        "originalPrice": 6,
         "discount": null,
         "unit": "قطعة",
         "unitAr": "قطعة",
@@ -89,7 +89,7 @@
           "https://example.com/products/pizza1_3.jpg"
         ],
         "price": 8.5,
-        "originalPrice": 10.0,
+        "originalPrice": 10,
         "discount": "15",
         "unit": "قطعة",
         "unitAr": "قطعة",
@@ -125,7 +125,7 @@
           "https://example.com/products/shawerma1_2.jpg",
           "https://example.com/products/shawerma1_3.jpg"
         ],
-        "price": 5.0,
+        "price": 5,
         "originalPrice": 5.25,
         "discount": "5",
         "unit": "قطعة",
@@ -199,8 +199,8 @@
           "https://example.com/products/salad1_2.jpg",
           "https://example.com/products/salad1_3.jpg"
         ],
-        "price": 7.0,
-        "originalPrice": 7.0,
+        "price": 7,
+        "originalPrice": 7,
         "discount": null,
         "unit": "طبق",
         "unitAr": "طبق",
@@ -273,8 +273,8 @@
           "https://example.com/products/chicken1_2.jpg",
           "https://example.com/products/chicken1_3.jpg"
         ],
-        "price": 9.0,
-        "originalPrice": 10.0,
+        "price": 9,
+        "originalPrice": 10,
         "discount": "10",
         "unit": "قطعة",
         "unitAr": "قطعة",
@@ -310,8 +310,8 @@
           "https://example.com/products/sandwich1_2.jpg",
           "https://example.com/products/sandwich1_3.jpg"
         ],
-        "price": 4.0,
-        "originalPrice": 4.0,
+        "price": 4,
+        "originalPrice": 4,
         "discount": null,
         "unit": "قطعة",
         "unitAr": "قطعة",
@@ -347,8 +347,8 @@
           "https://example.com/products/cake1_2.jpg",
           "https://example.com/products/cake1_3.jpg"
         ],
-        "price": 12.0,
-        "originalPrice": 15.0,
+        "price": 12,
+        "originalPrice": 15,
         "discount": "20",
         "unit": "قطعة",
         "unitAr": "قطعة",
@@ -371,6 +371,41 @@
           "rate": 4.7,
           "numberOfReviews": 120,
           "isFavorite": true
+        }
+      },
+      {
+        "id": "11",
+        "name": "",
+        "nameAr": "Tst",
+        "nameEn": "Test",
+        "image": "https://firebasestorage.googleapis.com/v0/b/arheb-40c1e.firebasestorage.app/o/Products%2FCrispy_Chicken%2FTest.png?alt=media&token=44ab6da7-c459-4166-924b-d1b60bdf8b3b",
+        "images": [
+          "https://firebasestorage.googleapis.com/v0/b/arheb-40c1e.firebasestorage.app/o/Products%2FCrispy_Chicken%2FTest.png?alt=media&token=44ab6da7-c459-4166-924b-d1b60bdf8b3b"
+        ],
+        "price": 200,
+        "originalPrice": 0,
+        "discount": null,
+        "unit": "piece",
+        "unitAr": "piece",
+        "unitEn": "piece",
+        "category": "arheb_special",
+        "categoryAr": "عرب خاص",
+        "categoryEn": "Arheb Special",
+        "description": "sa",
+        "descriptionAr": "sa",
+        "descriptionEn": "sa",
+        "stock": 1,
+        "isAvailable": true,
+        "store": {
+          "id": "1",
+          "name": "كريسبي تشيكن",
+          "nameAr": "كريسبي تشيكن",
+          "nameEn": "Crispy Chicken",
+          "cover": "https://example.com/stores/crispy_cover.jpg",
+          "logo": "https://example.com/stores/crispy.png",
+          "rate": 4.9,
+          "numberOfReviews": 100,
+          "isFavorite": false
         }
       }
     ],
@@ -429,7 +464,7 @@
       ],
       "priceRange": {
         "min": 1.5,
-        "max": 15.0
+        "max": 15
       },
       "hasDiscount": true,
       "inStock": true
@@ -478,10 +513,9 @@
       "isFavorite": false,
       "deliveryTime": "30-45 min",
       "deliveryFee": 2.5,
-      "minimumOrder": 15.0,
+      "minimumOrder": 15,
       "isOpen": true
     }
   },
   "timestamp": "2024-01-15T10:30:00Z"
 }
-

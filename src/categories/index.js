@@ -125,4 +125,152 @@ module.exports = function attachCategoriesRoutes(app, db) {
 
     return res.status(200).json(categoriesResponse);
   });
+
+  app.get('/api/categories/:categoryName/products', (req, res) => {
+    const categoryName = req.params.categoryName;
+
+    if (!categoryName || categoryName.trim() === '') {
+      return res.status(400).json({
+        success: false,
+        message: 'Category name is required'
+      });
+    }
+
+    // Load products response
+    const productsResponsePath = path.resolve(
+      __dirname,
+      '..',
+      '..',
+      'Arheb API JSON',
+      'products_listing_response.json'
+    );
+
+    let productsResponse;
+    try {
+      const raw = fs.readFileSync(productsResponsePath, 'utf-8');
+      productsResponse = JSON.parse(raw);
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: 'Products payload is unavailable'
+      });
+    }
+
+    if (!productsResponse) {
+      return res.status(500).json({
+        success: false,
+        message: 'Products payload is unavailable'
+      });
+    }
+
+    // Check if category exists in categories listing
+    const categoryNameLower = categoryName.toLowerCase().trim();
+    const category = categoriesList.find(cat => {
+      const catName = String(cat.name || '').toLowerCase();
+      const catNameAr = String(cat.nameAr || '').toLowerCase();
+      const catNameEn = String(cat.nameEn || '').toLowerCase();
+      
+      return catName === categoryNameLower || 
+             catName.includes(categoryNameLower) ||
+             categoryNameLower.includes(catName) ||
+             catNameAr === categoryNameLower || 
+             catNameAr.includes(categoryNameLower) ||
+             categoryNameLower.includes(catNameAr) ||
+             catNameEn === categoryNameLower || 
+             catNameEn.includes(categoryNameLower) ||
+             categoryNameLower.includes(catNameEn);
+    });
+
+    // Filter products by category name
+    const products = productsResponse?.data?.products ?? [];
+    
+    // Filter by category name (check product category or store category)
+    const filteredProducts = products.filter(p => {
+      // Check if product has a category field
+      if (p.category) {
+        const productCategory = String(p.category).toLowerCase();
+        if (productCategory === categoryNameLower || 
+            productCategory.includes(categoryNameLower) ||
+            categoryNameLower.includes(productCategory)) {
+          return true;
+        }
+      }
+      
+      // Check if product category matches any name variant (name, nameAr, nameEn)
+      if (p.categoryName) {
+        const catName = String(p.categoryName).toLowerCase();
+        if (catName === categoryNameLower || 
+            catName.includes(categoryNameLower) ||
+            categoryNameLower.includes(catName)) {
+          return true;
+        }
+      }
+      
+      if (p.categoryAr) {
+        const catAr = String(p.categoryAr).toLowerCase();
+        if (catAr === categoryNameLower || 
+            catAr.includes(categoryNameLower) ||
+            categoryNameLower.includes(catAr)) {
+          return true;
+        }
+      }
+      
+      if (p.categoryEn) {
+        const catEn = String(p.categoryEn).toLowerCase();
+        if (catEn === categoryNameLower || 
+            catEn.includes(categoryNameLower) ||
+            categoryNameLower.includes(catEn)) {
+          return true;
+        }
+      }
+      
+      // Check store's category as fallback
+      if (p.store?.category) {
+        const storeCategory = String(p.store.category).toLowerCase();
+        if (storeCategory === categoryNameLower || 
+            storeCategory.includes(categoryNameLower) ||
+            categoryNameLower.includes(storeCategory)) {
+          return true;
+        }
+      }
+      
+      if (p.store?.categoryAr) {
+        const storeCatAr = String(p.store.categoryAr).toLowerCase();
+        if (storeCatAr === categoryNameLower || 
+            storeCatAr.includes(categoryNameLower) ||
+            categoryNameLower.includes(storeCatAr)) {
+          return true;
+        }
+      }
+      
+      if (p.store?.categoryEn) {
+        const storeCatEn = String(p.store.categoryEn).toLowerCase();
+        if (storeCatEn === categoryNameLower || 
+            storeCatEn.includes(categoryNameLower) ||
+            categoryNameLower.includes(storeCatEn)) {
+          return true;
+        }
+      }
+      
+      return false;
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Products by category retrieved successfully',
+      data: {
+        category: category ? {
+          id: category.id,
+          name: category.name,
+          nameAr: category.nameAr,
+          nameEn: category.nameEn,
+          image: category.image
+        } : null,
+        categoryName: categoryName,
+        products: filteredProducts,
+        count: filteredProducts.length
+      },
+      timestamp: new Date().toISOString()
+    });
+  });
 };

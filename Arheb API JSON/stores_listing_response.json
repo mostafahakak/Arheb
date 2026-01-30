@@ -8,14 +8,14 @@
         "name": "كريسبي تشيكن",
         "nameAr": "كريسبي تشيكن",
         "nameEn": "Crispy Chicken",
-        "cover": "https://example.com/stores/crispy_cover.jpg",
-        "logo": "https://example.com/stores/crispy.png",
+        "cover": "https://firebasestorage.googleapis.com/v0/b/arheb-40c1e.firebasestorage.app/o/Stores%2FCrispy_Chicken%2Fcover.png?alt=media&token=0e9f6226-3a71-46bb-a2ef-2486eaba37de",
+        "logo": "https://firebasestorage.googleapis.com/v0/b/arheb-40c1e.firebasestorage.app/o/Stores%2FCrispy_Chicken%2Flogo.png?alt=media&token=d07dcbd8-5a6a-42ad-bd50-04ae3bcf3890",
         "rate": 4.9,
         "numberOfReviews": 100,
         "isFavorite": false,
         "deliveryTime": "30-45 min",
         "deliveryFee": 2.5,
-        "minimumOrder": 15.0,
+        "minimumOrder": 15,
         "isOpen": true,
         "openingHours": {
           "open": "09:00",
@@ -40,8 +40,8 @@
         "numberOfReviews": 250,
         "isFavorite": true,
         "deliveryTime": "25-40 min",
-        "deliveryFee": 3.0,
-        "minimumOrder": 20.0,
+        "deliveryFee": 3,
+        "minimumOrder": 20,
         "isOpen": true,
         "openingHours": {
           "open": "10:00",
@@ -66,8 +66,8 @@
         "numberOfReviews": 500,
         "isFavorite": false,
         "deliveryTime": "20-35 min",
-        "deliveryFee": 2.0,
-        "minimumOrder": 10.0,
+        "deliveryFee": 2,
+        "minimumOrder": 10,
         "isOpen": true,
         "openingHours": {
           "open": "08:00",
@@ -93,7 +93,7 @@
         "isFavorite": false,
         "deliveryTime": "30-45 min",
         "deliveryFee": 2.5,
-        "minimumOrder": 15.0,
+        "minimumOrder": 15,
         "isOpen": true,
         "openingHours": {
           "open": "09:00",
@@ -119,7 +119,7 @@
         "isFavorite": true,
         "deliveryTime": "35-50 min",
         "deliveryFee": 3.5,
-        "minimumOrder": 25.0,
+        "minimumOrder": 25,
         "isOpen": true,
         "openingHours": {
           "open": "11:00",
@@ -145,7 +145,7 @@
         "isFavorite": false,
         "deliveryTime": "40-60 min",
         "deliveryFee": 1.5,
-        "minimumOrder": 5.0,
+        "minimumOrder": 5,
         "isOpen": true,
         "openingHours": {
           "open": "07:00",
@@ -170,8 +170,8 @@
         "numberOfReviews": 80,
         "isFavorite": false,
         "deliveryTime": "25-40 min",
-        "deliveryFee": 2.0,
-        "minimumOrder": 10.0,
+        "deliveryFee": 2,
+        "minimumOrder": 10,
         "isOpen": true,
         "openingHours": {
           "open": "08:00",
@@ -197,7 +197,7 @@
         "isFavorite": true,
         "deliveryTime": "30-45 min",
         "deliveryFee": 2.5,
-        "minimumOrder": 12.0,
+        "minimumOrder": 12,
         "isOpen": true,
         "openingHours": {
           "open": "06:00",
@@ -222,8 +222,8 @@
         "numberOfReviews": 200,
         "isFavorite": false,
         "deliveryTime": "25-40 min",
-        "deliveryFee": 2.0,
-        "minimumOrder": 8.0,
+        "deliveryFee": 2,
+        "minimumOrder": 8,
         "isOpen": true,
         "openingHours": {
           "open": "10:00",
@@ -249,7 +249,7 @@
         "isFavorite": false,
         "deliveryTime": "20-35 min",
         "deliveryFee": 2.5,
-        "minimumOrder": 12.0,
+        "minimumOrder": 12,
         "isOpen": false,
         "openingHours": {
           "open": "11:00",
@@ -362,7 +362,7 @@
         },
         {
           "key": "4.0+",
-          "minRating": 4.0,
+          "minRating": 4,
           "name": "4.0+",
           "nameAr": "4.0+",
           "nameEn": "4.0+"
@@ -381,10 +381,9 @@
       "city": "العقبة",
       "cityAr": "العقبة",
       "cityEn": "Aqaba",
-      "latitude": 29.5320,
+      "latitude": 29.532,
       "longitude": 35.0063
     }
   },
   "timestamp": "2024-01-15T10:30:00Z"
 }
-

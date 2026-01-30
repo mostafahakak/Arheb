@@ -367,6 +367,8 @@
         <a class="nav-item" data-section="checkout">🛒 Checkout & Orders</a>
         <a class="nav-item" data-section="tracking">🚚 Order Tracking</a>
         <a class="nav-item" data-section="promo">🎫 Promo Codes</a>
+        <a class="nav-item" data-section="popup">🪟 Popup</a>
+        <a class="nav-item" data-section="arhebBox">📦 Arheb Box</a>
         <a class="nav-item" data-section="contact">📞 Contact</a>
       </nav>
 
@@ -464,6 +466,41 @@
             <button id="getStoreProductsBtn" class="secondary">Get Store Products</button>
             <div id="storeProductsOutput" class="output" style="display: none;"></div>
           </div>
+
+          <div class="card">
+            <h3>Get Store Products by Category</h3>
+            <div class="form-group">
+              <label for="storeIdForCategoryProducts">Store ID</label>
+              <input id="storeIdForCategoryProducts" type="text" placeholder="Enter store ID" />
+            </div>
+            <div class="form-group">
+              <label for="storeCategoryName">Category Name</label>
+              <input id="storeCategoryName" type="text" placeholder="Enter category name (e.g., supermarket)" />
+            </div>
+            <button id="getStoreCategoryProductsBtn" class="secondary">Get Store Products by Category</button>
+            <div id="storeCategoryProductsOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Get Premium Stores</h3>
+            <p style="font-size: 0.875rem; color: #718096; margin-bottom: 0.5rem;">Stores marked premium by SuperAdmin/Admin.</p>
+            <div class="form-group">
+              <label for="premiumStoresLimit">Limit (optional)</label>
+              <input id="premiumStoresLimit" type="number" placeholder="Leave empty for all" />
+            </div>
+            <button id="fetchPremiumStoresBtn" class="secondary">Fetch Premium Stores</button>
+            <div id="premiumStoresOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Get Stores by Category</h3>
+            <div class="form-group">
+              <label for="storesByCategoryName">Category Name</label>
+              <input id="storesByCategoryName" type="text" placeholder="e.g., restaurant, supermarket" />
+            </div>
+            <button id="getStoresByCategoryBtn" class="secondary">Get Stores by Category</button>
+            <div id="storesByCategoryOutput" class="output" style="display: none;"></div>
+          </div>
         </section>
 
         <!-- Categories Section -->
@@ -473,6 +510,16 @@
             <h3>Get All Categories</h3>
             <button id="fetchCategoriesBtn">Fetch Categories</button>
             <div id="categoriesOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Get Products by Category</h3>
+            <div class="form-group">
+              <label for="categoryNameForProducts">Category Name</label>
+              <input id="categoryNameForProducts" type="text" placeholder="Enter category name (e.g., supermarket)" />
+            </div>
+            <button id="getCategoryProductsBtn" class="secondary">Get Products by Category</button>
+            <div id="categoryProductsOutput" class="output" style="display: none;"></div>
           </div>
         </section>
 
@@ -489,7 +536,8 @@
         <!-- Profile Section -->
         <section id="profile" class="section">
           <h2>Profile <span class="badge auth">Auth Required</span></h2>
-          
+          <p style="font-size: 0.875rem; color: #718096; margin-bottom: 1rem;">Profile has a list of addresses; the first is the default.</p>
+
           <div class="card">
             <h3>Get Profile</h3>
             <button id="getProfileBtn">Get My Profile</button>
@@ -497,11 +545,16 @@
           </div>
 
           <div class="card">
-            <h3>Update Profile</h3>
+            <h3>Update Name</h3>
             <div class="form-group">
               <label for="profileNameInput">Name</label>
               <input id="profileNameInput" type="text" placeholder="Full name" />
             </div>
+            <button id="updateProfileBtn" class="secondary">Update Name</button>
+          </div>
+
+          <div class="card">
+            <h3>Add Address</h3>
             <div class="form-group">
               <label for="profileAddressNameInput">Address Name</label>
               <input id="profileAddressNameInput" type="text" placeholder="Home, Work, etc." />
@@ -516,7 +569,22 @@
                 <input id="profileAddressLatInput" type="number" step="any" placeholder="29.5320" />
               </div>
             </div>
-            <button id="updateProfileBtn" class="secondary">Update Profile</button>
+            <div class="form-group" style="display: flex; align-items: center; gap: 0.5rem;">
+              <input type="checkbox" id="profileSetAsDefault" />
+              <label for="profileSetAsDefault" style="margin-bottom: 0;">Set as default (insert first)</label>
+            </div>
+            <button id="addAddressBtn" class="success">Add Address</button>
+            <div id="addAddressOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Delete Address</h3>
+            <div class="form-group">
+              <label for="profileDeleteAddressIndex">Address index (0 = first/default)</label>
+              <input id="profileDeleteAddressIndex" type="number" min="0" value="0" placeholder="0" />
+            </div>
+            <button id="deleteAddressBtn" class="danger">Delete Address</button>
+            <div id="deleteAddressOutput" class="output" style="display: none;"></div>
           </div>
         </section>
 
@@ -618,6 +686,56 @@
             </div>
             <button id="validatePromoBtn">Validate Promo Code</button>
             <div id="promoOutput" class="output" style="display: none;"></div>
+          </div>
+        </section>
+
+        <!-- Popup Section -->
+        <section id="popup" class="section">
+          <h2>Popup <span class="badge public">Public</span></h2>
+          <div class="card">
+            <h3>Get Popup</h3>
+            <p style="font-size: 0.875rem; color: #718096; margin-bottom: 0.5rem;">Returns popup config (image, CTA, destination).</p>
+            <button id="getPopupBtn">Get Popup</button>
+            <div id="popupOutput" class="output" style="display: none;"></div>
+          </div>
+        </section>
+
+        <!-- Arheb Box Section -->
+        <section id="arhebBox" class="section">
+          <h2>Arheb Box <span class="badge auth">Auth Required</span></h2>
+          <div class="card">
+            <h3>Submit Arheb Box Request (POST)</h3>
+            <p style="font-size: 0.875rem; color: #718096; margin-bottom: 0.5rem;">Send pickup, dropoff, and notes.</p>
+            <div class="form-group">
+              <label>Pickup latitude</label>
+              <input id="arhebPickupLat" type="number" step="any" value="29.5320" placeholder="29.5320" />
+            </div>
+            <div class="form-group">
+              <label>Pickup longitude</label>
+              <input id="arhebPickupLng" type="number" step="any" value="35.0063" placeholder="35.0063" />
+            </div>
+            <div class="form-group">
+              <label>Pickup address</label>
+              <input id="arhebPickupAddress" type="text" placeholder="العقبة، الأردن" value="العقبة، الأردن" />
+            </div>
+            <div class="form-group">
+              <label>Dropoff latitude</label>
+              <input id="arhebDropoffLat" type="number" step="any" value="31.9539" placeholder="31.9539" />
+            </div>
+            <div class="form-group">
+              <label>Dropoff longitude</label>
+              <input id="arhebDropoffLng" type="number" step="any" value="35.9106" placeholder="35.9106" />
+            </div>
+            <div class="form-group">
+              <label>Dropoff address</label>
+              <input id="arhebDropoffAddress" type="text" placeholder="عمان، الأردن" value="عمان، الأردن" />
+            </div>
+            <div class="form-group">
+              <label>Notes</label>
+              <input id="arhebNotes" type="text" placeholder="يرجى التوصيل قبل الساعة 5 مساءً" value="يرجى التوصيل قبل الساعة 5 مساءً" />
+            </div>
+            <button id="submitArhebBoxBtn" class="success">Submit Arheb Box</button>
+            <div id="arhebBoxOutput" class="output" style="display: none;"></div>
           </div>
         </section>
 
@@ -856,6 +974,53 @@
         }
       });
 
+      document.getElementById('getStoreCategoryProductsBtn').addEventListener('click', async () => {
+        const storeId = document.getElementById('storeIdForCategoryProducts').value.trim();
+        const categoryName = document.getElementById('storeCategoryName').value.trim();
+        if (!storeId) {
+          showOutput('storeCategoryProductsOutput', { error: 'Please enter store ID' });
+          return;
+        }
+        if (!categoryName) {
+          showOutput('storeCategoryProductsOutput', { error: 'Please enter category name' });
+          return;
+        }
+        try {
+          const res = await fetch(`${backendBase}/api/stores/${storeId}/products/category/${encodeURIComponent(categoryName)}`);
+          const data = await res.json();
+          showOutput('storeCategoryProductsOutput', data);
+        } catch (error) {
+          showOutput('storeCategoryProductsOutput', { error: error.message });
+        }
+      });
+
+      document.getElementById('fetchPremiumStoresBtn').addEventListener('click', async () => {
+        const limit = document.getElementById('premiumStoresLimit').value.trim();
+        const url = limit ? `${backendBase}/api/stores/premium?limit=${limit}` : `${backendBase}/api/stores/premium`;
+        try {
+          const res = await fetch(url);
+          const data = await res.json();
+          showOutput('premiumStoresOutput', data);
+        } catch (error) {
+          showOutput('premiumStoresOutput', { error: error.message });
+        }
+      });
+
+      document.getElementById('getStoresByCategoryBtn').addEventListener('click', async () => {
+        const categoryName = document.getElementById('storesByCategoryName').value.trim();
+        if (!categoryName) {
+          showOutput('storesByCategoryOutput', { error: 'Please enter category name' });
+          return;
+        }
+        try {
+          const res = await fetch(`${backendBase}/api/stores/category/${encodeURIComponent(categoryName)}`);
+          const data = await res.json();
+          showOutput('storesByCategoryOutput', data);
+        } catch (error) {
+          showOutput('storesByCategoryOutput', { error: error.message });
+        }
+      });
+
       // Categories
       document.getElementById('fetchCategoriesBtn').addEventListener('click', async () => {
         try {
@@ -864,6 +1029,21 @@
           showOutput('categoriesOutput', data);
         } catch (error) {
           showOutput('categoriesOutput', { error: error.message });
+        }
+      });
+
+      document.getElementById('getCategoryProductsBtn').addEventListener('click', async () => {
+        const categoryName = document.getElementById('categoryNameForProducts').value.trim();
+        if (!categoryName) {
+          showOutput('categoryProductsOutput', { error: 'Please enter category name' });
+          return;
+        }
+        try {
+          const res = await fetch(`${backendBase}/api/categories/${encodeURIComponent(categoryName)}/products`);
+          const data = await res.json();
+          showOutput('categoryProductsOutput', data);
+        } catch (error) {
+          showOutput('categoryProductsOutput', { error: error.message });
         }
       });
 
@@ -900,29 +1080,69 @@
           showOutput('profileOutput', { error: 'Please login first' });
           return;
         }
-        const updateData = {};
         const name = document.getElementById('profileNameInput').value.trim();
-        const addressName = document.getElementById('profileAddressNameInput').value.trim();
-        const addressLong = document.getElementById('profileAddressLongInput').value.trim();
-        const addressLat = document.getElementById('profileAddressLatInput').value.trim();
-        if (name) updateData.name = name;
-        if (addressName) updateData.addressName = addressName;
-        if (addressLong) updateData.addressLong = parseFloat(addressLong);
-        if (addressLat) updateData.addressLat = parseFloat(addressLat);
-        if (Object.keys(updateData).length === 0) {
-          showOutput('profileOutput', { error: 'Please fill at least one field' });
+        if (!name) {
+          showOutput('profileOutput', { error: 'Enter a name' });
           return;
         }
         try {
           const res = await fetch(`${backendBase}/api/profile`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json', 'Authorization': lastAppToken },
-            body: JSON.stringify(updateData),
+            body: JSON.stringify({ name }),
           });
           const data = await res.json();
           showOutput('profileOutput', data);
         } catch (error) {
           showOutput('profileOutput', { error: error.message });
+        }
+      });
+
+      document.getElementById('addAddressBtn').addEventListener('click', async () => {
+        if (!lastAppToken) {
+          showOutput('addAddressOutput', { error: 'Please login first' });
+          return;
+        }
+        const addressName = document.getElementById('profileAddressNameInput').value.trim();
+        const addressLong = parseFloat(document.getElementById('profileAddressLongInput').value);
+        const addressLat = parseFloat(document.getElementById('profileAddressLatInput').value);
+        const setAsDefault = document.getElementById('profileSetAsDefault').checked;
+        if (isNaN(addressLong) || isNaN(addressLat)) {
+          showOutput('addAddressOutput', { error: 'Longitude and latitude are required numbers' });
+          return;
+        }
+        try {
+          const res = await fetch(`${backendBase}/api/profile/addresses`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': lastAppToken },
+            body: JSON.stringify({ addressName: addressName || null, addressLong, addressLat, setAsDefault }),
+          });
+          const data = await res.json();
+          showOutput('addAddressOutput', data);
+        } catch (error) {
+          showOutput('addAddressOutput', { error: error.message });
+        }
+      });
+
+      document.getElementById('deleteAddressBtn').addEventListener('click', async () => {
+        if (!lastAppToken) {
+          showOutput('deleteAddressOutput', { error: 'Please login first' });
+          return;
+        }
+        const index = parseInt(document.getElementById('profileDeleteAddressIndex').value, 10);
+        if (isNaN(index) || index < 0) {
+          showOutput('deleteAddressOutput', { error: 'Invalid index' });
+          return;
+        }
+        try {
+          const res = await fetch(`${backendBase}/api/profile/addresses/${index}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': lastAppToken },
+          });
+          const data = await res.json();
+          showOutput('deleteAddressOutput', data);
+        } catch (error) {
+          showOutput('deleteAddressOutput', { error: error.message });
         }
       });
 
@@ -1041,6 +1261,51 @@
           showOutput('promoOutput', data);
         } catch (error) {
           showOutput('promoOutput', { error: error.message });
+        }
+      });
+
+      // Popup
+      document.getElementById('getPopupBtn').addEventListener('click', async () => {
+        try {
+          const res = await fetch(`${backendBase}/api/popup`);
+          const data = await res.json();
+          showOutput('popupOutput', data);
+        } catch (error) {
+          showOutput('popupOutput', { error: error.message });
+        }
+      });
+
+      // Arheb Box (requires Bearer token)
+      document.getElementById('submitArhebBoxBtn').addEventListener('click', async () => {
+        if (!lastAppToken) {
+          showOutput('arhebBoxOutput', { error: 'Please login first (Bearer token required)' });
+          return;
+        }
+        const pickupLat = parseFloat(document.getElementById('arhebPickupLat').value);
+        const pickupLng = parseFloat(document.getElementById('arhebPickupLng').value);
+        const pickupAddress = document.getElementById('arhebPickupAddress').value.trim();
+        const dropoffLat = parseFloat(document.getElementById('arhebDropoffLat').value);
+        const dropoffLng = parseFloat(document.getElementById('arhebDropoffLng').value);
+        const dropoffAddress = document.getElementById('arhebDropoffAddress').value.trim();
+        const notes = document.getElementById('arhebNotes').value.trim();
+        if (isNaN(pickupLat) || isNaN(pickupLng) || isNaN(dropoffLat) || isNaN(dropoffLng)) {
+          showOutput('arhebBoxOutput', { error: 'Pickup and dropoff coordinates must be numbers' });
+          return;
+        }
+        try {
+          const res = await fetch(`${backendBase}/api/arheb-box`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': lastAppToken },
+            body: JSON.stringify({
+              pickup: { latitude: pickupLat, longitude: pickupLng, address: pickupAddress },
+              dropoff: { latitude: dropoffLat, longitude: dropoffLng, address: dropoffAddress },
+              notes
+            }),
+          });
+          const data = await res.json();
+          showOutput('arhebBoxOutput', data);
+        } catch (error) {
+          showOutput('arhebBoxOutput', { error: error.message });
         }
       });
 

@@ -205,6 +205,65 @@ module.exports = function attachStoresRoutes(app, db) {
     });
   });
 
+  // Get premium stores (set by SuperAdmin/Admin)
+  app.get('/api/stores/premium', (req, res) => {
+    if (!storesResponse || storesList.length === 0) {
+      return res.status(500).json({
+        success: false,
+        message: 'Stores payload is unavailable'
+      });
+    }
+    const limit = req.query.limit ? parseInt(req.query.limit) : null;
+    const premiumStores = storesList.filter(store => store.isPremium === true);
+    const result = limit ? premiumStores.slice(0, limit) : premiumStores;
+    return res.status(200).json({
+      success: true,
+      message: 'Premium stores retrieved successfully',
+      data: {
+        stores: result,
+        count: result.length,
+        limit: limit || 'all'
+      },
+      timestamp: new Date().toISOString()
+    });
+  });
+
+  // Get stores by category name
+  app.get('/api/stores/category/:categoryName', (req, res) => {
+    const categoryName = req.params.categoryName;
+    if (!categoryName || categoryName.trim() === '') {
+      return res.status(400).json({
+        success: false,
+        message: 'Category name is required'
+      });
+    }
+    if (!storesResponse || storesList.length === 0) {
+      return res.status(500).json({
+        success: false,
+        message: 'Stores payload is unavailable'
+      });
+    }
+    const categoryNameLower = categoryName.toLowerCase().trim();
+    const matches = (val) => {
+      if (val == null) return false;
+      const s = String(val).toLowerCase();
+      return s === categoryNameLower || s.includes(categoryNameLower) || categoryNameLower.includes(s);
+    };
+    const storesByCategory = storesList.filter(store =>
+      matches(store.category) || matches(store.categoryAr) || matches(store.categoryEn)
+    );
+    return res.status(200).json({
+      success: true,
+      message: 'Stores by category retrieved successfully',
+      data: {
+        categoryName: categoryName,
+        stores: storesByCategory,
+        count: storesByCategory.length
+      },
+      timestamp: new Date().toISOString()
+    });
+  });
+
   app.get('/api/stores/:id/products', (req, res) => {
     const storeId = req.params.id;
 
@@ -262,6 +321,155 @@ module.exports = function attachStoresRoutes(app, db) {
         },
         products: storeProducts,
         count: storeProducts.length
+      },
+      timestamp: new Date().toISOString()
+    });
+  });
+
+  app.get('/api/stores/:id/products/category/:categoryName', (req, res) => {
+    const storeId = req.params.id;
+    const categoryName = req.params.categoryName;
+
+    if (!categoryName || categoryName.trim() === '') {
+      return res.status(400).json({
+        success: false,
+        message: 'Category name is required'
+      });
+    }
+
+    // Load products response
+    const productsResponsePath = path.resolve(
+      __dirname,
+      '..',
+      '..',
+      'Arheb API JSON',
+      'products_listing_response.json'
+    );
+
+    let productsResponse;
+    try {
+      const raw = fs.readFileSync(productsResponsePath, 'utf-8');
+      productsResponse = JSON.parse(raw);
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: 'Products payload is unavailable'
+      });
+    }
+
+    if (!productsResponse) {
+      return res.status(500).json({
+        success: false,
+        message: 'Products payload is unavailable'
+      });
+    }
+
+    // Check if store exists in stores listing
+    const store = storesList.find(s => s.id === storeId);
+    if (!store) {
+      return res.status(404).json({
+        success: false,
+        message: 'Store not found'
+      });
+    }
+
+    // Filter products by store ID and category
+    const products = productsResponse?.data?.products ?? [];
+    
+    // Filter by store ID first
+    const storeProducts = products.filter(p => p.store?.id === storeId);
+    
+    // Then filter by category name (check product category or store category)
+    // Case-insensitive comparison for category name
+    const categoryNameLower = categoryName.toLowerCase().trim();
+    const filteredProducts = storeProducts.filter(p => {
+      // Check if product has a category field
+      if (p.category) {
+        const productCategory = String(p.category).toLowerCase();
+        if (productCategory === categoryNameLower || 
+            productCategory.includes(categoryNameLower) ||
+            categoryNameLower.includes(productCategory)) {
+          return true;
+        }
+      }
+      
+      // Check if product category matches any name variant (name, nameAr, nameEn)
+      if (p.categoryName) {
+        const catName = String(p.categoryName).toLowerCase();
+        if (catName === categoryNameLower || 
+            catName.includes(categoryNameLower) ||
+            categoryNameLower.includes(catName)) {
+          return true;
+        }
+      }
+      
+      if (p.categoryAr) {
+        const catAr = String(p.categoryAr).toLowerCase();
+        if (catAr === categoryNameLower || 
+            catAr.includes(categoryNameLower) ||
+            categoryNameLower.includes(catAr)) {
+          return true;
+        }
+      }
+      
+      if (p.categoryEn) {
+        const catEn = String(p.categoryEn).toLowerCase();
+        if (catEn === categoryNameLower || 
+            catEn.includes(categoryNameLower) ||
+            categoryNameLower.includes(catEn)) {
+          return true;
+        }
+      }
+      
+      // Check store's category as fallback
+      if (store.category) {
+        const storeCategory = String(store.category).toLowerCase();
+        if (storeCategory === categoryNameLower || 
+            storeCategory.includes(categoryNameLower) ||
+            categoryNameLower.includes(storeCategory)) {
+          return true;
+        }
+      }
+      
+      if (store.categoryAr) {
+        const storeCatAr = String(store.categoryAr).toLowerCase();
+        if (storeCatAr === categoryNameLower || 
+            storeCatAr.includes(categoryNameLower) ||
+            categoryNameLower.includes(storeCatAr)) {
+          return true;
+        }
+      }
+      
+      if (store.categoryEn) {
+        const storeCatEn = String(store.categoryEn).toLowerCase();
+        if (storeCatEn === categoryNameLower || 
+            storeCatEn.includes(categoryNameLower) ||
+            categoryNameLower.includes(storeCatEn)) {
+          return true;
+        }
+      }
+      
+      return false;
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Store products by category retrieved successfully',
+      data: {
+        store: {
+          id: store.id,
+          name: store.name,
+          nameAr: store.nameAr,
+          nameEn: store.nameEn,
+          logo: store.logo,
+          cover: store.cover,
+          category: store.category,
+          categoryAr: store.categoryAr,
+          categoryEn: store.categoryEn
+        },
+        categoryName: categoryName,
+        products: filteredProducts,
+        count: filteredProducts.length
       },
       timestamp: new Date().toISOString()
     });

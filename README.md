@@ -14,6 +14,27 @@
 
 ---
 
+## Admin Dashboard
+
+A separate **Admin Dashboard** (React + Next.js) is in the `dashboard/` folder. It supports:
+
+- **Login** with email and password (separate from customer phone OTP).
+- **Roles**: Super Admin, Admin, Store Admin.
+  - **Super Admin**: Full access; manage all stores, orders, categories, admins (including other SuperAdmins), and **Arheb Box** requests.
+  - **Admin**: Same as Super Admin but **cannot** add or remove SuperAdmins.
+  - **Store Admin**: Sees only their assigned store; can edit store details, add/edit/delete products, and view orders for that store.
+- **Arheb Box**: Admins can view all Arheb box requests (id, date/time, username, phone, pickup, dropoff, notes, status) and update status (pending → confirmed → in_progress → delivered → cancelled). Requests are submitted by users with Bearer token and stored in the database.
+- **English and Arabic** (language switcher in the UI).
+
+To create the **initial SuperAdmin** on first run, set in the backend `.env`:
+
+- `SUPERADMIN_EMAIL` – email for the first SuperAdmin.
+- `SUPERADMIN_PASSWORD` – password for the first SuperAdmin.
+
+If no SuperAdmin exists, one is created at startup. Run the dashboard with `cd dashboard && npm install && npm run dev` (see `dashboard/README.md`).
+
+---
+
 ## 📋 Table of Contents
 
 - [Overview](#overview)
@@ -27,12 +48,20 @@
 - [Stores](#stores)
   - [Get All Stores](#get-all-stores)
   - [Get Top Rated Stores](#get-top-rated-stores)
+  - [Get Premium Stores](#get-premium-stores)
+  - [Get Stores by Category](#get-stores-by-category)
   - [Get Store Products](#get-store-products)
+  - [Get Store Products by Category](#get-store-products-by-category)
 - [Categories](#categories)
+  - [Get All Categories](#get-all-categories)
+  - [Get Products by Category](#get-products-by-category)
 - [Home](#home)
 - [Profile](#profile)
   - [Get Profile](#get-profile)
-  - [Update Profile](#update-profile)
+  - [Update Profile (Name Only)](#update-profile-name-only)
+  - [Add Address](#add-address)
+  - [Update Address](#update-address)
+  - [Delete Address](#delete-address)
 - [Checkout & Orders](#checkout--orders)
   - [Create Order](#create-order)
   - [Get All Orders](#get-all-orders)
@@ -45,9 +74,23 @@
   - [Get Tracking Status](#get-tracking-status)
 - [Promo Codes](#promo-codes)
   - [Validate Promo Code](#validate-promo-code)
+- [Popup](#popup)
+  - [Get Popup](#get-popup)
+- [Arheb Box](#arheb-box)
+  - [Submit Arheb Box Request](#submit-arheb-box-request)
 - [Contact](#contact)
   - [Get Contact Information](#get-contact-information)
   - [Update Contact Information (Admin)](#update-contact-information-admin)
+- [Admin API](#admin-api)
+  - [Admin Login](#admin-login)
+  - [Get Current Admin (Me)](#get-current-admin-me)
+  - [Admins CRUD](#admins-crud)
+  - [Admin Stores](#admin-stores)
+  - [Admin Products](#admin-products)
+  - [Admin Orders](#admin-orders)
+  - [Admin Dashboard Sales](#admin-dashboard-sales)
+  - [Admin Arheb Box](#admin-arheb-box)
+  - [Admin Categories](#admin-categories)
 - [Error Handling](#error-handling)
 - [Testing](#testing)
 
@@ -416,6 +459,62 @@ const response = await fetch('https://arheb-backend.onrender.com/api/stores/top-
 
 ---
 
+### Get Premium Stores
+
+Retrieves stores marked as premium by SuperAdmin or Admin.
+
+**Endpoint:** `GET /api/stores/premium?limit=10`
+
+**Authentication:** Not required
+
+**Query Parameters:**
+- `limit` (optional) - Number of stores to return (default: all)
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "message": "Premium stores retrieved successfully",
+  "data": {
+    "stores": [...],
+    "count": 5,
+    "limit": 10
+  },
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+**Note:** Only SuperAdmin or Admin can set a store as premium via `PATCH /api/admin/stores/:id` with `{ "isPremium": true }`. Store Admin cannot set premium.
+
+---
+
+### Get Stores by Category
+
+Retrieves stores that match a category name (store-level category).
+
+**Endpoint:** `GET /api/stores/category/:categoryName`
+
+**Authentication:** Not required
+
+**Path Parameters:**
+- `categoryName` - Category name (case-insensitive, supports partial matching)
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "message": "Stores by category retrieved successfully",
+  "data": {
+    "categoryName": "restaurant",
+    "stores": [...],
+    "count": 10
+  },
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+---
+
 ### Get Store Products
 
 Retrieves all products for a specific store.
@@ -461,7 +560,73 @@ Retrieves all products for a specific store.
 
 ---
 
+### Get Store Products by Category
+
+Retrieves all products for a specific store filtered by category name.
+
+**Endpoint:** `GET /api/stores/:id/products/category/:categoryName`
+
+**Authentication:** Not required
+
+**Path Parameters:**
+- `id` - Store ID
+- `categoryName` - Category name (case-insensitive, supports partial matching)
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "message": "Store products by category retrieved successfully",
+  "data": {
+    "store": {
+      "id": "1",
+      "name": "كريسبي تشيكن",
+      "nameAr": "كريسبي تشيكن",
+      "nameEn": "Crispy Chicken",
+      "logo": "https://example.com/stores/crispy.png",
+      "cover": "https://example.com/stores/crispy_cover.jpg",
+      "category": "restaurant",
+      "categoryAr": "مطعم",
+      "categoryEn": "Restaurant"
+    },
+    "categoryName": "restaurant",
+    "products": [
+      {
+        "id": "1",
+        "name": "وجبة فردية",
+        "price": 4.5,
+        "category": "restaurant"
+      }
+    ],
+    "count": 10
+  },
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+**Error Responses:**
+- `400` - Category name is required
+- `404` - Store not found
+- `500` - Products payload unavailable
+
+**Note:**
+- Category name matching is case-insensitive and supports partial matching
+- Checks both product-level and store-level category fields
+- Returns products that match the store ID and category name
+
+**Example:**
+```javascript
+// Get products from store ID "1" with category "restaurant"
+const response = await fetch('https://arheb-backend.onrender.com/api/stores/1/products/category/restaurant');
+const data = await response.json();
+console.log(data.data.products);
+```
+
+---
+
 ## Categories
+
+### Get All Categories
 
 Retrieves all categories and subcategories.
 
@@ -485,6 +650,78 @@ Retrieves all categories and subcategories.
       }
     ]
   }
+}
+```
+
+**Example:**
+```javascript
+const response = await fetch('https://arheb-backend.onrender.com/api/categories');
+const data = await response.json();
+```
+
+---
+
+### Get Products by Category
+
+Retrieves all products for a specific category across all stores.
+
+**Endpoint:** `GET /api/categories/:categoryName/products`
+
+**Authentication:** Not required
+
+**Path Parameters:**
+- `categoryName` - Category name (case-insensitive, supports partial matching)
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "message": "Products by category retrieved successfully",
+  "data": {
+    "category": {
+      "id": "1",
+      "name": "supermarket",
+      "nameAr": "سوبر ماركت",
+      "nameEn": "Supermarket",
+      "image": "https://example.com/categories/supermarket.png"
+    },
+    "categoryName": "supermarket",
+    "products": [
+      {
+        "id": "1",
+        "name": "Product Name",
+        "price": 4.5,
+        "store": {
+          "id": "1",
+          "name": "Store Name"
+        }
+      }
+    ],
+    "count": 25
+  },
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+**Error Responses:**
+- `400` - Category name is required
+- `500` - Products payload unavailable
+
+**Note:**
+- Category name matching is case-insensitive and supports partial matching
+- Checks both product-level and store-level category fields
+- Returns products from all stores that match the category
+- If category exists in categories list, includes category information in response
+
+**Example:**
+```javascript
+// Get all products in "supermarket" category
+const response = await fetch('https://arheb-backend.onrender.com/api/categories/supermarket/products');
+const data = await response.json();
+
+if (data.success) {
+  console.log(`Found ${data.data.count} products in ${data.data.categoryName} category`);
+  console.log(data.data.products);
 }
 ```
 
@@ -515,9 +752,11 @@ Retrieves home page data including banners, categories, popular stores, and offe
 
 ## Profile
 
+User profile includes a **list of addresses**. The **first address is the default**. Users can add, update, and delete addresses.
+
 ### Get Profile
 
-Retrieves the authenticated user's profile information.
+Retrieves the authenticated user's profile (name and addresses list).
 
 **Endpoint:** `GET /api/profile`
 
@@ -532,9 +771,11 @@ Retrieves the authenticated user's profile information.
     "profile": {
       "phoneNumber": "+201500157920",
       "name": "John Doe",
-      "addressName": "Home Address",
-      "addressLong": 35.0063,
-      "addressLat": 29.5320
+      "addresses": [
+        { "addressName": "Home", "addressLong": 35.0063, "addressLat": 29.5320 },
+        { "addressName": "Work", "addressLong": 35.0100, "addressLat": 29.5350 }
+      ],
+      "defaultAddress": { "addressName": "Home", "addressLong": 35.0063, "addressLat": 29.5320 }
     }
   },
   "timestamp": "2024-01-15T10:30:00Z"
@@ -543,56 +784,85 @@ Retrieves the authenticated user's profile information.
 
 ---
 
-### Update Profile
+### Update Profile (Name Only)
 
-Updates the authenticated user's profile information.
+Updates the user's display name.
 
 **Endpoint:** `PUT /api/profile`
 
 **Authentication:** Required (Bearer token)
 
-**Request Body (all fields optional):**
+**Request Body:**
 ```json
 {
-  "name": "John Doe",
-  "addressName": "Work Address",
-  "addressLong": 35.0063,
-  "addressLat": 29.5320
+  "name": "John Doe"
 }
 ```
 
-**Success Response (200):**
+**Success Response (200):** Returns full profile (including addresses).
+
+---
+
+### Add Address
+
+Adds a new address. Optionally set as default (inserted at first position).
+
+**Endpoint:** `POST /api/profile/addresses`
+
+**Authentication:** Required (Bearer token)
+
+**Request Body:**
 ```json
 {
-  "success": true,
-  "message": "Profile updated successfully",
-  "data": {
-    "profile": {
-      "phoneNumber": "+201500157920",
-      "name": "John Doe",
-      "addressName": "Work Address",
-      "addressLong": 35.0063,
-      "addressLat": 29.5320
-    }
-  },
-  "timestamp": "2024-01-15T10:30:00Z"
+  "addressName": "Work",
+  "addressLong": 35.0100,
+  "addressLat": 29.5350,
+  "setAsDefault": false
 }
 ```
 
-**Example:**
-```javascript
-const response = await fetch('https://arheb-backend.onrender.com/api/profile', {
-  method: 'PUT',
-  headers: {
-    'Content-Type': 'application/json',
-    'Authorization': 'Bearer your-jwt-token-here'
-  },
-  body: JSON.stringify({
-    name: 'John Doe',
-    addressName: 'Work Address'
-  })
-});
+- `addressLong`, `addressLat` (number) - Required.
+- `addressName` (string) - Optional label.
+- `setAsDefault` (boolean) - If true, new address is inserted as first (default). Default: false (append).
+
+**Success Response (201):** Returns full profile with updated addresses.
+
+---
+
+### Update Address
+
+Updates an address at the given index (0-based).
+
+**Endpoint:** `PUT /api/profile/addresses/:index`
+
+**Authentication:** Required (Bearer token)
+
+**Path Parameters:** `index` - 0-based address index
+
+**Request Body (all optional):**
+```json
+{
+  "addressName": "Home Updated",
+  "addressLong": 35.0065,
+  "addressLat": 29.5325
+}
 ```
+
+**Success Response (200):** Returns full profile.
+
+---
+
+### Delete Address
+
+Deletes the address at the given index (0-based). After deletion, the first remaining address becomes the default.
+
+**Endpoint:** `DELETE /api/profile/addresses/:index`
+
+**Authentication:** Required (Bearer token)
+
+**Path Parameters:** `index` - 0-based address index
+
+**Success Response (200):** Returns full profile with updated addresses.
 
 ---
 
@@ -1200,6 +1470,113 @@ if (data.success) {
 
 ---
 
+## Popup
+
+### Get Popup
+
+Retrieves the popup configuration (image, call-to-action button, destination type and value). Data is read from `Arheb API JSON/popup.json`.
+
+**Endpoint:** `GET /api/popup`
+
+**Authentication:** Not required
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "message": "Popup retrieved successfully",
+  "data": {
+    "popup": {
+      "image": "",
+      "call_of_action_button": "",
+      "destination": "product || store || category || phone || whatsapp || url",
+      "destination_value": "product_id || store_id || category_id || phone_number || whatsapp_number || url_link"
+    }
+  },
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+**Example:**
+```javascript
+const response = await fetch('https://arheb-backend.onrender.com/api/popup');
+const data = await response.json();
+console.log(data.data.popup);
+```
+
+---
+
+## Arheb Box
+
+Arheb box requests are stored in the database (table `arheb_box_requests`) with id, date/time, username, phone number, status, pickup, dropoff, and notes. Admins can view and update status in the **dashboard** (Arheb Box page).
+
+### Submit Arheb Box Request
+
+Submits an Arheb box request with pickup location, dropoff location, and notes. Stored in DB with user's phone number and name; first status is `pending`.
+
+**Endpoint:** `POST /api/arheb-box`
+
+**Authentication:** Required (Bearer token)
+
+**Request Body:**
+```json
+{
+  "pickup": {
+    "latitude": 29.5320,
+    "longitude": 35.0063,
+    "address": "العقبة، الأردن"
+  },
+  "dropoff": {
+    "latitude": 31.9539,
+    "longitude": 35.9106,
+    "address": "عمان، الأردن"
+  },
+  "notes": "يرجى التوصيل قبل الساعة 5 مساءً"
+}
+```
+
+**Required:**
+- `pickup` (object) - `latitude` (number), `longitude` (number); `address` (string) optional
+- `dropoff` (object) - `latitude` (number), `longitude` (number); `address` (string) optional
+- `notes` (string) - optional
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "message": "Arheb box request received successfully",
+  "data": {
+    "request": {
+      "pickup": { "latitude": 29.532, "longitude": 35.0063, "address": "العقبة، الأردن" },
+      "dropoff": { "latitude": 31.9539, "longitude": 35.9106, "address": "عمان، الأردن" },
+      "notes": "يرجى التوصيل قبل الساعة 5 مساءً"
+    }
+  },
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+**Example:**
+```javascript
+const response = await fetch('https://arheb-backend.onrender.com/api/arheb-box', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer your-jwt-token-here'
+  },
+  body: JSON.stringify({
+    pickup: { latitude: 29.532, longitude: 35.0063, address: 'العقبة، الأردن' },
+    dropoff: { latitude: 31.9539, longitude: 35.9106, address: 'عمان، الأردن' },
+    notes: 'يرجى التوصيل قبل الساعة 5 مساءً'
+  })
+});
+const data = await response.json();
+```
+
+**Admin (dashboard):** Admins see all Arheb box requests in the dashboard under **Arheb Box**. They can update status (e.g. pending → confirmed → in_progress → delivered). Admin API: `GET /api/admin/arheb-box` (list), `PATCH /api/admin/arheb-box/:id` (body: `{ "status": "confirmed" }`).
+
+---
+
 ## Contact
 
 ### Get Contact Information
@@ -1270,6 +1647,155 @@ Updates contact information. Requires admin authentication.
 ```sql
 UPDATE users SET type = 'admin' WHERE phoneNumber = '+201500157920';
 ```
+
+---
+
+## Admin API
+
+All admin endpoints require **Admin JWT** authentication. Send the token in the `Authorization` header as `Bearer <token>`. The token is obtained from `POST /api/admin/login`. Roles: **SuperAdmin**, **Admin**, **Store Admin**. Store Admin can only access their assigned store.
+
+### Admin Login
+
+**Endpoint:** `POST /api/admin/login`
+
+**Request Body:**
+```json
+{
+  "email": "admin@arheb.com",
+  "password": "your-password"
+}
+```
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "token": "Bearer eyJhbGciOiJIUzI1NiIs...",
+  "admin": {
+    "id": 1,
+    "email": "admin@arheb.com",
+    "role": "SuperAdmin",
+    "storeId": null,
+    "name": "Admin Name"
+  }
+}
+```
+
+**Error Responses:** `400` (email/password required), `401` (invalid email or password).
+
+---
+
+### Get Current Admin (Me)
+
+**Endpoint:** `GET /api/admin/me`
+
+**Authentication:** Required (Admin Bearer token)
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "data": {
+    "id": 1,
+    "email": "admin@arheb.com",
+    "role": "SuperAdmin",
+    "storeId": null,
+    "name": "Admin Name"
+  }
+}
+```
+
+---
+
+### Admins CRUD
+
+**Access:** SuperAdmin and Admin only. Admin cannot create/edit/delete SuperAdmins.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/admin/admins` | List all admins (Admin sees list without SuperAdmins) |
+| POST | `/api/admin/admins` | Create admin (email, password, role, storeId for Store Admin, name) |
+| PATCH | `/api/admin/admins/:id` | Update admin (email, password, role, storeId, name) |
+| DELETE | `/api/admin/admins/:id` | Delete admin (cannot delete self or SuperAdmin unless you are SuperAdmin) |
+
+**Roles:** `SuperAdmin`, `Admin`, `Store Admin`. For `Store Admin`, `storeId` is required.
+
+---
+
+### Admin Stores
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/admin/stores` | List stores (Store Admin sees only their store) |
+| GET | `/api/admin/stores/:id` | Get one store |
+| PATCH | `/api/admin/stores/:id` | Update store (name, nameAr, nameEn, cover, logo, deliveryTime, deliveryFee, minimumOrder, isOpen, openingHours, address, phone, category, etc.). **isPremium** only by SuperAdmin/Admin. |
+
+---
+
+### Admin Products
+
+All under `/api/admin/stores/:storeId/products`. Store Admin can only access their store.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/admin/stores/:storeId/products` | List products for store |
+| POST | `/api/admin/stores/:storeId/products` | Create product (name, nameAr, nameEn, image, images, price, originalPrice, discount, unit, category, description, stock, isAvailable) |
+| PATCH | `/api/admin/stores/:storeId/products/:productId` | Update product |
+| DELETE | `/api/admin/stores/:storeId/products/:productId` | Delete product |
+
+---
+
+### Admin Orders
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/admin/orders` | List orders (Store Admin: only their store). Query: `dateFrom`, `dateTo`, `status`, `storeId`, `storeName`, `name` (customer name/phone). Sorted by `createdAt DESC, id DESC`. |
+| PATCH | `/api/admin/orders/:orderId/status` | Update order status. Body: `{ "status": "Confirmed" }`. |
+
+---
+
+### Admin Dashboard Sales
+
+**Endpoint:** `GET /api/admin/dashboard/sales`
+
+**Authentication:** Required (Admin Bearer token). Store Admin sees only their store's orders.
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "data": {
+    "totalOrders": 42,
+    "totalRevenue": 1250.50,
+    "byStatus": { "Waiting confirmation": 5, "Confirmed": 10, "Delivered": 27 },
+    "recentOrders": [
+      { "id": 1, "totalAmount": 25.5, "status": "Delivered", "createdAt": "...", "storeId": "1" }
+    ]
+  }
+}
+```
+
+---
+
+### Admin Arheb Box
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/admin/arheb-box` | List all Arheb box requests (id, phoneNumber, userName, pickup, dropoff, notes, status, createdAt). Sorted by `createdAt DESC, id DESC`. |
+| PATCH | `/api/admin/arheb-box/:id` | Update request status. Body: `{ "status": "confirmed" }` (e.g. pending, confirmed, in_progress, delivered, cancelled). |
+
+---
+
+### Admin Categories
+
+**Access:** SuperAdmin and Admin only (Store Admin cannot manage categories).
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/admin/categories` | List all categories |
+| POST | `/api/admin/categories` | Create category (name, nameAr, nameEn, image, isComingSoon, order, subCategories) |
+| PATCH | `/api/admin/categories/:id` | Update category |
+| DELETE | `/api/admin/categories/:id` | Delete category |
 
 ---
 
@@ -1369,7 +1895,7 @@ const profileResponse = await fetch('https://arheb-backend.onrender.com/api/prof
 
 ## Support
 
-For issues or questions, please contact: `contact@arheb.com`
+For issues or questions, please contact: `contact@arheb.app`
 
 ---
 

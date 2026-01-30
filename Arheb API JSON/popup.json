@@ -1,0 +1,6 @@
+{
+  "image": "",
+  "call_of_action_button": "",
+  "destination" : "product || store || category || phone || whatsapp || url",
+  "destination_value": "product_id || store_id || category_id || phone_number || whatsapp_number || url_link"
+}
