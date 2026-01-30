@@ -98,6 +98,42 @@ try {
   // Column already exists
 }
 
+// Create orders and order_items before admin routes (admin prepares statements on these tables)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    userId TEXT NOT NULL,
+    phoneNumber TEXT NOT NULL,
+    name TEXT,
+    addressName TEXT,
+    addressLong REAL,
+    addressLat REAL,
+    discount REAL DEFAULT 0,
+    deliveryFee REAL DEFAULT 0,
+    totalAmount REAL NOT NULL,
+    status TEXT DEFAULT 'Waiting confirmation',
+    paymentType TEXT NOT NULL,
+    promoCode TEXT,
+    orderRating INTEGER DEFAULT 0,
+    storeId TEXT,
+    nearby TEXT,
+    notes TEXT,
+    createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (phoneNumber) REFERENCES users(phoneNumber)
+  );
+
+  CREATE TABLE IF NOT EXISTS order_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    orderId INTEGER NOT NULL,
+    productId TEXT NOT NULL,
+    productName TEXT NOT NULL,
+    price REAL NOT NULL,
+    quantity INTEGER NOT NULL,
+    createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (orderId) REFERENCES orders(id) ON DELETE CASCADE
+  );
+`);
+
 const upsertUser = db.prepare(`
   INSERT INTO users (phoneNumber, firebaseUid, token)
   VALUES (@phoneNumber, @firebaseUid, @token)
