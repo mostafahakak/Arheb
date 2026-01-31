@@ -19,9 +19,6 @@ const loadCategoriesResponse = () => {
   }
 };
 
-const categoriesResponse = loadCategoriesResponse();
-const categoriesList = categoriesResponse?.data?.categories ?? [];
-
 const toInt = (value) => (value ? 1 : 0);
 
 const seedCategoriesTables = (db, categories) => {
@@ -74,15 +71,18 @@ const seedCategoriesTables = (db, categories) => {
   `);
 
   const insertData = db.transaction((items) => {
+    db.prepare('DELETE FROM subcategories').run();
+    db.prepare('DELETE FROM categories').run();
     let sortOrder = 0;
     for (const category of items) {
       sortOrder += 1;
+      const catId = String(category.id);
       insertCategory.run({
-        id: category.id,
-        name: category.name,
-        nameAr: category.nameAr,
-        nameEn: category.nameEn,
-        image: category.image,
+        id: catId,
+        name: category.name ?? '',
+        nameAr: category.nameAr ?? null,
+        nameEn: category.nameEn ?? null,
+        image: category.image ?? null,
         isComingSoon: toInt(category.isComingSoon),
         displayOrder: category.order ?? sortOrder,
       });
@@ -95,8 +95,8 @@ const seedCategoriesTables = (db, categories) => {
       for (const subcategory of subCategories) {
         subOrder += 1;
         insertSubcategory.run({
-          id: subcategory.id,
-          categoryId: category.id,
+          id: String(subcategory.id),
+          categoryId: catId,
           name: subcategory.name,
           nameAr: subcategory.nameAr,
           nameEn: subcategory.nameEn,
@@ -111,19 +111,130 @@ const seedCategoriesTables = (db, categories) => {
   insertData(categories);
 };
 
-module.exports = function attachCategoriesRoutes(app, db) {
-  if (categoriesList.length > 0) {
-    seedCategoriesTables(db, categoriesList);
-  } else {
-    console.warn('No categories data found to seed the database');
+/** Read categories from database and return API response format */
+function loadCategoriesFromDb(db) {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS categories (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        nameAr TEXT,
+        nameEn TEXT,
+        image TEXT,
+        isComingSoon INTEGER DEFAULT 0,
+        displayOrder INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS subcategories (
+        id TEXT PRIMARY KEY,
+        categoryId TEXT NOT NULL,
+        name TEXT NOT NULL,
+        nameAr TEXT,
+        nameEn TEXT,
+        image TEXT,
+        isComingSoon INTEGER DEFAULT 0,
+        displayOrder INTEGER,
+        FOREIGN KEY (categoryId) REFERENCES categories(id) ON DELETE CASCADE
+      );
+    `);
+    const catRows = db.prepare('SELECT * FROM categories ORDER BY displayOrder ASC, id ASC').all();
+    const subRows = db.prepare('SELECT * FROM subcategories ORDER BY displayOrder ASC, id ASC').all();
+    if (catRows.length === 0) return null;
+
+    const subByCat = {};
+    for (const s of subRows) {
+      if (!subByCat[s.categoryId]) subByCat[s.categoryId] = [];
+      subByCat[s.categoryId].push({
+        id: s.id,
+        name: s.name,
+        nameAr: s.nameAr,
+        nameEn: s.nameEn,
+        image: s.image,
+        isComingSoon: Boolean(s.isComingSoon),
+        order: s.displayOrder,
+      });
+    }
+
+    const categories = catRows.map((c) => ({
+      id: c.id,
+      name: c.name,
+      nameAr: c.nameAr,
+      nameEn: c.nameEn,
+      image: c.image,
+      isComingSoon: Boolean(c.isComingSoon),
+      order: c.displayOrder,
+      subCategories: subByCat[c.id] || [],
+    }));
+
+    return {
+      success: true,
+      message: 'Categories data retrieved successfully',
+      data: { categories },
+    };
+  } catch (e) {
+    console.error('Failed to load categories from DB', e);
+    return null;
+  }
+}
+
+/** Sync categories array to database (used by admin after save) */
+function syncCategoriesToDb(db, categories) {
+  seedCategoriesTables(db, categories);
+}
+
+function attachCategoriesRoutes(app, db) {
+  const initialResponse = loadCategoriesResponse();
+  const initialCategories = initialResponse?.data?.categories ?? [];
+  const existing = loadCategoriesFromDb(db);
+  const hasCategoriesInDb = existing?.data?.categories?.length > 0;
+
+  if (initialCategories.length === 0) {
+    // JSON has no categories: clear DB so admin can add fresh data.
+    seedCategoriesTables(db, []);
+  } else if (!hasCategoriesInDb) {
+    // DB empty: seed from JSON (first run). Don't overwrite if DB already has data (edits).
+    seedCategoriesTables(db, initialCategories);
   }
 
+  // Prefer database so admin edits (synced to DB) are visible when user comes back.
+  // If JSON has no categories, clear DB and return empty (so test client / app see fresh state without restart).
   app.get('/api/categories', (req, res) => {
+    const categoriesResponse = loadCategoriesResponse();
+    const jsonCategories = categoriesResponse?.data?.categories ?? [];
+    if (jsonCategories.length === 0) {
+      seedCategoriesTables(db, []);
+      return res.status(200).json({
+        success: true,
+        message: 'Categories data retrieved successfully',
+        data: { categories: [] },
+        timestamp: new Date().toISOString(),
+      });
+    }
+    const fromDb = loadCategoriesFromDb(db);
+    if (fromDb && fromDb.data && Array.isArray(fromDb.data.categories) && fromDb.data.categories.length > 0) {
+      return res.status(200).json({
+        ...fromDb,
+        timestamp: fromDb.timestamp || new Date().toISOString(),
+      });
+    }
+    if (categoriesResponse && Array.isArray(categoriesResponse.data.categories) && categoriesResponse.data.categories.length > 0) {
+      const payload = {
+        success: categoriesResponse.success,
+        message: categoriesResponse.message,
+        data: { categories: categoriesResponse.data.categories },
+        timestamp: categoriesResponse.timestamp || new Date().toISOString(),
+      };
+      return res.status(200).json(payload);
+    }
     if (!categoriesResponse) {
       return res.status(500).json({ message: 'Categories payload is unavailable' });
     }
-
-    return res.status(200).json(categoriesResponse);
+    const fallback = {
+      success: categoriesResponse.success,
+      message: categoriesResponse.message,
+      data: { categories: [] },
+      timestamp: categoriesResponse.timestamp || new Date().toISOString(),
+    };
+    return res.status(200).json(fallback);
   });
 
   app.get('/api/categories/:categoryName/products', (req, res) => {
@@ -135,6 +246,9 @@ module.exports = function attachCategoriesRoutes(app, db) {
         message: 'Category name is required'
       });
     }
+
+    const fromDb = loadCategoriesFromDb(db);
+    const categoriesList = fromDb?.data?.categories ?? loadCategoriesResponse()?.data?.categories ?? [];
 
     // Load products response
     const productsResponsePath = path.resolve(
@@ -274,3 +388,6 @@ module.exports = function attachCategoriesRoutes(app, db) {
     });
   });
 };
+
+module.exports = attachCategoriesRoutes;
+module.exports.syncCategoriesToDb = syncCategoriesToDb;

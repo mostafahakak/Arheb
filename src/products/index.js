@@ -9,14 +9,6 @@ const productsResponsePath = path.resolve(
   'products_listing_response.json'
 );
 
-const productDetailsResponsePath = path.resolve(
-  __dirname,
-  '..',
-  '..',
-  'Arheb API JSON',
-  'product_details_response.json'
-);
-
 const loadProductsResponse = () => {
   try {
     const raw = fs.readFileSync(productsResponsePath, 'utf-8');
@@ -27,18 +19,7 @@ const loadProductsResponse = () => {
   }
 };
 
-const loadProductDetailsResponse = () => {
-  try {
-    const raw = fs.readFileSync(productDetailsResponsePath, 'utf-8');
-    return JSON.parse(raw);
-  } catch (error) {
-    console.error('Failed to load product details response', error);
-    return null;
-  }
-};
-
 const productsResponse = loadProductsResponse();
-const productDetailsResponse = loadProductDetailsResponse();
 
 module.exports = function attachProductsRoutes(app, db) {
   app.get('/api/products', (req, res) => {
@@ -119,24 +100,9 @@ module.exports = function attachProductsRoutes(app, db) {
       });
     }
 
-    // First, try to get detailed product from product_details_response.json
-    if (productDetailsResponse?.data?.product) {
-      const detailedProduct = productDetailsResponse.data.product;
-      if (detailedProduct.id === productId) {
-        return res.status(200).json({
-          success: true,
-          message: 'Product details retrieved successfully',
-          data: {
-            product: detailedProduct
-          },
-          timestamp: new Date().toISOString()
-        });
-      }
-    }
-
-    // If detailed product not found, search in products listing
+    // Use products listing as single source of truth (admin edits are stored there)
     const products = productsResponse?.data?.products ?? [];
-    const product = products.find(p => p.id === productId);
+    const product = products.find(p => String(p.id) === String(productId));
     
     if (!product) {
       return res.status(404).json({

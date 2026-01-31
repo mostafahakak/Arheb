@@ -9,12 +9,30 @@ const homeResponsePath = path.resolve(
   'home_response.json'
 );
 
+const categoriesResponsePath = path.resolve(
+  __dirname,
+  '..',
+  '..',
+  'Arheb API JSON',
+  'categories_response.json'
+);
+
 const loadHomeResponse = () => {
   try {
     const raw = fs.readFileSync(homeResponsePath, 'utf-8');
     return JSON.parse(raw);
   } catch (error) {
     console.error('Failed to load home response', error);
+    return null;
+  }
+};
+
+const loadCategoriesResponse = () => {
+  try {
+    const raw = fs.readFileSync(categoriesResponsePath, 'utf-8');
+    const data = JSON.parse(raw);
+    return data?.data?.categories ?? [];
+  } catch (error) {
     return null;
   }
 };
@@ -258,7 +276,15 @@ module.exports = function attachHomeRoutes(app, db) {
       return res.status(500).json({ message: 'Home payload is unavailable' });
     }
 
-    return res.status(200).json(homeResponse);
+    // Use categories from categories_response.json (single source of truth)
+    // so admin edits in the dashboard are reflected here
+    const categories = loadCategoriesResponse();
+    const response = { ...homeResponse };
+    if (response.data && categories) {
+      response.data = { ...response.data, categories };
+    }
+
+    return res.status(200).json(response);
   });
 };
 

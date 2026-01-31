@@ -44,8 +44,8 @@
         "id": "2",
         "name": "برجر كلاسيك",
         "nameAr": "برجر كلاسيك",
-        "nameEn": "Classic Burger",
-        "image": "https://example.com/products/burger1.jpg",
+        "nameEn": "Classic Burgers",
+        "image": "https://firebasestorage.googleapis.com/v0/b/arheb-40c1e.firebasestorage.app/o/Products%2FAl_Baik_Restaurant%2FClassic_Burgers.png?alt=media&token=32df3ddf-d230-468a-a164-ef20347e9597",
         "images": [
           "https://example.com/products/burger1.jpg",
           "https://example.com/products/burger1_2.jpg",
@@ -75,7 +75,8 @@
           "rate": 4.8,
           "numberOfReviews": 250,
           "isFavorite": true
-        }
+        },
+        "preparationTime": null
       },
       {
         "id": "3",

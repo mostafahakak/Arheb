@@ -14,10 +14,12 @@ const {
   requireAdminOrSuper,
   requireStoreAccess,
 } = require('./middleware');
+const { syncCategoriesToDb } = require('../categories');
 
 const storesResponsePath = path.resolve(__dirname, '..', '..', 'Arheb API JSON', 'stores_listing_response.json');
 const productsResponsePath = path.resolve(__dirname, '..', '..', 'Arheb API JSON', 'products_listing_response.json');
 const categoriesResponsePath = path.resolve(__dirname, '..', '..', 'Arheb API JSON', 'categories_response.json');
+const popupJsonPath = path.resolve(__dirname, '..', '..', 'Arheb API JSON', 'popup.json');
 
 function loadStores() {
   try {
@@ -82,6 +84,23 @@ function saveCategories(categories) {
     fs.writeFileSync(categoriesResponsePath, JSON.stringify(data, null, 2), 'utf-8');
   } catch (e) {
     throw new Error('Failed to save categories');
+  }
+}
+
+function loadPopup() {
+  try {
+    const raw = fs.readFileSync(popupJsonPath, 'utf-8');
+    return JSON.parse(raw);
+  } catch (e) {
+    return { image: '', call_of_action_button: '', destination: '', destination_value: '' };
+  }
+}
+
+function savePopup(data) {
+  try {
+    fs.writeFileSync(popupJsonPath, JSON.stringify(data, null, 2), 'utf-8');
+  } catch (e) {
+    throw new Error('Failed to save popup');
   }
 }
 
@@ -361,7 +380,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const products = loadProducts();
     const idx = products.findIndex((p) => p.id === productId && p.store?.id === storeId);
     if (idx === -1) return res.status(404).json({ success: false, message: 'Product not found' });
-    const allowed = ['name', 'nameAr', 'nameEn', 'image', 'images', 'price', 'originalPrice', 'discount', 'unit', 'unitAr', 'unitEn', 'category', 'categoryAr', 'categoryEn', 'description', 'descriptionAr', 'descriptionEn', 'stock', 'isAvailable'];
+    const allowed = [
+      'name', 'nameAr', 'nameEn', 'image', 'images', 'price', 'originalPrice', 'discount',
+      'unit', 'unitAr', 'unitEn', 'category', 'categoryAr', 'categoryEn',
+      'description', 'descriptionAr', 'descriptionEn', 'stock', 'isAvailable',
+      'ingredients', 'ingredientsAr', 'ingredientsEn', 'allergens', 'allergensAr', 'allergensEn',
+      'nutritionalInfo', 'preparationTime',
+    ];
     const body = req.body || {};
     for (const key of allowed) {
       if (body[key] !== undefined) products[idx][key] = body[key];
@@ -566,7 +591,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const id = String(categories.length ? Math.max(...categories.map((c) => parseInt(c.id, 10) || 0)) + 1 : 1);
     const newCat = {
       id,
-      name: body.name ?? '',
+      name: body.name ?? (body.nameEn || '').toLowerCase().replace(/\s+/g, '_').trim() ?? '',
       nameAr: body.nameAr ?? body.name ?? '',
       nameEn: body.nameEn ?? body.name ?? '',
       image: body.image ?? null,
@@ -575,18 +600,36 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       subCategories: Array.isArray(body.subCategories) ? body.subCategories : [],
     };
     categories.push(newCat);
+    try {
+      syncCategoriesToDb(db, categories);
+    } catch (err) {
+      console.error('Categories DB sync failed:', err);
+      categories.pop();
+      return res.status(500).json({ success: false, message: 'Database sync failed', error: err.message });
+    }
     saveCategories(categories);
     return res.status(201).json({ success: true, data: { category: newCat } });
   });
 
   app.patch('/api/admin/categories/:id', auth, requireAdminOrSuper, (req, res) => {
     const categories = loadCategories();
-    const idx = categories.findIndex((c) => c.id === req.params.id);
+    const idParam = String(req.params.id);
+    const idx = categories.findIndex((c) => String(c.id) === idParam);
     if (idx === -1) return res.status(404).json({ success: false, message: 'Category not found' });
     const allowed = ['name', 'nameAr', 'nameEn', 'image', 'isComingSoon', 'order', 'subCategories'];
     const body = req.body || {};
     for (const key of allowed) {
       if (body[key] !== undefined) categories[idx][key] = body[key];
+    }
+    // Keep name in sync when only nameEn/nameAr sent (e.g. from dashboard)
+    if (body.nameEn !== undefined && body.name === undefined && categories[idx].nameEn) {
+      categories[idx].name = (categories[idx].nameEn || '').toLowerCase().replace(/\s+/g, '_').trim() || categories[idx].name;
+    }
+    try {
+      syncCategoriesToDb(db, categories);
+    } catch (err) {
+      console.error('Categories DB sync failed:', err);
+      return res.status(500).json({ success: false, message: 'Database sync failed', error: err.message });
     }
     saveCategories(categories);
     return res.status(200).json({ success: true, data: { category: categories[idx] } });
@@ -594,10 +637,142 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
 
   app.delete('/api/admin/categories/:id', auth, requireAdminOrSuper, (req, res) => {
     const categories = loadCategories();
-    const idx = categories.findIndex((c) => c.id === req.params.id);
+    const idParam = String(req.params.id);
+    const idx = categories.findIndex((c) => String(c.id) === idParam);
     if (idx === -1) return res.status(404).json({ success: false, message: 'Category not found' });
     categories.splice(idx, 1);
+    try {
+      syncCategoriesToDb(db, categories);
+    } catch (err) {
+      console.error('Categories DB sync failed:', err);
+      return res.status(500).json({ success: false, message: 'Database sync failed', error: err.message });
+    }
     saveCategories(categories);
     return res.status(200).json({ success: true, message: 'Category deleted' });
+  });
+
+  // ——— Popup (SuperAdmin / Admin only) ———
+  app.get('/api/admin/popup', auth, requireAdminOrSuper, (req, res) => {
+    const data = loadPopup();
+    return res.status(200).json({ success: true, data: { popup: data } });
+  });
+
+  app.patch('/api/admin/popup', auth, requireAdminOrSuper, (req, res) => {
+    const body = req.body || {};
+    const current = loadPopup();
+    const updated = {
+      image: body.image !== undefined ? body.image : current.image,
+      call_of_action_button: body.call_of_action_button !== undefined ? body.call_of_action_button : current.call_of_action_button,
+      destination: body.destination !== undefined ? body.destination : current.destination,
+      destination_value: body.destination_value !== undefined ? body.destination_value : current.destination_value,
+    };
+    savePopup(updated);
+    return res.status(200).json({ success: true, data: { popup: updated } });
+  });
+
+  // ——— Promo codes (SuperAdmin / Admin only) ———
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS promo_codes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT UNIQUE NOT NULL,
+      value REAL NOT NULL,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  const findAllPromoCodes = db.prepare('SELECT * FROM promo_codes ORDER BY id');
+  const findPromoCodeById = db.prepare('SELECT * FROM promo_codes WHERE id = ?');
+  const findPromoCodeByName = db.prepare('SELECT * FROM promo_codes WHERE name = ?');
+
+  app.get('/api/admin/promo-codes', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      const rows = findAllPromoCodes.all();
+      return res.status(200).json({ success: true, data: { promoCodes: rows } });
+    } catch (e) {
+      if (e.message && e.message.includes('no such table')) {
+        return res.status(200).json({ success: true, data: { promoCodes: [] } });
+      }
+      console.error('Promo codes list error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to list promo codes' });
+    }
+  });
+
+  app.post('/api/admin/promo-codes', auth, requireAdminOrSuper, (req, res) => {
+    const { name, value } = req.body || {};
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      return res.status(400).json({ success: false, message: 'name is required' });
+    }
+    const numValue = typeof value === 'number' ? value : parseFloat(value);
+    if (isNaN(numValue) || numValue < 0) {
+      return res.status(400).json({ success: false, message: 'value must be a non-negative number' });
+    }
+    try {
+      db.prepare('INSERT INTO promo_codes (name, value) VALUES (?, ?)').run(name.trim(), numValue);
+      const created = findPromoCodeByName.get(name.trim());
+      return res.status(201).json({
+        success: true,
+        data: {
+          id: created.id,
+          name: created.name,
+          value: created.value,
+          createdAt: created.createdAt,
+        },
+      });
+    } catch (e) {
+      if (e.message && e.message.includes('UNIQUE')) {
+        return res.status(400).json({ success: false, message: 'Promo code name already exists' });
+      }
+      throw e;
+    }
+  });
+
+  app.patch('/api/admin/promo-codes/:id', auth, requireAdminOrSuper, (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
+    const target = findPromoCodeById.get(id);
+    if (!target) return res.status(404).json({ success: false, message: 'Promo code not found' });
+    const { name, value } = req.body || {};
+    const updates = [];
+    const values = [];
+    if (name !== undefined) {
+      if (typeof name !== 'string' || !name.trim()) {
+        return res.status(400).json({ success: false, message: 'name must be a non-empty string' });
+      }
+      updates.push('name = ?');
+      values.push(name.trim());
+    }
+    if (value !== undefined) {
+      const numValue = typeof value === 'number' ? value : parseFloat(value);
+      if (isNaN(numValue) || numValue < 0) {
+        return res.status(400).json({ success: false, message: 'value must be a non-negative number' });
+      }
+      updates.push('value = ?');
+      values.push(numValue);
+    }
+    if (updates.length === 0) {
+      return res.status(200).json({ success: true, data: target });
+    }
+    values.push(id);
+    try {
+      db.prepare(`UPDATE promo_codes SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+    } catch (e) {
+      if (e.message && e.message.includes('UNIQUE')) {
+        return res.status(400).json({ success: false, message: 'Promo code name already exists' });
+      }
+      throw e;
+    }
+    const updated = findPromoCodeById.get(id);
+    return res.status(200).json({
+      success: true,
+      data: { id: updated.id, name: updated.name, value: updated.value, createdAt: updated.createdAt },
+    });
+  });
+
+  app.delete('/api/admin/promo-codes/:id', auth, requireAdminOrSuper, (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
+    const target = findPromoCodeById.get(id);
+    if (!target) return res.status(404).json({ success: false, message: 'Promo code not found' });
+    db.prepare('DELETE FROM promo_codes WHERE id = ?').run(id);
+    return res.status(200).json({ success: true, message: 'Promo code deleted' });
   });
 };

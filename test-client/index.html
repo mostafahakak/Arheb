@@ -353,6 +353,10 @@
     <header>
       <h1>🚀 Arheb API Test Client</h1>
       <p>Comprehensive testing interface for all API endpoints</p>
+      <div class="form-group" style="max-width: 400px; margin: 1rem auto 0; text-align: left;">
+        <label for="apiBaseInput" style="color: rgba(255,255,255,0.9); font-size: 0.8rem;">API Base URL</label>
+        <input id="apiBaseInput" type="text" placeholder="https://arheb-backend.onrender.com" value="https://arheb-backend.onrender.com" style="font-size: 0.85rem;" />
+      </div>
     </header>
 
     <div class="content">
@@ -369,6 +373,7 @@
         <a class="nav-item" data-section="promo">🎫 Promo Codes</a>
         <a class="nav-item" data-section="popup">🪟 Popup</a>
         <a class="nav-item" data-section="arhebBox">📦 Arheb Box</a>
+        <a class="nav-item" data-section="admin">🔧 Admin</a>
         <a class="nav-item" data-section="contact">📞 Contact</a>
       </nav>
 
@@ -739,6 +744,86 @@
           </div>
         </section>
 
+        <!-- Admin Section -->
+        <section id="admin" class="section">
+          <h2>Admin <span class="badge admin">Admin Auth</span></h2>
+          <p style="font-size: 0.875rem; color: #718096; margin-bottom: 1rem;">Login as SuperAdmin/Admin to edit categories. Ensure API Base URL above points to your backend.</p>
+
+          <div class="card">
+            <h3>Admin Login</h3>
+            <div class="form-group">
+              <label for="adminEmailInput">Email</label>
+              <input id="adminEmailInput" type="email" value="admin@arheb.app" placeholder="admin@arheb.app" />
+            </div>
+            <div class="form-group">
+              <label for="adminPasswordInput">Password</label>
+              <input id="adminPasswordInput" type="password" value="ar7eb100" placeholder="Password" />
+            </div>
+            <button id="adminLoginBtn" class="success">Admin Login</button>
+            <div id="adminLoginOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Admin Categories <span class="badge admin">Auth Required</span></h3>
+            <div class="row">
+              <button id="adminGetCategoriesBtn" class="secondary">Get Admin Categories</button>
+              <button id="adminFetchPublicCategoriesBtn" class="secondary">Fetch Public Categories (GET /api/categories)</button>
+            </div>
+            <p style="font-size: 0.8rem; color: #718096; margin-top: 0.5rem;">Use "Fetch Public Categories" after editing to verify data is updated.</p>
+            <div id="adminCategoriesOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Edit Category (PATCH)</h3>
+            <div class="form-group">
+              <label for="adminCategoryIdInput">Category ID</label>
+              <input id="adminCategoryIdInput" type="text" placeholder="1" />
+            </div>
+            <div class="form-group">
+              <label for="adminCategoryNameInput">Name</label>
+              <input id="adminCategoryNameInput" type="text" placeholder="Category name" />
+            </div>
+            <div class="form-group">
+              <label for="adminCategoryNameArInput">Name (Arabic)</label>
+              <input id="adminCategoryNameArInput" type="text" placeholder="الاسم بالعربية" />
+            </div>
+            <div class="form-group">
+              <label for="adminCategoryNameEnInput">Name (English)</label>
+              <input id="adminCategoryNameEnInput" type="text" placeholder="Name in English" />
+            </div>
+            <button id="adminEditCategoryBtn" class="success">Edit Category</button>
+            <div id="adminEditCategoryOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Add Category (POST)</h3>
+            <div class="form-group">
+              <label for="adminNewCategoryNameInput">Name</label>
+              <input id="adminNewCategoryNameInput" type="text" placeholder="New category name" />
+            </div>
+            <div class="form-group">
+              <label for="adminNewCategoryNameArInput">Name (Arabic)</label>
+              <input id="adminNewCategoryNameArInput" type="text" placeholder="الاسم بالعربية" />
+            </div>
+            <div class="form-group">
+              <label for="adminNewCategoryNameEnInput">Name (English)</label>
+              <input id="adminNewCategoryNameEnInput" type="text" placeholder="Name in English" />
+            </div>
+            <button id="adminAddCategoryBtn" class="success">Add Category</button>
+            <div id="adminAddCategoryOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Delete Category (DELETE)</h3>
+            <div class="form-group">
+              <label for="adminDeleteCategoryIdInput">Category ID</label>
+              <input id="adminDeleteCategoryIdInput" type="text" placeholder="1" />
+            </div>
+            <button id="adminDeleteCategoryBtn" class="danger">Delete Category</button>
+            <div id="adminDeleteCategoryOutput" class="output" style="display: none;"></div>
+          </div>
+        </section>
+
         <!-- Contact Section -->
         <section id="contact" class="section">
           <h2>Contact <span class="badge public">Public / <span class="badge admin">Admin</span></span></h2>
@@ -772,9 +857,15 @@
       "./vendor/firebase-app-compat.js",
       "./vendor/firebase-auth-compat.js",
     ];
-    const backendBase = window.location.origin;
+    const DEFAULT_API = 'https://arheb-backend.onrender.com';
+    function getBackendBase() {
+      const input = document.getElementById('apiBaseInput');
+      const val = input && input.value ? input.value.trim() : '';
+      return val || DEFAULT_API;
+    }
     let lastAppToken = "";
     let lastFirebaseToken = "";
+    let lastAdminToken = "";
     let verifier;
 
     // Navigation
@@ -844,7 +935,7 @@
         try {
           const recaptchaToken = await verifier.verify();
           showStatus('registerStatus', 'Sending request...', 'info');
-          const res = await fetch(`${backendBase}/api/auth/register`, {
+          const res = await fetch(`${getBackendBase()}/api/auth/register`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ phoneNumber: phone, recaptchaToken }),
@@ -872,7 +963,7 @@
         }
         showStatus('verifyStatus', 'Verifying OTP...', 'info');
         try {
-          const res = await fetch(`${backendBase}/api/auth/verify-otp`, {
+          const res = await fetch(`${getBackendBase()}/api/auth/verify-otp`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ phoneNumber: phone, sessionInfo, otp }),
@@ -897,7 +988,7 @@
           return;
         }
         try {
-          const res = await fetch(`${backendBase}/api/auth/user`, {
+          const res = await fetch(`${getBackendBase()}/api/auth/user`, {
             method: 'DELETE',
             headers: { 'Content-Type': 'application/json', 'Authorization': lastAppToken },
             body: JSON.stringify({ firebaseIdToken: lastFirebaseToken }),
@@ -913,7 +1004,7 @@
       document.getElementById('fetchProductsBtn').addEventListener('click', async () => {
         const page = document.getElementById('productsPage').value || 1;
         try {
-          const res = await fetch(`${backendBase}/api/products?page=${page}`);
+          const res = await fetch(`${getBackendBase()}/api/products?page=${page}`);
           const data = await res.json();
           showOutput('productsOutput', data);
         } catch (error) {
@@ -928,7 +1019,7 @@
           return;
         }
         try {
-          const res = await fetch(`${backendBase}/api/products/${id}`);
+          const res = await fetch(`${getBackendBase()}/api/products/${id}`);
           const data = await res.json();
           showOutput('productByIdOutput', data);
         } catch (error) {
@@ -939,7 +1030,7 @@
       // Stores
       document.getElementById('fetchStoresBtn').addEventListener('click', async () => {
         try {
-          const res = await fetch(`${backendBase}/api/stores`);
+          const res = await fetch(`${getBackendBase()}/api/stores`);
           const data = await res.json();
           showOutput('storesOutput', data);
         } catch (error) {
@@ -949,7 +1040,7 @@
 
       document.getElementById('fetchTopRatedBtn').addEventListener('click', async () => {
         const limit = document.getElementById('topRatedLimit').value.trim();
-        const url = limit ? `${backendBase}/api/stores/top-rated?limit=${limit}` : `${backendBase}/api/stores/top-rated`;
+        const url = limit ? `${getBackendBase()}/api/stores/top-rated?limit=${limit}` : `${getBackendBase()}/api/stores/top-rated`;
         try {
           const res = await fetch(url);
           const data = await res.json();
@@ -966,7 +1057,7 @@
           return;
         }
         try {
-          const res = await fetch(`${backendBase}/api/stores/${storeId}/products`);
+          const res = await fetch(`${getBackendBase()}/api/stores/${storeId}/products`);
           const data = await res.json();
           showOutput('storeProductsOutput', data);
         } catch (error) {
@@ -986,7 +1077,7 @@
           return;
         }
         try {
-          const res = await fetch(`${backendBase}/api/stores/${storeId}/products/category/${encodeURIComponent(categoryName)}`);
+          const res = await fetch(`${getBackendBase()}/api/stores/${storeId}/products/category/${encodeURIComponent(categoryName)}`);
           const data = await res.json();
           showOutput('storeCategoryProductsOutput', data);
         } catch (error) {
@@ -996,7 +1087,7 @@
 
       document.getElementById('fetchPremiumStoresBtn').addEventListener('click', async () => {
         const limit = document.getElementById('premiumStoresLimit').value.trim();
-        const url = limit ? `${backendBase}/api/stores/premium?limit=${limit}` : `${backendBase}/api/stores/premium`;
+        const url = limit ? `${getBackendBase()}/api/stores/premium?limit=${limit}` : `${getBackendBase()}/api/stores/premium`;
         try {
           const res = await fetch(url);
           const data = await res.json();
@@ -1013,7 +1104,7 @@
           return;
         }
         try {
-          const res = await fetch(`${backendBase}/api/stores/category/${encodeURIComponent(categoryName)}`);
+          const res = await fetch(`${getBackendBase()}/api/stores/category/${encodeURIComponent(categoryName)}`);
           const data = await res.json();
           showOutput('storesByCategoryOutput', data);
         } catch (error) {
@@ -1024,7 +1115,7 @@
       // Categories
       document.getElementById('fetchCategoriesBtn').addEventListener('click', async () => {
         try {
-          const res = await fetch(`${backendBase}/api/categories`);
+          const res = await fetch(`${getBackendBase()}/api/categories?_=${Date.now()}`);
           const data = await res.json();
           showOutput('categoriesOutput', data);
         } catch (error) {
@@ -1039,7 +1130,7 @@
           return;
         }
         try {
-          const res = await fetch(`${backendBase}/api/categories/${encodeURIComponent(categoryName)}/products`);
+          const res = await fetch(`${getBackendBase()}/api/categories/${encodeURIComponent(categoryName)}/products`);
           const data = await res.json();
           showOutput('categoryProductsOutput', data);
         } catch (error) {
@@ -1050,7 +1141,7 @@
       // Home
       document.getElementById('fetchHomeBtn').addEventListener('click', async () => {
         try {
-          const res = await fetch(`${backendBase}/api/home`);
+          const res = await fetch(`${getBackendBase()}/api/home`);
           const data = await res.json();
           showOutput('homeOutput', data);
         } catch (error) {
@@ -1065,7 +1156,7 @@
           return;
         }
         try {
-          const res = await fetch(`${backendBase}/api/profile`, {
+          const res = await fetch(`${getBackendBase()}/api/profile`, {
             headers: { 'Authorization': lastAppToken },
           });
           const data = await res.json();
@@ -1086,7 +1177,7 @@
           return;
         }
         try {
-          const res = await fetch(`${backendBase}/api/profile`, {
+          const res = await fetch(`${getBackendBase()}/api/profile`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json', 'Authorization': lastAppToken },
             body: JSON.stringify({ name }),
@@ -1112,7 +1203,7 @@
           return;
         }
         try {
-          const res = await fetch(`${backendBase}/api/profile/addresses`, {
+          const res = await fetch(`${getBackendBase()}/api/profile/addresses`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': lastAppToken },
             body: JSON.stringify({ addressName: addressName || null, addressLong, addressLat, setAsDefault }),
@@ -1135,7 +1226,7 @@
           return;
         }
         try {
-          const res = await fetch(`${backendBase}/api/profile/addresses/${index}`, {
+          const res = await fetch(`${getBackendBase()}/api/profile/addresses/${index}`, {
             method: 'DELETE',
             headers: { 'Authorization': lastAppToken },
           });
@@ -1175,7 +1266,7 @@
         }
         try {
           const checkoutData = JSON.parse(document.getElementById('checkoutDataInput').value);
-          const res = await fetch(`${backendBase}/api/checkout`, {
+          const res = await fetch(`${getBackendBase()}/api/checkout`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': lastAppToken },
             body: JSON.stringify(checkoutData),
@@ -1193,7 +1284,7 @@
           return;
         }
         try {
-          const res = await fetch(`${backendBase}/api/checkout`, {
+          const res = await fetch(`${getBackendBase()}/api/checkout`, {
             headers: { 'Authorization': lastAppToken },
           });
           const data = await res.json();
@@ -1214,7 +1305,7 @@
           return;
         }
         try {
-          const res = await fetch(`${backendBase}/api/checkout/${orderId}`, {
+          const res = await fetch(`${getBackendBase()}/api/checkout/${orderId}`, {
             headers: { 'Authorization': lastAppToken },
           });
           const data = await res.json();
@@ -1236,7 +1327,7 @@
           return;
         }
         try {
-          const res = await fetch(`${backendBase}/api/checkout/${orderId}/rate`, {
+          const res = await fetch(`${getBackendBase()}/api/checkout/${orderId}/rate`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json', 'Authorization': lastAppToken },
             body: JSON.stringify({ rating: parseInt(rating) }),
@@ -1256,7 +1347,7 @@
           return;
         }
         try {
-          const res = await fetch(`${backendBase}/api/promo-codes/${code}`);
+          const res = await fetch(`${getBackendBase()}/api/promo-codes/${code}`);
           const data = await res.json();
           showOutput('promoOutput', data);
         } catch (error) {
@@ -1267,7 +1358,7 @@
       // Popup
       document.getElementById('getPopupBtn').addEventListener('click', async () => {
         try {
-          const res = await fetch(`${backendBase}/api/popup`);
+          const res = await fetch(`${getBackendBase()}/api/popup`);
           const data = await res.json();
           showOutput('popupOutput', data);
         } catch (error) {
@@ -1293,7 +1384,7 @@
           return;
         }
         try {
-          const res = await fetch(`${backendBase}/api/arheb-box`, {
+          const res = await fetch(`${getBackendBase()}/api/arheb-box`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': lastAppToken },
             body: JSON.stringify({
@@ -1312,7 +1403,7 @@
       // Contact
       document.getElementById('getContactBtn').addEventListener('click', async () => {
         try {
-          const res = await fetch(`${backendBase}/api/contact`);
+          const res = await fetch(`${getBackendBase()}/api/contact`);
           const data = await res.json();
           showOutput('contactOutput', data);
         } catch (error) {
@@ -1335,7 +1426,7 @@
           return;
         }
         try {
-          const res = await fetch(`${backendBase}/api/contact`, {
+          const res = await fetch(`${getBackendBase()}/api/contact`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json', 'Authorization': lastAppToken },
             body: JSON.stringify(updateData),
@@ -1344,6 +1435,140 @@
           showOutput('updateContactOutput', data);
         } catch (error) {
           showOutput('updateContactOutput', { error: error.message });
+        }
+      });
+
+      // Admin
+      document.getElementById('adminLoginBtn').addEventListener('click', async () => {
+        const email = document.getElementById('adminEmailInput').value.trim();
+        const password = document.getElementById('adminPasswordInput').value;
+        if (!email || !password) {
+          showOutput('adminLoginOutput', { error: 'Email and password required' });
+          return;
+        }
+        try {
+          const res = await fetch(`${getBackendBase()}/api/admin/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password }),
+          });
+          const data = await res.json();
+          showOutput('adminLoginOutput', data);
+          if (data.success && data.token) {
+            lastAdminToken = data.token;
+          }
+        } catch (error) {
+          showOutput('adminLoginOutput', { error: error.message });
+        }
+      });
+
+      document.getElementById('adminGetCategoriesBtn').addEventListener('click', async () => {
+        if (!lastAdminToken) {
+          showOutput('adminCategoriesOutput', { error: 'Please Admin Login first' });
+          return;
+        }
+        try {
+          const res = await fetch(`${getBackendBase()}/api/admin/categories`, {
+            headers: { 'Authorization': lastAdminToken },
+          });
+          const data = await res.json();
+          showOutput('adminCategoriesOutput', data);
+        } catch (error) {
+          showOutput('adminCategoriesOutput', { error: error.message });
+        }
+      });
+
+      document.getElementById('adminFetchPublicCategoriesBtn').addEventListener('click', async () => {
+        try {
+          const res = await fetch(`${getBackendBase()}/api/categories?t=${Date.now()}`);
+          const data = await res.json();
+          showOutput('adminCategoriesOutput', data);
+        } catch (error) {
+          showOutput('adminCategoriesOutput', { error: error.message });
+        }
+      });
+
+      document.getElementById('adminEditCategoryBtn').addEventListener('click', async () => {
+        if (!lastAdminToken) {
+          showOutput('adminEditCategoryOutput', { error: 'Please Admin Login first' });
+          return;
+        }
+        const id = document.getElementById('adminCategoryIdInput').value.trim();
+        if (!id) {
+          showOutput('adminEditCategoryOutput', { error: 'Category ID required' });
+          return;
+        }
+        const body = {};
+        const name = document.getElementById('adminCategoryNameInput').value.trim();
+        const nameAr = document.getElementById('adminCategoryNameArInput').value.trim();
+        const nameEn = document.getElementById('adminCategoryNameEnInput').value.trim();
+        if (name) body.name = name;
+        if (nameAr) body.nameAr = nameAr;
+        if (nameEn) body.nameEn = nameEn;
+        if (Object.keys(body).length === 0) {
+          showOutput('adminEditCategoryOutput', { error: 'Enter at least name, nameAr, or nameEn' });
+          return;
+        }
+        try {
+          const res = await fetch(`${getBackendBase()}/api/admin/categories/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', 'Authorization': lastAdminToken },
+            body: JSON.stringify(body),
+          });
+          const data = await res.json();
+          showOutput('adminEditCategoryOutput', data);
+        } catch (error) {
+          showOutput('adminEditCategoryOutput', { error: error.message });
+        }
+      });
+
+      document.getElementById('adminAddCategoryBtn').addEventListener('click', async () => {
+        if (!lastAdminToken) {
+          showOutput('adminAddCategoryOutput', { error: 'Please Admin Login first' });
+          return;
+        }
+        const name = document.getElementById('adminNewCategoryNameInput').value.trim();
+        if (!name) {
+          showOutput('adminAddCategoryOutput', { error: 'Name required' });
+          return;
+        }
+        const body = { name };
+        const nameAr = document.getElementById('adminNewCategoryNameArInput').value.trim();
+        const nameEn = document.getElementById('adminNewCategoryNameEnInput').value.trim();
+        if (nameAr) body.nameAr = nameAr;
+        if (nameEn) body.nameEn = nameEn;
+        try {
+          const res = await fetch(`${getBackendBase()}/api/admin/categories`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': lastAdminToken },
+            body: JSON.stringify(body),
+          });
+          const data = await res.json();
+          showOutput('adminAddCategoryOutput', data);
+        } catch (error) {
+          showOutput('adminAddCategoryOutput', { error: error.message });
+        }
+      });
+
+      document.getElementById('adminDeleteCategoryBtn').addEventListener('click', async () => {
+        if (!lastAdminToken) {
+          showOutput('adminDeleteCategoryOutput', { error: 'Please Admin Login first' });
+          return;
+        }
+        const id = document.getElementById('adminDeleteCategoryIdInput').value.trim();
+        if (!id) {
+          showOutput('adminDeleteCategoryOutput', { error: 'Category ID required' });
+          return;
+        }
+        try {
+          const res = await fetch(`${getBackendBase()}/api/admin/categories/${id}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': lastAdminToken },
+          });
+          const data = await res.json();
+          showOutput('adminDeleteCategoryOutput', data);
+        } catch (error) {
+          showOutput('adminDeleteCategoryOutput', { error: error.message });
         }
       });
 
@@ -1481,7 +1706,7 @@
         currentOrderId = parseInt(orderId);
         currentRole = 'driver';
 
-        trackingSocket = io(backendBase, {
+        trackingSocket = io(getBackendBase(), {
           auth: {
             token: lastAppToken,
             orderId: currentOrderId
@@ -1568,7 +1793,7 @@
         currentOrderId = parseInt(orderId);
         currentRole = 'customer';
 
-        trackingSocket = io(backendBase, {
+        trackingSocket = io(getBackendBase(), {
           auth: {
             token: lastAppToken,
             orderId: currentOrderId
