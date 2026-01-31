@@ -55,6 +55,8 @@ If no SuperAdmin exists, one is created at startup. Run the dashboard with `cd d
 - [Categories](#categories)
   - [Get All Categories](#get-all-categories)
   - [Get Products by Category](#get-products-by-category)
+- [Search](#search)
+  - [Search Stores & Products](#search-stores--products)
 - [Home](#home)
 - [Profile](#profile)
   - [Get Profile](#get-profile)
@@ -727,13 +729,70 @@ if (data.success) {
 
 ---
 
+## Search
+
+### Search Stores & Products
+
+Searches stores and products by text. Returns stores whose name/category (EN/AR) contain the query, and products whose name/category contain the query. Stores and products are returned in separate lists.
+
+**Endpoint:** `GET /api/search?q=text`
+
+**Authentication:** Not required
+
+**Query Parameters:**
+- `q` (or `query`) - Search text (case-insensitive, partial match)
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "message": "Search results",
+  "data": {
+    "stores": [
+      {
+        "id": "1",
+        "name": "Store Name",
+        "nameAr": "اسم المتجر",
+        "nameEn": "Store Name",
+        "category": "restaurant",
+        "logo": "https://...",
+        "rate": 4.5
+      }
+    ],
+    "products": [
+      {
+        "id": "1",
+        "name": "Product Name",
+        "nameAr": "اسم المنتج",
+        "nameEn": "Product Name",
+        "price": 4.5,
+        "store": { "id": "1", "name": "Store Name" }
+      }
+    ]
+  },
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+**Empty Query:** If `q` is missing or empty, returns `{ data: { stores: [], products: [] } }`.
+
+**Example:**
+```javascript
+const response = await fetch('https://arheb-backend.onrender.com/api/search?q=pizza');
+const data = await response.json();
+console.log(data.data.stores);   // Stores matching "pizza"
+console.log(data.data.products); // Products matching "pizza"
+```
+
+---
+
 ## Home
 
-Retrieves home page data including banners, categories, popular stores, and offers.
+Retrieves home page data including banners, categories (from categories API), popular stores, and offers. When the user is authenticated, the response may include **activeOrder** (orderID and status) if they have an order in an active status.
 
 **Endpoint:** `GET /api/home`
 
-**Authentication:** Not required
+**Authentication:** Optional. If `Authorization: Bearer <token>` is sent and valid, the response may include `activeOrder` when the user has an order in "Waiting confirmation", "Being prepared", or "On the way".
 
 **Success Response (200):**
 ```json
@@ -745,6 +804,36 @@ Retrieves home page data including banners, categories, popular stores, and offe
     "mostPopularStores": [...],
     "offers": [...]
   }
+}
+```
+
+**With active order (when user sends Bearer token and has an order in active status):**
+```json
+{
+  "success": true,
+  "data": {
+    "banners": [...],
+    "categories": [...],
+    "mostPopularStores": [...],
+    "offers": [...]
+  },
+  "activeOrder": {
+    "orderID": 42,
+    "status": "Being prepared"
+  }
+}
+```
+
+**Note:** `activeOrder` is only present when the user is authenticated and has at least one order with status `Waiting confirmation`, `Being prepared`, or `On the way`. The latest such order is returned (orderID and status only).
+
+**Example (with token to get activeOrder):**
+```javascript
+const response = await fetch('https://arheb-backend.onrender.com/api/home', {
+  headers: { 'Authorization': 'Bearer your-jwt-token-here' }
+});
+const data = await response.json();
+if (data.activeOrder) {
+  console.log('Active order:', data.activeOrder.orderID, data.activeOrder.status);
 }
 ```
 
@@ -1834,6 +1923,8 @@ A comprehensive test client is available at:
 This interactive interface allows you to:
 - ✅ Test authentication flow (register, verify OTP, delete user)
 - ✅ Browse all data endpoints (categories, products, stores, home)
+- ✅ Search stores and products (GET /api/search?q=text)
+- ✅ Test home with optional auth (activeOrder when user has order in Waiting confirmation / Being prepared / On the way)
 - ✅ Test profile management
 - ✅ Create and manage orders
 - ✅ Test real-time order tracking (WebSocket) with map visualization

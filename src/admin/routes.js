@@ -322,6 +322,21 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     return res.status(200).json({ success: true, data: { store: stores[idx] } });
   });
 
+  app.delete('/api/admin/stores/:id', auth, requireSuperAdmin, (req, res) => {
+    const storeId = req.params.id;
+    const stores = loadStores();
+    const idx = stores.findIndex((s) => String(s.id) === String(storeId));
+    if (idx === -1) return res.status(404).json({ success: false, message: 'Store not found' });
+    stores.splice(idx, 1);
+    saveStores(stores);
+    const products = loadProducts();
+    const remaining = products.filter((p) => String(p.store?.id) !== String(storeId));
+    if (remaining.length !== products.length) {
+      saveProducts(remaining);
+    }
+    return res.status(200).json({ success: true, message: 'Store deleted' });
+  });
+
   // ——— Products (per store) ———
   app.get('/api/admin/stores/:storeId/products', auth, requireStoreAccess((req) => req.params.storeId), (req, res) => {
     const products = loadProducts();

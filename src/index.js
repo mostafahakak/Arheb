@@ -19,6 +19,7 @@ const attachOrderTrackingRoutes = require('./order');
 const attachAdmin = require('./admin');
 const attachPopupRoutes = require('./popup');
 const attachArhebBoxRoutes = require('./arhebBox');
+const attachSearchRoutes = require('./search');
 
 dotenv.config();
 
@@ -151,9 +152,10 @@ if (fs.existsSync(testClientDir)) {
 
 attachCategoriesRoutes(app, db);
 attachProductsRoutes(app, db);
-attachHomeRoutes(app, db);
+attachHomeRoutes(app, db, JWT_SECRET);
 attachStoresRoutes(app, db);
 attachPopupRoutes(app);
+attachSearchRoutes(app);
 attachAdmin(app, db, JWT_SECRET);
 
 function extractFirebaseError(error) {

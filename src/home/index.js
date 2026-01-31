@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const jwt = require('jsonwebtoken');
 
 const homeResponsePath = path.resolve(
   __dirname,
@@ -264,12 +265,20 @@ const seedHomeTables = (db) => {
   insertData();
 };
 
-module.exports = function attachHomeRoutes(app, db) {
+const ACTIVE_ORDER_STATUSES = ['Waiting confirmation', 'Being prepared', 'On the way'];
+
+module.exports = function attachHomeRoutes(app, db, JWT_SECRET) {
   if (banners.length || homeCategories.length || mostPopularStores.length || offers.length) {
     seedHomeTables(db);
   } else {
     console.warn('No home data found to seed the database');
   }
+
+  const findActiveOrderByPhone = db.prepare(`
+    SELECT id, status FROM orders
+    WHERE phoneNumber = ? AND status IN (?, ?, ?)
+    ORDER BY createdAt DESC LIMIT 1
+  `);
 
   app.get('/api/home', (req, res) => {
     if (!homeResponse) {
@@ -277,11 +286,30 @@ module.exports = function attachHomeRoutes(app, db) {
     }
 
     // Use categories from categories_response.json (single source of truth)
-    // so admin edits in the dashboard are reflected here
     const categories = loadCategoriesResponse();
     const response = { ...homeResponse };
     if (response.data && categories) {
       response.data = { ...response.data, categories };
+    }
+
+    // If user is authenticated, add activeOrder (orderID, status) only when they have an order in active status
+    if (JWT_SECRET) {
+      const authHeader = req.headers.authorization;
+      const token = authHeader && authHeader.replace(/Bearer\s+/i, '').trim();
+      if (token) {
+        try {
+          const payload = jwt.verify(token, JWT_SECRET);
+          const phoneNumber = payload.phoneNumber;
+          if (phoneNumber) {
+            const row = findActiveOrderByPhone.get(phoneNumber, ...ACTIVE_ORDER_STATUSES);
+            if (row) {
+              response.activeOrder = { orderID: row.id, status: row.status };
+            }
+          }
+        } catch (e) {
+          // Invalid token: do not add activeOrder
+        }
+      }
     }
 
     return res.status(200).json(response);

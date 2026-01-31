@@ -366,6 +366,7 @@
         <a class="nav-item" data-section="products">📦 Products</a>
         <a class="nav-item" data-section="stores">🏪 Stores</a>
         <a class="nav-item" data-section="categories">📂 Categories</a>
+        <a class="nav-item" data-section="search">🔍 Search</a>
         <a class="nav-item" data-section="home">🏠 Home</a>
         <a class="nav-item" data-section="profile">👤 Profile</a>
         <a class="nav-item" data-section="checkout">🛒 Checkout & Orders</a>
@@ -528,11 +529,27 @@
           </div>
         </section>
 
+        <!-- Search Section -->
+        <section id="search" class="section">
+          <h2>Search <span class="badge public">Public</span></h2>
+          <div class="card">
+            <h3>Search Stores & Products</h3>
+            <p style="font-size: 0.875rem; color: #718096; margin-bottom: 0.5rem;">GET /api/search?q=text — returns stores and products whose names contain the search text.</p>
+            <div class="form-group">
+              <label for="searchQueryInput">Search text</label>
+              <input id="searchQueryInput" type="text" placeholder="e.g. pizza, supermarket, burger" />
+            </div>
+            <button id="searchBtn">Search</button>
+            <div id="searchOutput" class="output" style="display: none;"></div>
+          </div>
+        </section>
+
         <!-- Home Section -->
         <section id="home" class="section">
           <h2>Home <span class="badge public">Public</span></h2>
           <div class="card">
             <h3>Get Home Data</h3>
+            <p style="font-size: 0.875rem; color: #718096; margin-bottom: 0.5rem;">Send with Authorization (Bearer token) to get activeOrder (orderID, status) when you have an order in Waiting confirmation / Being prepared / On the way.</p>
             <button id="fetchHomeBtn">Fetch Home Data</button>
             <div id="homeOutput" class="output" style="display: none;"></div>
           </div>
@@ -1138,10 +1155,28 @@
         }
       });
 
-      // Home
+      // Search
+      document.getElementById('searchBtn').addEventListener('click', async () => {
+        const q = document.getElementById('searchQueryInput').value.trim();
+        if (!q) {
+          showOutput('searchOutput', { error: 'Enter search text' });
+          return;
+        }
+        try {
+          const res = await fetch(`${getBackendBase()}/api/search?q=${encodeURIComponent(q)}`);
+          const data = await res.json();
+          showOutput('searchOutput', data);
+        } catch (error) {
+          showOutput('searchOutput', { error: error.message });
+        }
+      });
+
+      // Home (send token when available so activeOrder is returned if user has active order)
       document.getElementById('fetchHomeBtn').addEventListener('click', async () => {
         try {
-          const res = await fetch(`${getBackendBase()}/api/home`);
+          const headers = {};
+          if (lastAppToken) headers['Authorization'] = lastAppToken;
+          const res = await fetch(`${getBackendBase()}/api/home`, { headers });
           const data = await res.json();
           showOutput('homeOutput', data);
         } catch (error) {
