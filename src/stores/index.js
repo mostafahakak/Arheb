@@ -23,7 +23,8 @@ const loadStoresResponse = () => {
 const initialResponse = loadStoresResponse();
 const storesListForSeed = initialResponse?.data?.stores ?? [];
 
-const seedStoresTable = (db, stores) => {
+// Create store_listings table (required by checkout for ratings). Call even when stores list is empty.
+function ensureStoreListingsTable(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS store_listings (
       id TEXT PRIMARY KEY,
@@ -50,6 +51,11 @@ const seedStoresTable = (db, stores) => {
       categoryEn TEXT
     );
   `);
+}
+
+const seedStoresTable = (db, stores) => {
+  ensureStoreListingsTable(db);
+  if (!stores || stores.length === 0) return;
 
   const insert = db.prepare(`
     INSERT INTO store_listings (
@@ -156,9 +162,8 @@ const seedStoresTable = (db, stores) => {
 };
 
 module.exports = function attachStoresRoutes(app, db) {
-  if (storesListForSeed.length > 0) {
-    seedStoresTable(db, storesListForSeed);
-  } else {
+  seedStoresTable(db, storesListForSeed);
+  if (storesListForSeed.length === 0) {
     console.warn('No store data found to seed the database');
   }
 
