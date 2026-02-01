@@ -19,8 +19,9 @@ const loadStoresResponse = () => {
   }
 };
 
-const storesResponse = loadStoresResponse();
-const storesList = storesResponse?.data?.stores ?? [];
+// Use current file data at startup for DB seed only; routes load fresh on each request
+const initialResponse = loadStoresResponse();
+const storesListForSeed = initialResponse?.data?.stores ?? [];
 
 const seedStoresTable = (db, stores) => {
   db.exec(`
@@ -155,44 +156,41 @@ const seedStoresTable = (db, stores) => {
 };
 
 module.exports = function attachStoresRoutes(app, db) {
-  if (storesList.length > 0) {
-    seedStoresTable(db, storesList);
+  if (storesListForSeed.length > 0) {
+    seedStoresTable(db, storesListForSeed);
   } else {
     console.warn('No store data found to seed the database');
   }
 
   app.get('/api/stores', (req, res) => {
+    const storesResponse = loadStoresResponse();
     if (!storesResponse) {
-      return res.status(500).json({ message: 'Stores payload is unavailable' });
+      return res.status(500).json({ success: false, message: 'Stores payload is unavailable' });
     }
-
-    return res.status(200).json(storesResponse);
+    // Return actual current data (may be empty)
+    const stores = storesResponse?.data?.stores ?? [];
+    return res.status(200).json({
+      success: true,
+      message: 'Stores listing retrieved successfully',
+      data: { stores },
+      ...(storesResponse.timestamp && { timestamp: storesResponse.timestamp })
+    });
   });
 
   app.get('/api/stores/top-rated', (req, res) => {
-    if (!storesResponse || storesList.length === 0) {
-      return res.status(500).json({
-        success: false,
-        message: 'Stores payload is unavailable'
-      });
+    const storesResponse = loadStoresResponse();
+    if (!storesResponse) {
+      return res.status(500).json({ success: false, message: 'Stores payload is unavailable' });
     }
-
-    // Get optional limit parameter (default to all stores if not specified)
+    const storesList = storesResponse?.data?.stores ?? [];
     const limit = req.query.limit ? parseInt(req.query.limit) : null;
-
-    // Filter stores that have a valid rate and sort by rate (highest first)
     const topRatedStores = storesList
       .filter(store => store.rate != null && typeof store.rate === 'number')
       .sort((a, b) => {
-        // Sort by rate descending (highest first)
-        // If rates are equal, sort by number of reviews (more reviews first)
-        if (b.rate !== a.rate) {
-          return b.rate - a.rate;
-        }
+        if (b.rate !== a.rate) return b.rate - a.rate;
         return (b.numberOfReviews || 0) - (a.numberOfReviews || 0);
       })
-      .slice(0, limit || storesList.length); // Apply limit if specified
-
+      .slice(0, limit || storesList.length);
     return res.status(200).json({
       success: true,
       message: 'Top rated stores retrieved successfully',
@@ -207,12 +205,11 @@ module.exports = function attachStoresRoutes(app, db) {
 
   // Get premium stores (set by SuperAdmin/Admin)
   app.get('/api/stores/premium', (req, res) => {
-    if (!storesResponse || storesList.length === 0) {
-      return res.status(500).json({
-        success: false,
-        message: 'Stores payload is unavailable'
-      });
+    const storesResponse = loadStoresResponse();
+    if (!storesResponse) {
+      return res.status(500).json({ success: false, message: 'Stores payload is unavailable' });
     }
+    const storesList = storesResponse?.data?.stores ?? [];
     const limit = req.query.limit ? parseInt(req.query.limit) : null;
     const premiumStores = storesList.filter(store => store.isPremium === true);
     const result = limit ? premiumStores.slice(0, limit) : premiumStores;
@@ -232,17 +229,13 @@ module.exports = function attachStoresRoutes(app, db) {
   app.get('/api/stores/category/:categoryName', (req, res) => {
     const categoryName = req.params.categoryName;
     if (!categoryName || categoryName.trim() === '') {
-      return res.status(400).json({
-        success: false,
-        message: 'Category name is required'
-      });
+      return res.status(400).json({ success: false, message: 'Category name is required' });
     }
-    if (!storesResponse || storesList.length === 0) {
-      return res.status(500).json({
-        success: false,
-        message: 'Stores payload is unavailable'
-      });
+    const storesResponse = loadStoresResponse();
+    if (!storesResponse) {
+      return res.status(500).json({ success: false, message: 'Stores payload is unavailable' });
     }
+    const storesList = storesResponse?.data?.stores ?? [];
     const categoryNameLower = categoryName.toLowerCase().trim();
     const matches = (val) => {
       if (val == null) return false;
@@ -267,7 +260,16 @@ module.exports = function attachStoresRoutes(app, db) {
   app.get('/api/stores/:id/products', (req, res) => {
     const storeId = req.params.id;
 
-    // Load products response
+    const storesResponse = loadStoresResponse();
+    if (!storesResponse) {
+      return res.status(500).json({ success: false, message: 'Stores payload is unavailable' });
+    }
+    const storesList = storesResponse?.data?.stores ?? [];
+    const store = storesList.find(s => s.id === storeId);
+    if (!store) {
+      return res.status(404).json({ success: false, message: 'Store not found' });
+    }
+
     const productsResponsePath = path.resolve(
       __dirname,
       '..',
@@ -275,32 +277,15 @@ module.exports = function attachStoresRoutes(app, db) {
       'Arheb API JSON',
       'products_listing_response.json'
     );
-
     let productsResponse;
     try {
       const raw = fs.readFileSync(productsResponsePath, 'utf-8');
       productsResponse = JSON.parse(raw);
     } catch (error) {
-      return res.status(500).json({
-        success: false,
-        message: 'Products payload is unavailable'
-      });
+      return res.status(500).json({ success: false, message: 'Products payload is unavailable' });
     }
-
     if (!productsResponse) {
-      return res.status(500).json({
-        success: false,
-        message: 'Products payload is unavailable'
-      });
-    }
-
-    // Check if store exists in stores listing
-    const store = storesList.find(s => s.id === storeId);
-    if (!store) {
-      return res.status(404).json({
-        success: false,
-        message: 'Store not found'
-      });
+      return res.status(500).json({ success: false, message: 'Products payload is unavailable' });
     }
 
     // Filter products by store ID
@@ -331,13 +316,19 @@ module.exports = function attachStoresRoutes(app, db) {
     const categoryName = req.params.categoryName;
 
     if (!categoryName || categoryName.trim() === '') {
-      return res.status(400).json({
-        success: false,
-        message: 'Category name is required'
-      });
+      return res.status(400).json({ success: false, message: 'Category name is required' });
     }
 
-    // Load products response
+    const storesResponse = loadStoresResponse();
+    if (!storesResponse) {
+      return res.status(500).json({ success: false, message: 'Stores payload is unavailable' });
+    }
+    const storesList = storesResponse?.data?.stores ?? [];
+    const store = storesList.find(s => s.id === storeId);
+    if (!store) {
+      return res.status(404).json({ success: false, message: 'Store not found' });
+    }
+
     const productsResponsePath = path.resolve(
       __dirname,
       '..',
@@ -345,32 +336,15 @@ module.exports = function attachStoresRoutes(app, db) {
       'Arheb API JSON',
       'products_listing_response.json'
     );
-
     let productsResponse;
     try {
       const raw = fs.readFileSync(productsResponsePath, 'utf-8');
       productsResponse = JSON.parse(raw);
     } catch (error) {
-      return res.status(500).json({
-        success: false,
-        message: 'Products payload is unavailable'
-      });
+      return res.status(500).json({ success: false, message: 'Products payload is unavailable' });
     }
-
     if (!productsResponse) {
-      return res.status(500).json({
-        success: false,
-        message: 'Products payload is unavailable'
-      });
-    }
-
-    // Check if store exists in stores listing
-    const store = storesList.find(s => s.id === storeId);
-    if (!store) {
-      return res.status(404).json({
-        success: false,
-        message: 'Store not found'
-      });
+      return res.status(500).json({ success: false, message: 'Products payload is unavailable' });
     }
 
     // Filter products by store ID and category

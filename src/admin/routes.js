@@ -322,7 +322,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     return res.status(200).json({ success: true, data: { store: stores[idx] } });
   });
 
-  app.delete('/api/admin/stores/:id', auth, requireSuperAdmin, (req, res) => {
+  app.delete('/api/admin/stores/:id', auth, requireAdminOrSuper, (req, res) => {
     const storeId = req.params.id;
     const stores = loadStores();
     const idx = stores.findIndex((s) => String(s.id) === String(storeId));
@@ -502,6 +502,31 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     });
 
     return res.status(200).json({ success: true, data: { orders: withItems } });
+  });
+
+  // ——— Get single order (full details for admin) ———
+  app.get('/api/admin/orders/:orderId', auth, (req, res) => {
+    const orderId = parseInt(req.params.orderId, 10);
+    if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
+    const order = findOrderById.get(orderId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId !== req.admin.storeId) {
+      return res.status(403).json({ success: false, message: 'Access denied to this order' });
+    }
+    const items = findOrderItems.all(orderId);
+    const storesList = loadStores();
+    const store = order.storeId ? storesList.find((s) => s.id === order.storeId) : null;
+    const storeName = store ? (store.nameEn || store.name || store.nameAr) : (order.storeId || '-');
+    return res.status(200).json({
+      success: true,
+      data: {
+        order: {
+          ...order,
+          storeName,
+          items: items.map((i) => ({ id: i.productId, name: i.productName, price: i.price, quantity: i.quantity })),
+        },
+      },
+    });
   });
 
   app.patch('/api/admin/orders/:orderId/status', auth, (req, res) => {

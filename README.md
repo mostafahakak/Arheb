@@ -1818,6 +1818,7 @@ All admin endpoints require **Admin JWT** authentication. Send the token in the 
 | GET | `/api/admin/stores` | List stores (Store Admin sees only their store) |
 | GET | `/api/admin/stores/:id` | Get one store |
 | PATCH | `/api/admin/stores/:id` | Update store (name, nameAr, nameEn, cover, logo, deliveryTime, deliveryFee, minimumOrder, isOpen, openingHours, address, phone, category, etc.). **isPremium** only by SuperAdmin/Admin. |
+| DELETE | `/api/admin/stores/:id` | Delete store (Admin and SuperAdmin only). Removes store and its products. |
 
 ---
 
@@ -1840,6 +1841,7 @@ All under `/api/admin/stores/:storeId/products`. Store Admin can only access the
 |--------|----------|-------------|
 | GET | `/api/admin/orders/counts` | Returns `{ active, complete }`: active = orders not Delivered/Cancelled; complete = Delivered or Cancelled. Store Admin: only their store. |
 | GET | `/api/admin/orders` | List orders (Store Admin: only their store). Query: `dateFrom`, `dateTo`, `status`, `orderType` (`active` \| `complete`), `storeId`, `storeName`, `name` (customer name/phone). Sorted by `createdAt DESC, id DESC`. |
+| GET | `/api/admin/orders/:orderId` | Get one order with full details (items, address, notes, paymentType, storeName, etc.). Store Admin: only their store. |
 | PATCH | `/api/admin/orders/:orderId/status` | Update order status. Body: `{ "status": "Confirmed" }`. |
 
 ---
