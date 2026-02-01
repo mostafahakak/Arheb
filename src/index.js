@@ -99,7 +99,8 @@ try {
   // Column already exists
 }
 
-// Create orders and order_items before admin routes (admin prepares statements on these tables)
+// Single orders + order_items table shared by: checkout (creates orders), admin (lists/updates), order tracking (WebSocket).
+// There is only one orders table; all modules use this same db.
 db.exec(`
   CREATE TABLE IF NOT EXISTS orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

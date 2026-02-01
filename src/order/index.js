@@ -4,8 +4,8 @@ const jwt = require('jsonwebtoken');
 // Format: { orderId: { driverSocket: socket, customerSocket: socket, lastLocation: {long, lat} } }
 const activeTrackings = new Map();
 
+// Uses the same db and orders table as checkout (creates orders) and admin (lists/updates orders).
 module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateRequest, JWT_SECRET) {
-  // Find order by ID
   const findOrderById = db.prepare('SELECT * FROM orders WHERE id = ?');
 
   // Helper function to verify token and get user info

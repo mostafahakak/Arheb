@@ -420,12 +420,12 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     return res.status(200).json({ success: true, message: 'Product deleted' });
   });
 
-  // ——— Orders counts (active = not Delivered/Cancelled; complete = Delivered or Cancelled) ———
+  // ——— Orders: same DB/table as checkout and order tracking; Store Admin sees their store or unassigned (null storeId) ———
   app.get('/api/admin/orders/counts', auth, (req, res) => {
     const conditions = [];
     const params = [];
     if (req.admin.role === ROLES.STORE_ADMIN) {
-      conditions.push('storeId = ?');
+      conditions.push('(storeId = ? OR storeId IS NULL)');
       params.push(req.admin.storeId);
     }
     const where = conditions.length ? ' WHERE ' + conditions.join(' AND ') : '';
@@ -443,7 +443,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const params = [];
 
     if (req.admin.role === ROLES.STORE_ADMIN) {
-      conditions.push('storeId = ?');
+      conditions.push('(storeId = ? OR storeId IS NULL)');
       params.push(req.admin.storeId);
     }
     if (dateFrom) {
@@ -510,7 +510,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId !== req.admin.storeId) {
+    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && order.storeId !== req.admin.storeId) {
       return res.status(403).json({ success: false, message: 'Access denied to this order' });
     }
     const items = findOrderItems.all(orderId);
@@ -534,7 +534,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId !== req.admin.storeId) {
+    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && order.storeId !== req.admin.storeId) {
       return res.status(403).json({ success: false, message: 'Access denied to this order' });
     }
     const { status } = req.body || {};
@@ -553,6 +553,17 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
         },
       },
     });
+  });
+
+  // ——— Delete order (Admin and SuperAdmin only; order_items removed by CASCADE) ———
+  app.delete('/api/admin/orders/:orderId', auth, requireAdminOrSuper, (req, res) => {
+    const orderId = parseInt(req.params.orderId, 10);
+    if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
+    const order = findOrderById.get(orderId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    db.prepare('DELETE FROM order_items WHERE orderId = ?').run(orderId);
+    db.prepare('DELETE FROM orders WHERE id = ?').run(orderId);
+    return res.status(200).json({ success: true, message: 'Order deleted' });
   });
 
   // ——— Dashboard sales ———

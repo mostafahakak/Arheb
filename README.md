@@ -1843,6 +1843,7 @@ All under `/api/admin/stores/:storeId/products`. Store Admin can only access the
 | GET | `/api/admin/orders` | List orders (Store Admin: only their store). Query: `dateFrom`, `dateTo`, `status`, `orderType` (`active` \| `complete`), `storeId`, `storeName`, `name` (customer name/phone). Sorted by `createdAt DESC, id DESC`. |
 | GET | `/api/admin/orders/:orderId` | Get one order with full details (items, address, notes, paymentType, storeName, etc.). Store Admin: only their store. |
 | PATCH | `/api/admin/orders/:orderId/status` | Update order status. Body: `{ "status": "Confirmed" }`. |
+| DELETE | `/api/admin/orders/:orderId` | Delete order (Admin and SuperAdmin only). Removes order and its items. |
 
 ---
 
