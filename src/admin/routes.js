@@ -420,9 +420,25 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     return res.status(200).json({ success: true, message: 'Product deleted' });
   });
 
-  // ——— Orders (sorted newest first; filter by date range, status, store, name) ———
+  // ——— Orders counts (active = not Delivered/Cancelled; complete = Delivered or Cancelled) ———
+  app.get('/api/admin/orders/counts', auth, (req, res) => {
+    const conditions = [];
+    const params = [];
+    if (req.admin.role === ROLES.STORE_ADMIN) {
+      conditions.push('storeId = ?');
+      params.push(req.admin.storeId);
+    }
+    const where = conditions.length ? ' WHERE ' + conditions.join(' AND ') : '';
+    const activeSql = 'SELECT COUNT(*) AS n FROM orders' + where + " AND (status IS NULL OR status NOT IN ('Delivered', 'Cancelled'))";
+    const completeSql = "SELECT COUNT(*) AS n FROM orders" + where + " AND status IN ('Delivered', 'Cancelled')";
+    const active = db.prepare(activeSql).get(...params)?.n ?? 0;
+    const complete = db.prepare(completeSql).get(...params)?.n ?? 0;
+    return res.status(200).json({ success: true, data: { active, complete } });
+  });
+
+  // ——— Orders (sorted newest first; filter by date range, status, store, name, orderType) ———
   app.get('/api/admin/orders', auth, (req, res) => {
-    const { dateFrom, dateTo, status, storeId, storeName, name } = req.query;
+    const { dateFrom, dateTo, status, storeId, storeName, name, orderType } = req.query;
     const conditions = [];
     const params = [];
 
@@ -437,6 +453,11 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (dateTo) {
       conditions.push("date(createdAt) <= date(?)");
       params.push(String(dateTo).trim());
+    }
+    if (orderType === 'active') {
+      conditions.push("(status IS NULL OR status NOT IN ('Delivered', 'Cancelled'))");
+    } else if (orderType === 'complete') {
+      conditions.push("status IN ('Delivered', 'Cancelled')");
     }
     if (status && String(status).trim()) {
       conditions.push('status = ?');
