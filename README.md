@@ -1816,6 +1816,7 @@ All admin endpoints require **Admin JWT** authentication. Send the token in the 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/admin/stores` | List stores (Store Admin sees only their store) |
+| POST | `/api/admin/stores` | Create store (Admin and SuperAdmin only). Body: name, nameEn, nameAr, cover, logo, phone, address, addressEn, deliveryFee, minimumOrder, etc. |
 | GET | `/api/admin/stores/:id` | Get one store |
 | PATCH | `/api/admin/stores/:id` | Update store (name, nameAr, nameEn, cover, logo, deliveryTime, deliveryFee, minimumOrder, isOpen, openingHours, address, phone, category, etc.). **isPremium** only by SuperAdmin/Admin. |
 | DELETE | `/api/admin/stores/:id` | Delete store (Admin and SuperAdmin only). Removes store and its products. |

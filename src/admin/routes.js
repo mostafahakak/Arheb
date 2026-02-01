@@ -296,6 +296,76 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     return res.status(200).json({ success: true, data: { stores } });
   });
 
+  app.post('/api/admin/stores', auth, requireAdminOrSuper, (req, res) => {
+    const body = req.body || {};
+    const stores = loadStores();
+    const ids = stores.map((s) => parseInt(String(s.id), 10)).filter((n) => !isNaN(n));
+    const nextId = ids.length ? String(Math.max(...ids) + 1) : '1';
+    const openingHours = body.openingHours && typeof body.openingHours === 'object'
+      ? body.openingHours
+      : { open: body.openingHoursOpen ?? '09:00', close: body.openingHoursClose ?? '23:00' };
+    const newStore = {
+      id: nextId,
+      name: body.name ?? body.nameEn ?? body.nameAr ?? '',
+      nameAr: body.nameAr ?? body.name ?? '',
+      nameEn: body.nameEn ?? body.name ?? '',
+      cover: body.cover ?? '',
+      logo: body.logo ?? '',
+      rate: typeof body.rate === 'number' ? body.rate : 4,
+      numberOfReviews: body.numberOfReviews ?? 0,
+      isFavorite: false,
+      deliveryTime: body.deliveryTime ?? '30-45 min',
+      deliveryFee: typeof body.deliveryFee === 'number' ? body.deliveryFee : parseFloat(body.deliveryFee) || 0,
+      minimumOrder: typeof body.minimumOrder === 'number' ? body.minimumOrder : parseFloat(body.minimumOrder) || 0,
+      isOpen: body.isOpen !== false,
+      openingHours,
+      address: body.address ?? body.addressEn ?? '',
+      addressAr: body.addressAr ?? body.address ?? '',
+      addressEn: body.addressEn ?? body.address ?? '',
+      phone: body.phone ?? '',
+      category: body.category ?? 'restaurants',
+      categoryAr: body.categoryAr ?? body.category ?? '',
+      categoryEn: body.categoryEn ?? body.category ?? '',
+      subCategories: Array.isArray(body.subCategories) ? body.subCategories : [],
+      isPremium: body.isPremium === true,
+    };
+    stores.push(newStore);
+    saveStores(stores);
+    try {
+      const insertStoreListing = db.prepare(`
+        INSERT INTO store_listings (id, name, nameAr, nameEn, cover, logo, rate, numberOfReviews, isFavorite, deliveryTime, deliveryFee, minimumOrder, isOpen, openingHoursOpen, openingHoursClose, address, addressAr, addressEn, phone, category, categoryAr, categoryEn)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      insertStoreListing.run(
+        newStore.id,
+        newStore.name ?? null,
+        newStore.nameAr ?? null,
+        newStore.nameEn ?? null,
+        newStore.cover ?? null,
+        newStore.logo ?? null,
+        newStore.rate ?? null,
+        newStore.numberOfReviews ?? null,
+        0,
+        newStore.deliveryTime ?? null,
+        newStore.deliveryFee ?? null,
+        newStore.minimumOrder ?? null,
+        newStore.isOpen ? 1 : 0,
+        newStore.openingHours?.open ?? null,
+        newStore.openingHours?.close ?? null,
+        newStore.address ?? null,
+        newStore.addressAr ?? null,
+        newStore.addressEn ?? null,
+        newStore.phone ?? null,
+        newStore.category ?? null,
+        newStore.categoryAr ?? null,
+        newStore.categoryEn ?? null
+      );
+    } catch (e) {
+      if (!e.message || !e.message.includes('no such table')) throw e;
+    }
+    return res.status(201).json({ success: true, data: { store: newStore } });
+  });
+
   app.get('/api/admin/stores/:id', auth, requireStoreAccess((req) => req.params.id), (req, res) => {
     const stores = loadStores();
     const store = stores.find((s) => s.id === req.params.id);
@@ -307,8 +377,11 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const stores = loadStores();
     const idx = stores.findIndex((s) => s.id === req.params.id);
     if (idx === -1) return res.status(404).json({ success: false, message: 'Store not found' });
-    const allowed = ['name', 'nameAr', 'nameEn', 'cover', 'logo', 'deliveryTime', 'deliveryFee', 'minimumOrder', 'isOpen', 'openingHours', 'address', 'addressAr', 'addressEn', 'phone', 'category', 'categoryAr', 'categoryEn'];
+    const allowed = ['name', 'nameAr', 'nameEn', 'cover', 'logo', 'deliveryTime', 'deliveryFee', 'minimumOrder', 'isOpen', 'openingHours', 'address', 'addressAr', 'addressEn', 'phone', 'category', 'categoryAr', 'categoryEn', 'subCategories'];
     const body = req.body || {};
+    if (body.subCategories !== undefined) {
+      stores[idx].subCategories = Array.isArray(body.subCategories) ? body.subCategories : [];
+    }
     if (body.isPremium !== undefined) {
       if (req.admin.role === ROLES.STORE_ADMIN) {
         return res.status(403).json({ success: false, message: 'Only SuperAdmin or Admin can set premium' });
@@ -428,9 +501,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       conditions.push('(storeId = ? OR storeId IS NULL)');
       params.push(req.admin.storeId);
     }
-    const where = conditions.length ? ' WHERE ' + conditions.join(' AND ') : '';
-    const activeSql = 'SELECT COUNT(*) AS n FROM orders' + where + " AND (status IS NULL OR status NOT IN ('Delivered', 'Cancelled'))";
-    const completeSql = "SELECT COUNT(*) AS n FROM orders" + where + " AND status IN ('Delivered', 'Cancelled')";
+    const wherePrefix = conditions.length ? ' WHERE ' + conditions.join(' AND ') + ' AND ' : ' WHERE ';
+    const activeSql = 'SELECT COUNT(*) AS n FROM orders' + wherePrefix + "(status IS NULL OR status NOT IN ('Delivered', 'Cancelled'))";
+    const completeSql = "SELECT COUNT(*) AS n FROM orders" + wherePrefix + "status IN ('Delivered', 'Cancelled')";
     const active = db.prepare(activeSql).get(...params)?.n ?? 0;
     const complete = db.prepare(completeSql).get(...params)?.n ?? 0;
     return res.status(200).json({ success: true, data: { active, complete } });
