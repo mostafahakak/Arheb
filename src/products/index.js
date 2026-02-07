@@ -19,14 +19,14 @@ const loadProductsResponse = () => {
   }
 };
 
-const productsResponse = loadProductsResponse();
-
+// Load from file on each request so admin add/edit/delete is visible immediately (same pattern as stores).
 module.exports = function attachProductsRoutes(app, db) {
   app.get('/api/products', (req, res) => {
+    const productsResponse = loadProductsResponse();
     if (!productsResponse) {
-      return res.status(500).json({ 
+      return res.status(500).json({
         success: false,
-        message: 'Products payload is unavailable' 
+        message: 'Products payload is unavailable'
       });
     }
 
@@ -92,15 +92,14 @@ module.exports = function attachProductsRoutes(app, db) {
 
   app.get('/api/products/:id', (req, res) => {
     const productId = req.params.id;
-    
+    const productsResponse = loadProductsResponse();
     if (!productsResponse) {
-      return res.status(500).json({ 
+      return res.status(500).json({
         success: false,
-        message: 'Products payload is unavailable' 
+        message: 'Products payload is unavailable'
       });
     }
 
-    // Use products listing as single source of truth (admin edits are stored there)
     const products = productsResponse?.data?.products ?? [];
     const product = products.find(p => String(p.id) === String(productId));
     

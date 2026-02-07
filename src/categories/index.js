@@ -187,28 +187,14 @@ function attachCategoriesRoutes(app, db) {
   const existing = loadCategoriesFromDb(db);
   const hasCategoriesInDb = existing?.data?.categories?.length > 0;
 
-  if (initialCategories.length === 0) {
-    // JSON has no categories: clear DB so admin can add fresh data.
-    seedCategoriesTables(db, []);
-  } else if (!hasCategoriesInDb) {
-    // DB empty: seed from JSON (first run). Don't overwrite if DB already has data (edits).
+  if (initialCategories.length > 0 && !hasCategoriesInDb) {
+    // DB empty but JSON has categories: seed from JSON (first run).
     seedCategoriesTables(db, initialCategories);
   }
+  // When JSON is empty, do NOT clear the DB — admin-added categories may exist only in DB (e.g. after deploy with reverted JSON).
 
-  // Prefer database so admin edits (synced to DB) are visible when user comes back.
-  // If JSON has no categories, clear DB and return empty (so test client / app see fresh state without restart).
+  // Prefer database so admin edits (synced to DB) are visible. Never wipe DB when JSON is empty.
   app.get('/api/categories', (req, res) => {
-    const categoriesResponse = loadCategoriesResponse();
-    const jsonCategories = categoriesResponse?.data?.categories ?? [];
-    if (jsonCategories.length === 0) {
-      seedCategoriesTables(db, []);
-      return res.status(200).json({
-        success: true,
-        message: 'Categories data retrieved successfully',
-        data: { categories: [] },
-        timestamp: new Date().toISOString(),
-      });
-    }
     const fromDb = loadCategoriesFromDb(db);
     if (fromDb && fromDb.data && Array.isArray(fromDb.data.categories) && fromDb.data.categories.length > 0) {
       return res.status(200).json({
@@ -216,25 +202,22 @@ function attachCategoriesRoutes(app, db) {
         timestamp: fromDb.timestamp || new Date().toISOString(),
       });
     }
-    if (categoriesResponse && Array.isArray(categoriesResponse.data.categories) && categoriesResponse.data.categories.length > 0) {
-      const payload = {
-        success: categoriesResponse.success,
-        message: categoriesResponse.message,
-        data: { categories: categoriesResponse.data.categories },
-        timestamp: categoriesResponse.timestamp || new Date().toISOString(),
-      };
-      return res.status(200).json(payload);
+    const categoriesResponse = loadCategoriesResponse();
+    const jsonCategories = categoriesResponse?.data?.categories ?? [];
+    if (Array.isArray(jsonCategories) && jsonCategories.length > 0) {
+      return res.status(200).json({
+        success: categoriesResponse?.success !== false,
+        message: categoriesResponse?.message || 'Categories data retrieved successfully',
+        data: { categories: jsonCategories },
+        timestamp: categoriesResponse?.timestamp || new Date().toISOString(),
+      });
     }
-    if (!categoriesResponse) {
-      return res.status(500).json({ message: 'Categories payload is unavailable' });
-    }
-    const fallback = {
-      success: categoriesResponse.success,
-      message: categoriesResponse.message,
+    return res.status(200).json({
+      success: true,
+      message: 'Categories data retrieved successfully',
       data: { categories: [] },
-      timestamp: categoriesResponse.timestamp || new Date().toISOString(),
-    };
-    return res.status(200).json(fallback);
+      timestamp: new Date().toISOString(),
+    });
   });
 
   app.get('/api/categories/:categoryName/products', (req, res) => {
