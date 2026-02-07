@@ -23,6 +23,9 @@ const attachSearchRoutes = require('./search');
 
 dotenv.config();
 
+const { ensurePersistentDirSeeded } = require('./config/jsonPaths');
+ensurePersistentDirSeeded();
+
 const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY;
 const JWT_SECRET = process.env.JWT_SECRET;
 const PORT = process.env.PORT || 4000;

@@ -15,11 +15,12 @@ const {
   requireStoreAccess,
 } = require('./middleware');
 const { syncCategoriesToDb } = require('../categories');
+const { getJsonPath } = require('../config/jsonPaths');
 
-const storesResponsePath = path.resolve(__dirname, '..', '..', 'Arheb API JSON', 'stores_listing_response.json');
-const productsResponsePath = path.resolve(__dirname, '..', '..', 'Arheb API JSON', 'products_listing_response.json');
-const categoriesResponsePath = path.resolve(__dirname, '..', '..', 'Arheb API JSON', 'categories_response.json');
-const popupJsonPath = path.resolve(__dirname, '..', '..', 'Arheb API JSON', 'popup.json');
+const storesResponsePath = getJsonPath('stores_listing_response.json');
+const productsResponsePath = getJsonPath('products_listing_response.json');
+const categoriesResponsePath = getJsonPath('categories_response.json');
+const popupJsonPath = getJsonPath('popup.json');
 
 function loadStores() {
   try {

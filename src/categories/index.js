@@ -1,23 +1,23 @@
 const fs = require('fs');
 const path = require('path');
+const { getJsonPath } = require('../config/jsonPaths');
 
-const categoriesResponsePath = path.resolve(
-  __dirname,
-  '..',
-  '..',
-  'Arheb API JSON',
-  'categories_response.json'
-);
+const categoriesResponsePath = getJsonPath('categories_response.json');
 
 const loadCategoriesResponse = () => {
   try {
     const raw = fs.readFileSync(categoriesResponsePath, 'utf-8');
     return JSON.parse(raw);
   } catch (error) {
-    console.error('Failed to load categories response', error);
+    console.error('Failed to load categories response (using fallback):', error.message);
     return null;
   }
 };
+
+/** Minimal default when JSON file is missing (e.g. on Render after deploy). */
+const FALLBACK_CATEGORIES = [
+  { id: '1', name: 'General', nameAr: 'عام', nameEn: 'General', image: '', isComingSoon: false, order: 1, subCategories: [] },
+];
 
 const toInt = (value) => (value ? 1 : 0);
 
@@ -188,10 +188,11 @@ function attachCategoriesRoutes(app, db) {
   const hasCategoriesInDb = existing?.data?.categories?.length > 0;
 
   if (initialCategories.length > 0 && !hasCategoriesInDb) {
-    // DB empty but JSON has categories: seed from JSON (first run).
     seedCategoriesTables(db, initialCategories);
+  } else if (initialCategories.length === 0 && !hasCategoriesInDb) {
+    // JSON missing or empty (e.g. Render ephemeral fs): seed fallback so test client / app always have data.
+    seedCategoriesTables(db, FALLBACK_CATEGORIES);
   }
-  // When JSON is empty, do NOT clear the DB — admin-added categories may exist only in DB (e.g. after deploy with reverted JSON).
 
   // Prefer database so admin edits (synced to DB) are visible. Never wipe DB when JSON is empty.
   app.get('/api/categories', (req, res) => {
@@ -212,10 +213,13 @@ function attachCategoriesRoutes(app, db) {
         timestamp: categoriesResponse?.timestamp || new Date().toISOString(),
       });
     }
+    // Both DB and JSON empty (e.g. first request after deploy): seed fallback and return it.
+    seedCategoriesTables(db, FALLBACK_CATEGORIES);
+    const afterSeed = loadCategoriesFromDb(db);
     return res.status(200).json({
       success: true,
       message: 'Categories data retrieved successfully',
-      data: { categories: [] },
+      data: afterSeed?.data ?? { categories: FALLBACK_CATEGORIES },
       timestamp: new Date().toISOString(),
     });
   });
@@ -234,13 +238,7 @@ function attachCategoriesRoutes(app, db) {
     const categoriesList = fromDb?.data?.categories ?? loadCategoriesResponse()?.data?.categories ?? [];
 
     // Load products response
-    const productsResponsePath = path.resolve(
-      __dirname,
-      '..',
-      '..',
-      'Arheb API JSON',
-      'products_listing_response.json'
-    );
+    const productsResponsePath = getJsonPath('products_listing_response.json');
 
     let productsResponse;
     try {

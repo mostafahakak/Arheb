@@ -1,8 +1,9 @@
 const fs = require('fs');
 const path = require('path');
+const { getJsonPath } = require('../config/jsonPaths');
 
-const storesResponsePath = path.resolve(__dirname, '..', '..', 'Arheb API JSON', 'stores_listing_response.json');
-const productsResponsePath = path.resolve(__dirname, '..', '..', 'Arheb API JSON', 'products_listing_response.json');
+const storesResponsePath = getJsonPath('stores_listing_response.json');
+const productsResponsePath = getJsonPath('products_listing_response.json');
 
 function loadStores() {
   try {

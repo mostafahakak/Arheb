@@ -2,16 +2,11 @@ const fs = require('fs');
 const path = require('path');
 
 module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
+  const { getJsonPath } = require('../config/jsonPaths');
   // Helper function to get storeId from first product if not provided
   const getStoreIdFromProduct = (productId) => {
     try {
-      const productsResponsePath = path.resolve(
-        __dirname,
-        '..',
-        '..',
-        'Arheb API JSON',
-        'products_listing_response.json'
-      );
+      const productsResponsePath = getJsonPath('products_listing_response.json');
       const raw = fs.readFileSync(productsResponsePath, 'utf-8');
       const productsResponse = JSON.parse(raw);
       const products = productsResponse?.data?.products ?? [];

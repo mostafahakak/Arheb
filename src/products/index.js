@@ -1,17 +1,10 @@
 const fs = require('fs');
 const path = require('path');
+const { getJsonPath } = require('../config/jsonPaths');
 
-const productsResponsePath = path.resolve(
-  __dirname,
-  '..',
-  '..',
-  'Arheb API JSON',
-  'products_listing_response.json'
-);
-
-const loadProductsResponse = () => {
+const loadProductsFromPath = (filePath) => {
   try {
-    const raw = fs.readFileSync(productsResponsePath, 'utf-8');
+    const raw = fs.readFileSync(filePath, 'utf-8');
     return JSON.parse(raw);
   } catch (error) {
     console.error('Failed to load products response', error);
@@ -22,7 +15,8 @@ const loadProductsResponse = () => {
 // Load from file on each request so admin add/edit/delete is visible immediately (same pattern as stores).
 module.exports = function attachProductsRoutes(app, db) {
   app.get('/api/products', (req, res) => {
-    const productsResponse = loadProductsResponse();
+    const productsResponsePath = getJsonPath('products_listing_response.json');
+    const productsResponse = loadProductsFromPath(productsResponsePath);
     if (!productsResponse) {
       return res.status(500).json({
         success: false,
@@ -92,7 +86,8 @@ module.exports = function attachProductsRoutes(app, db) {
 
   app.get('/api/products/:id', (req, res) => {
     const productId = req.params.id;
-    const productsResponse = loadProductsResponse();
+    const productsResponsePath = getJsonPath('products_listing_response.json');
+    const productsResponse = loadProductsFromPath(productsResponsePath);
     if (!productsResponse) {
       return res.status(500).json({
         success: false,

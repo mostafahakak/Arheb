@@ -1,13 +1,7 @@
-const path = require('path');
 const fs = require('fs');
+const { getJsonPath } = require('../config/jsonPaths');
 
-const popupJsonPath = path.resolve(
-  __dirname,
-  '..',
-  '..',
-  'Arheb API JSON',
-  'popup.json'
-);
+const popupJsonPath = getJsonPath('popup.json');
 
 function loadPopup() {
   try {

@@ -1,22 +1,10 @@
 const fs = require('fs');
 const path = require('path');
 const jwt = require('jsonwebtoken');
+const { getJsonPath } = require('../config/jsonPaths');
 
-const homeResponsePath = path.resolve(
-  __dirname,
-  '..',
-  '..',
-  'Arheb API JSON',
-  'home_response.json'
-);
-
-const categoriesResponsePath = path.resolve(
-  __dirname,
-  '..',
-  '..',
-  'Arheb API JSON',
-  'categories_response.json'
-);
+const homeResponsePath = getJsonPath('home_response.json');
+const categoriesResponsePath = getJsonPath('categories_response.json');
 
 const loadHomeResponse = () => {
   try {
