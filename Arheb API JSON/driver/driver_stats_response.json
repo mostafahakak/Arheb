@@ -1,0 +1,19 @@
+{
+  "success": true,
+  "message": "Stats loaded successfully",
+  "data": {
+    "period": "today",
+    "stats": {
+      "earnings": 125.5,
+      "earningsGrowth": 15,
+      "totalOrders": 8,
+      "completedOrders": 7,
+      "cancelledOrders": 1,
+      "avgDeliveryTime": 25,
+      "rating": 4.8,
+      "totalReviews": 245
+    }
+  }
+}
+
+

@@ -16,7 +16,7 @@
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif;
       margin: 0;
       min-height: 100vh;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      background: #ffffff;
       padding: 1rem;
       color: #1a202c;
     }
@@ -24,28 +24,31 @@
     .container {
       max-width: 1400px;
       margin: 0 auto;
-      background: white;
+      background: #ffffff;
       border-radius: 16px;
-      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
       overflow: hidden;
+      border: 1px solid #e2e8f0;
     }
 
     header {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white;
+      background: #ffffff;
+      color: #1a202c;
       padding: 2rem;
       text-align: center;
+      border-bottom: 1px solid #e2e8f0;
     }
 
     header h1 {
       margin: 0 0 0.5rem 0;
       font-size: 2rem;
       font-weight: 700;
+      color: #1a202c;
     }
 
     header p {
       margin: 0;
-      opacity: 0.9;
+      color: #4a5568;
       font-size: 1rem;
     }
 
@@ -336,14 +339,112 @@
     }
 
     @media (max-width: 768px) {
+      body {
+        padding: 0.5rem;
+      }
+
+      .container {
+        border-radius: 12px;
+      }
+
+      header {
+        padding: 1.25rem 1rem;
+      }
+
+      header h1 {
+        font-size: 1.35rem;
+      }
+
+      header p {
+        font-size: 0.9rem;
+      }
+
+      header .form-group {
+        max-width: 100%;
+        margin-top: 0.75rem;
+      }
+
       .content {
         grid-template-columns: 1fr;
+        min-height: auto;
       }
 
       .sidebar {
         border-right: none;
         border-bottom: 1px solid #e2e8f0;
-        max-height: 300px;
+        max-height: 220px;
+        padding: 1rem;
+        overflow-x: hidden;
+        overflow-y: auto;
+      }
+
+      .sidebar h2 {
+        font-size: 0.8rem;
+      }
+
+      .nav-item {
+        padding: 0.6rem 0.75rem;
+        font-size: 0.85rem;
+      }
+
+      .main-content {
+        padding: 1rem;
+        max-height: none;
+      }
+
+      .section h2 {
+        font-size: 1.25rem;
+      }
+
+      .card {
+        padding: 1rem;
+        margin-bottom: 1rem;
+      }
+
+      .card h3 {
+        font-size: 1rem;
+      }
+
+      .row {
+        flex-direction: column;
+      }
+
+      .row input {
+        min-width: 0;
+      }
+
+      .output {
+        max-height: 280px;
+        font-size: 0.75rem;
+        padding: 0.75rem;
+      }
+
+      .grid-2 {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 480px) {
+      body {
+        padding: 0.25rem;
+      }
+
+      header h1 {
+        font-size: 1.15rem;
+      }
+
+      .main-content {
+        padding: 0.75rem;
+      }
+
+      button {
+        padding: 0.6rem 1rem;
+        font-size: 0.9rem;
+      }
+
+      input, select, textarea {
+        padding: 0.6rem;
+        font-size: 16px; /* prevents zoom on focus on iOS */
       }
     }
   </style>
@@ -354,7 +455,7 @@
       <h1>🚀 Arheb API Test Client</h1>
       <p>Comprehensive testing interface for all API endpoints</p>
       <div class="form-group" style="max-width: 400px; margin: 1rem auto 0; text-align: left;">
-        <label for="apiBaseInput" style="color: rgba(255,255,255,0.9); font-size: 0.8rem;">API Base URL</label>
+        <label for="apiBaseInput" style="color: #4a5568; font-size: 0.8rem;">API Base URL</label>
         <input id="apiBaseInput" type="text" placeholder="https://arheb-backend.onrender.com" value="https://arheb-backend.onrender.com" style="font-size: 0.85rem;" />
       </div>
     </header>
@@ -375,6 +476,7 @@
         <a class="nav-item" data-section="popup">🪟 Popup</a>
         <a class="nav-item" data-section="arhebBox">📦 Arheb Box</a>
         <a class="nav-item" data-section="admin">🔧 Admin</a>
+        <a class="nav-item" data-section="driver">🚗 Driver</a>
         <a class="nav-item" data-section="contact">📞 Contact</a>
       </nav>
 
@@ -481,7 +583,11 @@
             </div>
             <div class="form-group">
               <label for="storeCategoryName">Category Name</label>
-              <input id="storeCategoryName" type="text" placeholder="Enter category name (e.g., supermarket)" />
+              <input id="storeCategoryName" type="text" placeholder="e.g. supermarket" />
+            </div>
+            <div class="form-group">
+              <label for="storeSubCategoryName">Subcategory (optional)</label>
+              <input id="storeSubCategoryName" type="text" placeholder="e.g. dairy" />
             </div>
             <button id="getStoreCategoryProductsBtn" class="secondary">Get Store Products by Category</button>
             <div id="storeCategoryProductsOutput" class="output" style="display: none;"></div>
@@ -520,9 +626,14 @@
 
           <div class="card">
             <h3>Get Products by Category</h3>
+            <p style="font-size: 0.875rem; color: #718096; margin-bottom: 0.5rem;">Returns products in this category and its subcategories. Optionally filter by subcategory.</p>
             <div class="form-group">
               <label for="categoryNameForProducts">Category Name</label>
-              <input id="categoryNameForProducts" type="text" placeholder="Enter category name (e.g., supermarket)" />
+              <input id="categoryNameForProducts" type="text" placeholder="e.g. supermarket" />
+            </div>
+            <div class="form-group">
+              <label for="subCategoryForProducts">Subcategory (optional)</label>
+              <input id="subCategoryForProducts" type="text" placeholder="e.g. dairy" />
             </div>
             <button id="getCategoryProductsBtn" class="secondary">Get Products by Category</button>
             <div id="categoryProductsOutput" class="output" style="display: none;"></div>
@@ -841,6 +952,144 @@
           </div>
         </section>
 
+        <!-- Driver Section -->
+        <section id="driver" class="section">
+          <h2>Driver <span class="badge auth">Driver Auth</span></h2>
+          <p style="font-size: 0.875rem; color: #718096; margin-bottom: 1rem;">Send OTP → Login or Register → use token for Home, Stats, Orders, Accept, Complete.</p>
+
+          <div class="card">
+            <h3>Send OTP</h3>
+            <div class="form-group">
+              <label for="driverMobileOtp">Mobile</label>
+              <input id="driverMobileOtp" type="tel" placeholder="0790000000" value="0790000000" />
+            </div>
+            <button id="driverSendOtpBtn">Send OTP</button>
+            <div id="driverSendOtpOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Driver Login</h3>
+            <div class="form-group">
+              <label for="driverLoginMobile">Mobile</label>
+              <input id="driverLoginMobile" type="tel" placeholder="0790000000" value="0790000000" />
+            </div>
+            <div class="form-group">
+              <label for="driverLoginOtp">OTP Code</label>
+              <input id="driverLoginOtp" type="text" placeholder="123456" value="123456" />
+            </div>
+            <button id="driverLoginBtn">Login</button>
+            <div id="driverLoginOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Driver Register</h3>
+            <div class="row form-group">
+              <div class="form-group">
+                <label for="driverRegName">Name</label>
+                <input id="driverRegName" type="text" placeholder="Ahmed Driver" value="Ahmed Driver" />
+              </div>
+              <div class="form-group">
+                <label for="driverRegMobile">Mobile</label>
+                <input id="driverRegMobile" type="tel" placeholder="0790000000" value="0790000001" />
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="driverRegEmail">Email</label>
+              <input id="driverRegEmail" type="email" placeholder="ahmed@example.com" />
+            </div>
+            <div class="row form-group">
+              <div class="form-group">
+                <label for="driverRegVehicleType">Vehicle Type</label>
+                <input id="driverRegVehicleType" type="text" placeholder="car" value="car" />
+              </div>
+              <div class="form-group">
+                <label for="driverRegVehicleNumber">Vehicle Number</label>
+                <input id="driverRegVehicleNumber" type="text" placeholder="ABC-123" value="ABC-123" />
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="driverRegLicense">License Number</label>
+              <input id="driverRegLicense" type="text" placeholder="DL-12345" />
+            </div>
+            <div class="form-group">
+              <label for="driverRegOtp">OTP Code</label>
+              <input id="driverRegOtp" type="text" placeholder="123456" value="123456" />
+            </div>
+            <button id="driverRegisterBtn">Register</button>
+            <div id="driverRegisterOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Driver Home <span class="badge auth">Auth</span></h3>
+            <button id="driverHomeBtn">Get Home</button>
+            <div id="driverHomeOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Driver Stats <span class="badge auth">Auth</span></h3>
+            <div class="form-group">
+              <label for="driverStatsPeriod">Period (optional)</label>
+              <input id="driverStatsPeriod" type="text" placeholder="today" value="today" />
+            </div>
+            <button id="driverStatsBtn">Get Stats</button>
+            <div id="driverStatsOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Driver Orders List <span class="badge auth">Auth</span></h3>
+            <div class="row form-group">
+              <div class="form-group">
+                <label for="driverOrdersFilter">Filter</label>
+                <select id="driverOrdersFilter">
+                  <option value="all">All</option>
+                  <option value="available">Available</option>
+                  <option value="mine">Mine (in progress)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="driverOrdersPage">Page</label>
+                <input id="driverOrdersPage" type="number" value="1" min="1" />
+              </div>
+              <div class="form-group">
+                <label for="driverOrdersPerPage">Per page</label>
+                <input id="driverOrdersPerPage" type="number" value="20" min="1" />
+              </div>
+            </div>
+            <button id="driverOrdersBtn">Get Orders</button>
+            <div id="driverOrdersOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Driver Order Detail <span class="badge auth">Auth</span></h3>
+            <div class="form-group">
+              <label for="driverOrderIdDetail">Order ID</label>
+              <input id="driverOrderIdDetail" type="text" placeholder="1" value="1" />
+            </div>
+            <button id="driverOrderDetailBtn">Get Order</button>
+            <div id="driverOrderDetailOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Accept Order <span class="badge auth">Auth</span></h3>
+            <div class="form-group">
+              <label for="driverAcceptOrderId">Order ID</label>
+              <input id="driverAcceptOrderId" type="text" placeholder="1" value="1" />
+            </div>
+            <button id="driverAcceptBtn">Accept Order</button>
+            <div id="driverAcceptOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Complete Order <span class="badge auth">Auth</span></h3>
+            <div class="form-group">
+              <label for="driverCompleteOrderId">Order ID</label>
+              <input id="driverCompleteOrderId" type="text" placeholder="1" value="1" />
+            </div>
+            <button id="driverCompleteBtn">Complete Order</button>
+            <div id="driverCompleteOutput" class="output" style="display: none;"></div>
+          </div>
+        </section>
+
         <!-- Contact Section -->
         <section id="contact" class="section">
           <h2>Contact <span class="badge public">Public / <span class="badge admin">Admin</span></span></h2>
@@ -883,6 +1132,7 @@
     let lastAppToken = "";
     let lastFirebaseToken = "";
     let lastAdminToken = "";
+    let lastDriverToken = "";
     let verifier;
 
     // Navigation
@@ -1085,6 +1335,7 @@
       document.getElementById('getStoreCategoryProductsBtn').addEventListener('click', async () => {
         const storeId = document.getElementById('storeIdForCategoryProducts').value.trim();
         const categoryName = document.getElementById('storeCategoryName').value.trim();
+        const subCategory = document.getElementById('storeSubCategoryName').value.trim();
         if (!storeId) {
           showOutput('storeCategoryProductsOutput', { error: 'Please enter store ID' });
           return;
@@ -1094,7 +1345,9 @@
           return;
         }
         try {
-          const res = await fetch(`${getBackendBase()}/api/stores/${storeId}/products/category/${encodeURIComponent(categoryName)}`);
+          let url = `${getBackendBase()}/api/stores/${storeId}/products/category/${encodeURIComponent(categoryName)}`;
+          if (subCategory) url += `?subCategory=${encodeURIComponent(subCategory)}`;
+          const res = await fetch(url);
           const data = await res.json();
           showOutput('storeCategoryProductsOutput', data);
         } catch (error) {
@@ -1142,12 +1395,15 @@
 
       document.getElementById('getCategoryProductsBtn').addEventListener('click', async () => {
         const categoryName = document.getElementById('categoryNameForProducts').value.trim();
+        const subCategory = document.getElementById('subCategoryForProducts').value.trim();
         if (!categoryName) {
           showOutput('categoryProductsOutput', { error: 'Please enter category name' });
           return;
         }
         try {
-          const res = await fetch(`${getBackendBase()}/api/categories/${encodeURIComponent(categoryName)}/products`);
+          let url = `${getBackendBase()}/api/categories/${encodeURIComponent(categoryName)}/products`;
+          if (subCategory) url += `?subCategory=${encodeURIComponent(subCategory)}`;
+          const res = await fetch(url);
           const data = await res.json();
           showOutput('categoryProductsOutput', data);
         } catch (error) {
@@ -1604,6 +1860,142 @@
           showOutput('adminDeleteCategoryOutput', data);
         } catch (error) {
           showOutput('adminDeleteCategoryOutput', { error: error.message });
+        }
+      });
+
+      // ——— Driver ———
+      document.getElementById('driverSendOtpBtn').addEventListener('click', async () => {
+        try {
+          const mobile = document.getElementById('driverMobileOtp').value.trim();
+          const res = await fetch(`${getBackendBase()}/api/driver/send-otp`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mobile }),
+          });
+          const data = await res.json();
+          showOutput('driverSendOtpOutput', data);
+        } catch (e) {
+          showOutput('driverSendOtpOutput', { error: e.message });
+        }
+      });
+      document.getElementById('driverLoginBtn').addEventListener('click', async () => {
+        try {
+          const mobile = document.getElementById('driverLoginMobile').value.trim();
+          const otpCode = document.getElementById('driverLoginOtp').value.trim();
+          const res = await fetch(`${getBackendBase()}/api/driver/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mobile, otpCode }),
+          });
+          const data = await res.json();
+          showOutput('driverLoginOutput', data);
+          if (data.success && data.data && data.data.token) lastDriverToken = data.data.token;
+        } catch (e) {
+          showOutput('driverLoginOutput', { error: e.message });
+        }
+      });
+      document.getElementById('driverRegisterBtn').addEventListener('click', async () => {
+        try {
+          const name = document.getElementById('driverRegName').value.trim();
+          const mobile = document.getElementById('driverRegMobile').value.trim();
+          const email = document.getElementById('driverRegEmail').value.trim();
+          const vehicleType = document.getElementById('driverRegVehicleType').value.trim();
+          const vehicleNumber = document.getElementById('driverRegVehicleNumber').value.trim();
+          const licenseNumber = document.getElementById('driverRegLicense').value.trim();
+          const otpCode = document.getElementById('driverRegOtp').value.trim();
+          const res = await fetch(`${getBackendBase()}/api/driver/register`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, mobile, email, vehicleType, vehicleNumber, licenseNumber, otpCode }),
+          });
+          const data = await res.json();
+          showOutput('driverRegisterOutput', data);
+          if (data.success && data.data && data.data.token) lastDriverToken = data.data.token;
+        } catch (e) {
+          showOutput('driverRegisterOutput', { error: e.message });
+        }
+      });
+      document.getElementById('driverHomeBtn').addEventListener('click', async () => {
+        if (!lastDriverToken) { showOutput('driverHomeOutput', { error: 'Login or Register first' }); return; }
+        try {
+          const res = await fetch(`${getBackendBase()}/api/driver/home`, {
+            headers: { 'Authorization': lastDriverToken },
+          });
+          const data = await res.json();
+          showOutput('driverHomeOutput', data);
+        } catch (e) {
+          showOutput('driverHomeOutput', { error: e.message });
+        }
+      });
+      document.getElementById('driverStatsBtn').addEventListener('click', async () => {
+        if (!lastDriverToken) { showOutput('driverStatsOutput', { error: 'Login or Register first' }); return; }
+        try {
+          const period = document.getElementById('driverStatsPeriod').value.trim() || 'today';
+          const res = await fetch(`${getBackendBase()}/api/driver/stats?period=${encodeURIComponent(period)}`, {
+            headers: { 'Authorization': lastDriverToken },
+          });
+          const data = await res.json();
+          showOutput('driverStatsOutput', data);
+        } catch (e) {
+          showOutput('driverStatsOutput', { error: e.message });
+        }
+      });
+      document.getElementById('driverOrdersBtn').addEventListener('click', async () => {
+        if (!lastDriverToken) { showOutput('driverOrdersOutput', { error: 'Login or Register first' }); return; }
+        try {
+          const filter = document.getElementById('driverOrdersFilter').value;
+          const page = document.getElementById('driverOrdersPage').value || '1';
+          const perPage = document.getElementById('driverOrdersPerPage').value || '20';
+          const res = await fetch(`${getBackendBase()}/api/driver/orders?filter=${encodeURIComponent(filter)}&page=${page}&perPage=${perPage}`, {
+            headers: { 'Authorization': lastDriverToken },
+          });
+          const data = await res.json();
+          showOutput('driverOrdersOutput', data);
+        } catch (e) {
+          showOutput('driverOrdersOutput', { error: e.message });
+        }
+      });
+      document.getElementById('driverOrderDetailBtn').addEventListener('click', async () => {
+        if (!lastDriverToken) { showOutput('driverOrderDetailOutput', { error: 'Login or Register first' }); return; }
+        try {
+          const orderId = document.getElementById('driverOrderIdDetail').value.trim();
+          const res = await fetch(`${getBackendBase()}/api/driver/orders/${orderId}`, {
+            headers: { 'Authorization': lastDriverToken },
+          });
+          const data = await res.json();
+          showOutput('driverOrderDetailOutput', data);
+        } catch (e) {
+          showOutput('driverOrderDetailOutput', { error: e.message });
+        }
+      });
+      document.getElementById('driverAcceptBtn').addEventListener('click', async () => {
+        if (!lastDriverToken) { showOutput('driverAcceptOutput', { error: 'Login or Register first' }); return; }
+        try {
+          const orderId = document.getElementById('driverAcceptOrderId').value.trim();
+          const res = await fetch(`${getBackendBase()}/api/driver/orders/accept`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': lastDriverToken },
+            body: JSON.stringify({ orderId, driverId: null }),
+          });
+          const data = await res.json();
+          showOutput('driverAcceptOutput', data);
+        } catch (e) {
+          showOutput('driverAcceptOutput', { error: e.message });
+        }
+      });
+      document.getElementById('driverCompleteBtn').addEventListener('click', async () => {
+        if (!lastDriverToken) { showOutput('driverCompleteOutput', { error: 'Login or Register first' }); return; }
+        try {
+          const orderId = document.getElementById('driverCompleteOrderId').value.trim();
+          const res = await fetch(`${getBackendBase()}/api/driver/orders/complete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': lastDriverToken },
+            body: JSON.stringify({ orderId, driverId: null, completedAt: new Date().toISOString() }),
+          });
+          const data = await res.json();
+          showOutput('driverCompleteOutput', data);
+        } catch (e) {
+          showOutput('driverCompleteOutput', { error: e.message });
         }
       });
 

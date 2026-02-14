@@ -1,0 +1,24 @@
+{
+  "success": true,
+  "message": "Registration successful",
+  "data": {
+    "driver": {
+      "id": "1",
+      "name": "Ahmed Driver",
+      "photo": null,
+      "mobile": "0790000000",
+      "email": "ahmed@example.com",
+      "vehicleType": "car",
+      "vehicleNumber": "ABC-123",
+      "licenseNumber": "DL-12345",
+      "latitude": null,
+      "longitude": null,
+      "rating": 5.0,
+      "isVerified": false,
+      "createdAt": "2024-01-15T10:30:00Z"
+    },
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "refreshToken": "def50200c0f2..."
+  }
+}
+

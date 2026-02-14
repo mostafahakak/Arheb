@@ -1,0 +1,10 @@
+{
+  "name": "Ahmed Driver",
+  "mobile": "0790000000",
+  "email": "ahmed@example.com",
+  "vehicleType": "car",
+  "vehicleNumber": "ABC-123",
+  "licenseNumber": "DL-12345",
+  "otpCode": "123456"
+}
+

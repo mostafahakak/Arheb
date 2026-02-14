@@ -107,6 +107,16 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
   - [Admin Dashboard Sales](#admin-dashboard-sales)
   - [Admin Arheb Box](#admin-arheb-box)
   - [Admin Categories](#admin-categories)
+- [Driver API](#driver-api)
+  - [Driver Send OTP](#driver-send-otp)
+  - [Driver Login](#driver-login)
+  - [Driver Register](#driver-register)
+  - [Driver Home](#driver-home)
+  - [Driver Stats](#driver-stats)
+  - [Driver Orders List](#driver-orders-list)
+  - [Driver Order Detail](#driver-order-detail)
+  - [Driver Accept Order](#driver-accept-order)
+  - [Driver Complete Order](#driver-complete-order)
 - [Error Handling](#error-handling)
 - [Testing](#testing)
 
@@ -124,6 +134,7 @@ Arheb Backend is a comprehensive REST API for an e-commerce platform built with 
 - 👤 User Profile Management
 - 📞 Contact Management
 - 🚚 Real-time Order Tracking (WebSocket)
+- 🚗 Driver API (login, orders, accept, complete)
 
 ### Key Features
 
@@ -134,6 +145,7 @@ Arheb Backend is a comprehensive REST API for an e-commerce platform built with 
 - **Admin Controls**: Admin-only endpoints for contact management
 - **Promo Codes**: Promo code validation and automatic discount application
 - **Real-time Tracking**: WebSocket-based order tracking with driver location updates every 3 seconds
+- **Driver App**: Drivers can register/login with OTP, view home (stats, current/available/in-progress orders), list orders, accept and complete orders
 
 ---
 
@@ -1907,6 +1919,410 @@ All under `/api/admin/stores/:storeId/products`. Store Admin can only access the
 
 ---
 
+## Driver API
+
+The Driver API allows delivery drivers to authenticate (OTP-based), view their home dashboard (stats, current order, available orders, in-progress orders), list and view order details, accept orders (assign to themselves), and mark orders as completed. All protected endpoints require a **Driver JWT** in the `Authorization` header as `Bearer <token>`. The token is obtained from **Driver Login** or **Driver Register**.
+
+**Base path:** `/api/driver`
+
+### Driver Send OTP
+
+Sends an OTP flow identifier for driver login/register (backend returns a mock verification ID; use any OTP code for testing).
+
+**Endpoint:** `POST /api/driver/send-otp`
+
+**Authentication:** Not required
+
+**Request Body:**
+```json
+{
+  "mobile": "0790000000"
+}
+```
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "message": "OTP sent successfully",
+  "data": {
+    "verificationId": "driver_otp_...",
+    "expiresIn": 300,
+    "mobile": "0790000000"
+  }
+}
+```
+
+---
+
+### Driver Login
+
+Authenticates a driver by mobile and OTP code. Returns driver profile and JWT for use in all protected driver endpoints.
+
+**Endpoint:** `POST /api/driver/login`
+
+**Authentication:** Not required
+
+**Request Body:**
+```json
+{
+  "mobile": "0790000000",
+  "otpCode": "123456"
+}
+```
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "message": "Login successful",
+  "data": {
+    "driver": {
+      "id": "1",
+      "name": "Ahmed Driver",
+      "photo": null,
+      "mobile": "0790000000",
+      "email": "ahmed@example.com",
+      "vehicleType": "car",
+      "vehicleNumber": "ABC-123",
+      "latitude": null,
+      "longitude": null,
+      "rating": 5,
+      "isVerified": false
+    },
+    "token": "Bearer eyJhbGciOiJIUzI1NiIs...",
+    "refreshToken": null
+  }
+}
+```
+
+**Error Response (401):** `{ "success": false, "message": "Driver not found. Register first." }`
+
+---
+
+### Driver Register
+
+Creates a new driver account. Returns driver profile and JWT.
+
+**Endpoint:** `POST /api/driver/register`
+
+**Authentication:** Not required
+
+**Request Body:**
+```json
+{
+  "name": "Ahmed Driver",
+  "mobile": "0790000000",
+  "email": "ahmed@example.com",
+  "vehicleType": "car",
+  "vehicleNumber": "ABC-123",
+  "licenseNumber": "DL-12345",
+  "otpCode": "123456"
+}
+```
+
+**Required:** `name`, `mobile`. All other fields are optional.
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "message": "Registration successful",
+  "data": {
+    "driver": {
+      "id": "1",
+      "name": "Ahmed Driver",
+      "photo": null,
+      "mobile": "0790000000",
+      "email": "ahmed@example.com",
+      "vehicleType": "car",
+      "vehicleNumber": "ABC-123",
+      "licenseNumber": "DL-12345",
+      "latitude": null,
+      "longitude": null,
+      "rating": 5,
+      "isVerified": false,
+      "createdAt": "2024-01-15T10:30:00Z"
+    },
+    "token": "Bearer eyJhbGciOiJIUzI1NiIs...",
+    "refreshToken": null
+  }
+}
+```
+
+**Error Response (400):** `{ "success": false, "message": "Driver with this mobile already exists" }`
+
+---
+
+### Driver Home
+
+Returns the driver's home dashboard: profile, stats (today/total earnings and orders), current order (one actively delivering), available orders (unassigned), and in-progress orders (assigned to this driver, delivering).
+
+**Endpoint:** `GET /api/driver/home`
+
+**Authentication:** Required (Driver Bearer token)
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "message": "Driver home data loaded",
+  "data": {
+    "driver": {
+      "id": "1",
+      "name": "Ahmed Driver",
+      "photo": null,
+      "mobile": "0790000000",
+      "vehicleType": "car",
+      "vehicleNumber": "ABC-123",
+      "latitude": null,
+      "longitude": null,
+      "rating": 4.8
+    },
+    "stats": {
+      "todayEarnings": 125.5,
+      "todayOrders": 8,
+      "totalEarnings": 3450.75,
+      "totalOrders": 245,
+      "rating": 4.8
+    },
+    "currentOrder": null,
+    "availableOrders": [
+      {
+        "id": "20",
+        "orderNumber": "ORD-0020",
+        "products": [],
+        "totalPrice": 50.0,
+        "deliveryFee": 2.0,
+        "address": "123 Main St",
+        "addressName": "Home",
+        "paymentMethod": "cash",
+        "status": "ready",
+        "orderDate": "2024-01-15T13:00:00Z",
+        "driver": null,
+        "driver_latitude": null,
+        "driver_longitude": null
+      }
+    ],
+    "inProgressOrders": []
+  }
+}
+```
+
+---
+
+### Driver Stats
+
+Returns earnings and order stats for the driver (optionally filtered by period).
+
+**Endpoint:** `GET /api/driver/stats?period=today`
+
+**Authentication:** Required (Driver Bearer token)
+
+**Query Parameters:** `period` (optional) – e.g. `today` (default) or other period.
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "message": "Stats loaded successfully",
+  "data": {
+    "period": "today",
+    "stats": {
+      "earnings": 125.5,
+      "earningsGrowth": 15,
+      "totalOrders": 8,
+      "completedOrders": 7,
+      "cancelledOrders": 1,
+      "avgDeliveryTime": 25,
+      "rating": 4.8,
+      "totalReviews": 245
+    }
+  }
+}
+```
+
+---
+
+### Driver Orders List
+
+Returns a paginated list of orders for the driver. Filter: `all` (orders assigned to driver), `available` (unassigned orders), or `mine` / `in_progress` (assigned, not yet delivered).
+
+**Endpoint:** `GET /api/driver/orders?filter=all&page=1&perPage=20`
+
+**Authentication:** Required (Driver Bearer token)
+
+**Query Parameters:**
+- `filter` (optional) – `all` | `available` | `mine` (default: `all`)
+- `page` (optional) – page number (default: 1)
+- `perPage` (optional) – items per page (default: 20, max 50)
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "message": "Orders loaded successfully",
+  "data": {
+    "filter": "all",
+    "page": 1,
+    "perPage": 20,
+    "total": 125,
+    "orders": [
+      {
+        "id": "20",
+        "orderNumber": "ORD-0020",
+        "totalPrice": 50.0,
+        "deliveryFee": 2.0,
+        "address": "123 Main St",
+        "status": "delivered",
+        "orderDate": "2024-01-10T12:00:00Z",
+        "driver": { "id": "1", "name": "Ahmed Driver", "mobile": "0790000000", "rating": 4.8 },
+        "driver_latitude": 29.532,
+        "driver_longitude": 35.0063
+      }
+    ]
+  }
+}
+```
+
+---
+
+### Driver Order Detail
+
+Returns full details for a single order. Driver can only access orders that are unassigned or assigned to them.
+
+**Endpoint:** `GET /api/driver/orders/:orderId`
+
+**Authentication:** Required (Driver Bearer token)
+
+**Path Parameters:** `orderId` – Order ID
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "message": "Order loaded successfully",
+  "data": {
+    "order": {
+      "id": "20",
+      "orderNumber": "ORD-0020",
+      "products": [...],
+      "totalPrice": 50.0,
+      "deliveryFee": 2.0,
+      "address": "123 Main St",
+      "addressName": "Home",
+      "paymentMethod": "cash",
+      "status": "delivering",
+      "orderDate": "2024-01-10T12:00:00Z",
+      "notes": "Leave at the door",
+      "driver": { "id": "1", "name": "Ahmed Driver", "mobile": "0790000000", "latitude": 29.532, "longitude": 35.0063, "rating": 4.8 },
+      "driver_latitude": 29.532,
+      "driver_longitude": 35.0063
+    }
+  }
+}
+```
+
+**Error Responses:** `403` – Access denied (order assigned to another driver), `404` – Order not found
+
+---
+
+### Driver Accept Order
+
+Assigns an order to the authenticated driver and sets its status to "On the way".
+
+**Endpoint:** `POST /api/driver/orders/accept`
+
+**Authentication:** Required (Driver Bearer token)
+
+**Request Body:**
+```json
+{
+  "orderId": "1",
+  "driverId": "1"
+}
+```
+
+`driverId` is optional; if omitted, the authenticated driver's ID is used. You can only accept for yourself.
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "message": "Order accepted successfully",
+  "data": {
+    "order": {
+      "id": "20",
+      "orderNumber": "ORD-0020",
+      "totalPrice": 50.0,
+      "status": "delivering",
+      "driver": { "id": "1", "name": "Ahmed Driver", "mobile": "0790000000", "rating": 4.8 },
+      "driver_latitude": 29.532,
+      "driver_longitude": 35.0063
+    }
+  }
+}
+```
+
+**Error Responses:** `400` – Order already assigned, `403` – Can only accept for yourself, `404` – Order not found
+
+---
+
+### Driver Complete Order
+
+Marks an order as delivered. Order must be assigned to the authenticated driver.
+
+**Endpoint:** `POST /api/driver/orders/complete`
+
+**Authentication:** Required (Driver Bearer token)
+
+**Request Body:**
+```json
+{
+  "orderId": "1",
+  "driverId": "1",
+  "completedAt": "2024-01-15T14:30:00Z"
+}
+```
+
+`driverId` and `completedAt` are optional; driver is taken from token.
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "message": "Order completed successfully",
+  "data": {
+    "order": {
+      "id": "20",
+      "orderNumber": "ORD-0020",
+      "status": "delivered",
+      "driver": { "id": "1", "name": "Ahmed Driver", ... }
+    }
+  }
+}
+```
+
+**Error Responses:** `403` – Order not assigned to you, `404` – Order not found
+
+---
+
+### Driver API Summary
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| POST | `/api/driver/send-otp` | No | Send OTP (mock; returns verificationId) |
+| POST | `/api/driver/login` | No | Login with mobile + otpCode; returns driver + token |
+| POST | `/api/driver/register` | No | Register driver; returns driver + token |
+| GET | `/api/driver/home` | Yes | Driver dashboard: driver, stats, currentOrder, availableOrders, inProgressOrders |
+| GET | `/api/driver/stats` | Yes | Stats (earnings, orders, period) |
+| GET | `/api/driver/orders` | Yes | List orders (filter, page, perPage) |
+| GET | `/api/driver/orders/:orderId` | Yes | Order detail |
+| POST | `/api/driver/orders/accept` | Yes | Accept order (assign to driver) |
+| POST | `/api/driver/orders/complete` | Yes | Mark order delivered |
+
+---
+
 ## Error Handling
 
 All endpoints return appropriate HTTP status codes:
@@ -1948,6 +2364,7 @@ This interactive interface allows you to:
 - ✅ Create and manage orders
 - ✅ Test real-time order tracking (WebSocket) with map visualization
 - ✅ Validate promo codes
+- ✅ **Driver API**: Send OTP, Login, Register, Home, Stats, Orders list/detail, Accept order, Complete order (token stored after login/register)
 - ✅ Test contact endpoints (admin)
 
 ---
@@ -2000,6 +2417,7 @@ const profileResponse = await fetch('https://arheb-backend.onrender.com/api/prof
 - 👨‍💼 Admin users have access to contact management endpoints
 - 🚚 Real-time order tracking uses WebSocket (Socket.IO) for live location updates
 - 📍 Drivers send location updates every 3 seconds, customers receive updates in real-time
+- 🚗 **Driver API** uses separate JWT (from `/api/driver/login` or `/api/driver/register`); drivers can accept and complete orders via REST
 
 ---
 

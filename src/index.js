@@ -20,6 +20,7 @@ const attachAdmin = require('./admin');
 const attachPopupRoutes = require('./popup');
 const attachArhebBoxRoutes = require('./arhebBox');
 const attachSearchRoutes = require('./search');
+const attachDriverRoutes = require('./driver');
 
 dotenv.config();
 
@@ -161,6 +162,7 @@ attachStoresRoutes(app, db);
 attachPopupRoutes(app);
 attachSearchRoutes(app);
 attachAdmin(app, db, JWT_SECRET);
+attachDriverRoutes(app, db, JWT_SECRET);
 
 function extractFirebaseError(error) {
   return (

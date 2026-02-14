@@ -1,0 +1,36 @@
+{
+  "success": true,
+  "message": "Order accepted successfully",
+  "data": {
+    "order": {
+      "id": "20",
+      "orderNumber": "ORD-0020",
+      "products": [],
+      "totalPrice": 50.0,
+      "deliveryFee": 2.0,
+      "discountAmount": 0.0,
+      "address": "123 Main St",
+      "addressName": "Home",
+      "buildingNumber": "5",
+      "paymentMethod": "cash",
+      "status": "delivering",
+      "orderDate": "2024-01-10T12:00:00Z",
+      "notes": "Leave at the door",
+      "driver": {
+        "id": "1",
+        "name": "Ahmed Driver",
+        "photo": "https://cdn.example.com/drivers/1.jpg",
+        "mobile": "0790000000",
+        "vehicleType": "car",
+        "vehicleNumber": "ABC-123",
+        "latitude": 29.532,
+        "longitude": 35.0063,
+        "rating": 4.8
+      },
+      "driver_latitude": 29.532,
+      "driver_longitude": 35.0063
+    }
+  }
+}
+
+

@@ -1,0 +1,10 @@
+{
+  "success": true,
+  "message": "OTP sent successfully",
+  "data": {
+    "verificationId": "firebase_verification_id_or_backend_token",
+    "expiresIn": 300,
+    "mobile": "0790000000"
+  }
+}
+

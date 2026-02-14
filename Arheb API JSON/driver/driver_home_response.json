@@ -1,0 +1,130 @@
+{
+  "success": true,
+  "message": "Driver home data loaded",
+  "data": {
+    "driver": {
+      "id": "1",
+      "name": "Ahmed Driver",
+      "photo": "https://cdn.example.com/drivers/1.jpg",
+      "mobile": "0790000000",
+      "vehicleType": "car",
+      "vehicleNumber": "ABC-123",
+      "latitude": 29.532,
+      "longitude": 35.0063,
+      "rating": 4.8
+    },
+    "stats": {
+      "todayEarnings": 125.5,
+      "todayOrders": 8,
+      "totalEarnings": 3450.75,
+      "totalOrders": 245,
+      "rating": 4.8
+    },
+    "currentOrder": {
+      "id": "10",
+      "orderNumber": "ORD-0010",
+      "products": [
+        {
+          "id": "p1",
+          "name": "Crispy Chicken Meal",
+          "image": "https://cdn.example.com/products/p1.jpg",
+          "price": 4.5,
+          "discount": "10",
+          "unit": "",
+          "category": "Fast Food",
+          "description": "Delicious crispy chicken meal...",
+          "quantity": 2,
+          "stock": 5,
+          "isAvailable": true,
+          "preparationTime": "15-20",
+          "ingredients": [
+            "Chicken",
+            "Breadcrumbs",
+            "Spices",
+            "Oil",
+            "Special sauce"
+          ],
+          "allergens": [
+            "Gluten",
+            "Egg"
+          ]
+        }
+      ],
+      "totalPrice": 50.0,
+      "deliveryFee": 2.0,
+      "discountAmount": 0.0,
+      "address": "123 Main St, Aqaba",
+      "addressName": "Home",
+      "buildingNumber": "5",
+      "paymentMethod": "cash",
+      "status": "delivering",
+      "orderDate": "2024-01-15T12:34:56Z",
+      "notes": "Call when you arrive",
+      "driver": {
+        "id": "1",
+        "name": "Ahmed Driver",
+        "photo": "https://cdn.example.com/drivers/1.jpg",
+        "mobile": "0790000000",
+        "vehicleType": "car",
+        "vehicleNumber": "ABC-123",
+        "latitude": 29.532,
+        "longitude": 35.0063,
+        "rating": 4.8
+      },
+      "driver_latitude": 29.542,
+      "driver_longitude": 35.0163
+    },
+    "availableOrders": [
+      {
+        "id": "20",
+        "orderNumber": "ORD-0020",
+        "products": [],
+        "totalPrice": 50.0,
+        "deliveryFee": 2.0,
+        "discountAmount": 0.0,
+        "address": "123 Main St",
+        "addressName": "Home",
+        "buildingNumber": "5",
+        "paymentMethod": "cash",
+        "status": "ready",
+        "orderDate": "2024-01-15T13:00:00Z",
+        "notes": null,
+        "driver": null,
+        "driver_latitude": null,
+        "driver_longitude": null
+      }
+    ],
+    "inProgressOrders": [
+      {
+        "id": "21",
+        "orderNumber": "ORD-0021",
+        "products": [],
+        "totalPrice": 32.0,
+        "deliveryFee": 2.0,
+        "discountAmount": 0.0,
+        "address": "Central Mall",
+        "addressName": "Work",
+        "buildingNumber": "2",
+        "paymentMethod": "card",
+        "status": "delivering",
+        "orderDate": "2024-01-15T12:50:00Z",
+        "notes": null,
+        "driver": {
+          "id": "1",
+          "name": "Ahmed Driver",
+          "photo": "https://cdn.example.com/drivers/1.jpg",
+          "mobile": "0790000000",
+          "vehicleType": "car",
+          "vehicleNumber": "ABC-123",
+          "latitude": 29.538,
+          "longitude": 35.012,
+          "rating": 4.8
+        },
+        "driver_latitude": 29.538,
+        "driver_longitude": 35.012
+      }
+    ]
+  }
+}
+
+
