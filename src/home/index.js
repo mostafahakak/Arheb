@@ -3,22 +3,21 @@ const path = require('path');
 const jwt = require('jsonwebtoken');
 const { getJsonPath } = require('../config/jsonPaths');
 
-const homeResponsePath = getJsonPath('home_response.json');
-const categoriesResponsePath = getJsonPath('categories_response.json');
-
 const loadHomeResponse = () => {
   try {
-    const raw = fs.readFileSync(homeResponsePath, 'utf-8');
+    const filePath = getJsonPath('home_response.json');
+    const raw = fs.readFileSync(filePath, 'utf-8');
     return JSON.parse(raw);
   } catch (error) {
-    console.error('Failed to load home response', error);
+    console.error('Failed to load home response:', error.message);
     return null;
   }
 };
 
 const loadCategoriesResponse = () => {
   try {
-    const raw = fs.readFileSync(categoriesResponsePath, 'utf-8');
+    const filePath = getJsonPath('categories_response.json');
+    const raw = fs.readFileSync(filePath, 'utf-8');
     const data = JSON.parse(raw);
     return data?.data?.categories ?? [];
   } catch (error) {
@@ -26,15 +25,25 @@ const loadCategoriesResponse = () => {
   }
 };
 
-const homeResponse = loadHomeResponse();
-const banners = homeResponse?.data?.banners ?? [];
-const homeCategories = homeResponse?.data?.categories ?? [];
-const mostPopularStores = homeResponse?.data?.mostPopularStores ?? [];
-const offers = homeResponse?.data?.offers ?? [];
+/** Minimal payload when home_response.json is missing (e.g. first deploy with persistent disk). */
+const EMPTY_HOME_PAYLOAD = {
+  success: true,
+  message: 'Home data retrieved successfully',
+  data: {
+    banners: [],
+    categories: [],
+    mostPopularStores: [],
+    offers: [],
+  },
+};
 
 const toInt = (value) => (value ? 1 : 0);
 
-const seedHomeTables = (db) => {
+const seedHomeTables = (db, homeResponse) => {
+  const banners = homeResponse?.data?.banners ?? [];
+  const homeCategories = homeResponse?.data?.categories ?? [];
+  const mostPopularStores = homeResponse?.data?.mostPopularStores ?? [];
+  const offers = homeResponse?.data?.offers ?? [];
   db.exec(`
     CREATE TABLE IF NOT EXISTS home_banners (
       id TEXT PRIMARY KEY,
@@ -256,8 +265,13 @@ const seedHomeTables = (db) => {
 const ACTIVE_ORDER_STATUSES = ['Waiting confirmation', 'Being prepared', 'On the way'];
 
 module.exports = function attachHomeRoutes(app, db, JWT_SECRET) {
+  const initialHome = loadHomeResponse();
+  const banners = initialHome?.data?.banners ?? [];
+  const homeCategories = initialHome?.data?.categories ?? [];
+  const mostPopularStores = initialHome?.data?.mostPopularStores ?? [];
+  const offers = initialHome?.data?.offers ?? [];
   if (banners.length || homeCategories.length || mostPopularStores.length || offers.length) {
-    seedHomeTables(db);
+    seedHomeTables(db, initialHome);
   } else {
     console.warn('No home data found to seed the database');
   }
@@ -269,13 +283,13 @@ module.exports = function attachHomeRoutes(app, db, JWT_SECRET) {
   `);
 
   app.get('/api/home', (req, res) => {
-    if (!homeResponse) {
-      return res.status(500).json({ message: 'Home payload is unavailable' });
-    }
+    const homeResponse = loadHomeResponse();
+    const response = homeResponse
+      ? { ...homeResponse }
+      : { ...EMPTY_HOME_PAYLOAD };
 
     // Use categories from categories_response.json (single source of truth)
     const categories = loadCategoriesResponse();
-    const response = { ...homeResponse };
     if (response.data && categories) {
       response.data = { ...response.data, categories };
     }

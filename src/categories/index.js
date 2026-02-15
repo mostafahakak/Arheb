@@ -226,6 +226,7 @@ function attachCategoriesRoutes(app, db) {
 
   app.get('/api/categories/:categoryName/products', (req, res) => {
     const categoryName = req.params.categoryName;
+    const subCategoryQuery = (req.query.subCategory || '').trim().toLowerCase();
 
     if (!categoryName || categoryName.trim() === '') {
       return res.status(400).json({
@@ -237,9 +238,7 @@ function attachCategoriesRoutes(app, db) {
     const fromDb = loadCategoriesFromDb(db);
     const categoriesList = fromDb?.data?.categories ?? loadCategoriesResponse()?.data?.categories ?? [];
 
-    // Load products response
     const productsResponsePath = getJsonPath('products_listing_response.json');
-
     let productsResponse;
     try {
       const raw = fs.readFileSync(productsResponsePath, 'utf-8');
@@ -250,7 +249,6 @@ function attachCategoriesRoutes(app, db) {
         message: 'Products payload is unavailable'
       });
     }
-
     if (!productsResponse) {
       return res.status(500).json({
         success: false,
@@ -258,97 +256,56 @@ function attachCategoriesRoutes(app, db) {
       });
     }
 
-    // Check if category exists in categories listing
     const categoryNameLower = categoryName.toLowerCase().trim();
     const category = categoriesList.find(cat => {
       const catName = String(cat.name || '').toLowerCase();
       const catNameAr = String(cat.nameAr || '').toLowerCase();
       const catNameEn = String(cat.nameEn || '').toLowerCase();
-      
-      return catName === categoryNameLower || 
-             catName.includes(categoryNameLower) ||
-             categoryNameLower.includes(catName) ||
-             catNameAr === categoryNameLower || 
-             catNameAr.includes(categoryNameLower) ||
-             categoryNameLower.includes(catNameAr) ||
-             catNameEn === categoryNameLower || 
-             catNameEn.includes(categoryNameLower) ||
-             categoryNameLower.includes(catNameEn);
+      return catName === categoryNameLower || catName.includes(categoryNameLower) || categoryNameLower.includes(catName) ||
+             catNameAr === categoryNameLower || catNameAr.includes(categoryNameLower) || categoryNameLower.includes(catNameAr) ||
+             catNameEn === categoryNameLower || catNameEn.includes(categoryNameLower) || categoryNameLower.includes(catNameEn);
     });
 
-    // Filter products by category name
-    const products = productsResponse?.data?.products ?? [];
-    
-    // Filter by category name (check product category or store category)
-    const filteredProducts = products.filter(p => {
-      // Check if product has a category field
-      if (p.category) {
-        const productCategory = String(p.category).toLowerCase();
-        if (productCategory === categoryNameLower || 
-            productCategory.includes(categoryNameLower) ||
-            categoryNameLower.includes(productCategory)) {
-          return true;
-        }
+    // Match terms: category name + all subcategory names/ids so products in subcategories are included
+    const matchTerms = [categoryNameLower];
+    if (category && Array.isArray(category.subCategories)) {
+      for (const sub of category.subCategories) {
+        const sid = String(sub.id || '').toLowerCase();
+        const sn = String(sub.name || '').toLowerCase();
+        const snAr = String(sub.nameAr || '').toLowerCase();
+        const snEn = String(sub.nameEn || '').toLowerCase();
+        if (sid) matchTerms.push(sid);
+        if (sn) matchTerms.push(sn);
+        if (snAr) matchTerms.push(snAr);
+        if (snEn) matchTerms.push(snEn);
       }
-      
-      // Check if product category matches any name variant (name, nameAr, nameEn)
-      if (p.categoryName) {
-        const catName = String(p.categoryName).toLowerCase();
-        if (catName === categoryNameLower || 
-            catName.includes(categoryNameLower) ||
-            categoryNameLower.includes(catName)) {
-          return true;
-        }
-      }
-      
-      if (p.categoryAr) {
-        const catAr = String(p.categoryAr).toLowerCase();
-        if (catAr === categoryNameLower || 
-            catAr.includes(categoryNameLower) ||
-            categoryNameLower.includes(catAr)) {
-          return true;
-        }
-      }
-      
-      if (p.categoryEn) {
-        const catEn = String(p.categoryEn).toLowerCase();
-        if (catEn === categoryNameLower || 
-            catEn.includes(categoryNameLower) ||
-            categoryNameLower.includes(catEn)) {
-          return true;
-        }
-      }
-      
-      // Check store's category as fallback
-      if (p.store?.category) {
-        const storeCategory = String(p.store.category).toLowerCase();
-        if (storeCategory === categoryNameLower || 
-            storeCategory.includes(categoryNameLower) ||
-            categoryNameLower.includes(storeCategory)) {
-          return true;
-        }
-      }
-      
-      if (p.store?.categoryAr) {
-        const storeCatAr = String(p.store.categoryAr).toLowerCase();
-        if (storeCatAr === categoryNameLower || 
-            storeCatAr.includes(categoryNameLower) ||
-            categoryNameLower.includes(storeCatAr)) {
-          return true;
-        }
-      }
-      
-      if (p.store?.categoryEn) {
-        const storeCatEn = String(p.store.categoryEn).toLowerCase();
-        if (storeCatEn === categoryNameLower || 
-            storeCatEn.includes(categoryNameLower) ||
-            categoryNameLower.includes(storeCatEn)) {
-          return true;
-        }
-      }
-      
+    }
+
+    const productMatchesTerm = (p, term) => {
+      const t = term.toLowerCase();
+      const str = (v) => (v == null ? '' : String(v).toLowerCase());
+      const match = (v) => v === t || v.includes(t) || t.includes(v);
+      if (match(str(p.category))) return true;
+      if (match(str(p.categoryEn))) return true;
+      if (match(str(p.categoryAr))) return true;
+      if (match(str(p.categoryName))) return true;
+      if (match(str(p.subCategory))) return true;
+      if (match(str(p.subCategoryEn))) return true;
+      if (match(str(p.subCategoryAr))) return true;
+      if (p.store && (match(str(p.store.category)) || match(str(p.store.categoryEn)) || match(str(p.store.categoryAr)))) return true;
       return false;
-    });
+    };
+
+    const products = productsResponse?.data?.products ?? [];
+    let filtered = products.filter(p => matchTerms.some(term => productMatchesTerm(p, term)));
+
+    if (subCategoryQuery) {
+      filtered = filtered.filter(p => {
+        const sub = [p.subCategory, p.subCategoryEn, p.subCategoryAr, p.category, p.categoryEn, p.categoryAr]
+          .map(v => (v == null ? '' : String(v).toLowerCase())).filter(Boolean);
+        return sub.some(s => s === subCategoryQuery || s.includes(subCategoryQuery) || subCategoryQuery.includes(s));
+      });
+    }
 
     return res.status(200).json({
       success: true,
@@ -359,11 +316,13 @@ function attachCategoriesRoutes(app, db) {
           name: category.name,
           nameAr: category.nameAr,
           nameEn: category.nameEn,
-          image: category.image
+          image: category.image,
+          subCategories: category.subCategories || []
         } : null,
         categoryName: categoryName,
-        products: filteredProducts,
-        count: filteredProducts.length
+        subCategory: subCategoryQuery || null,
+        products: filtered,
+        count: filtered.length
       },
       timestamp: new Date().toISOString()
     });

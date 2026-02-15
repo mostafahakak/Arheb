@@ -442,6 +442,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       category: body.category ?? '',
       categoryAr: body.categoryAr ?? body.category ?? '',
       categoryEn: body.categoryEn ?? body.category ?? '',
+      subCategory: body.subCategory ?? '',
+      subCategoryAr: body.subCategoryAr ?? body.subCategory ?? '',
+      subCategoryEn: body.subCategoryEn ?? body.subCategory ?? '',
       description: body.description ?? '',
       descriptionAr: body.descriptionAr ?? body.description ?? '',
       descriptionEn: body.descriptionEn ?? body.description ?? '',
@@ -472,6 +475,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const allowed = [
       'name', 'nameAr', 'nameEn', 'image', 'images', 'price', 'originalPrice', 'discount',
       'unit', 'unitAr', 'unitEn', 'category', 'categoryAr', 'categoryEn',
+      'subCategory', 'subCategoryAr', 'subCategoryEn',
       'description', 'descriptionAr', 'descriptionEn', 'stock', 'isAvailable',
       'ingredients', 'ingredientsAr', 'ingredientsEn', 'allergens', 'allergensAr', 'allergensEn',
       'nutritionalInfo', 'preparationTime',
@@ -722,6 +726,143 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     } catch (e) {
       console.error('Arheb box update error:', e);
       return res.status(500).json({ success: false, message: 'Failed to update' });
+    }
+  });
+
+  // ——— Drivers (SuperAdmin / Admin only: add, remove, block) ———
+  app.get('/api/admin/drivers', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      const rows = db.prepare(
+        'SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, photo, latitude, longitude, rating, isVerified, isBlocked, createdAt FROM drivers ORDER BY id'
+      ).all();
+      const drivers = rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        mobile: r.mobile,
+        email: r.email,
+        vehicleType: r.vehicleType,
+        vehicleNumber: r.vehicleNumber,
+        licenseNumber: r.licenseNumber,
+        photo: r.photo,
+        latitude: r.latitude,
+        longitude: r.longitude,
+        rating: r.rating ?? 5,
+        isVerified: Boolean(r.isVerified),
+        isBlocked: Boolean(r.isBlocked),
+        createdAt: r.createdAt,
+      }));
+      return res.status(200).json({ success: true, data: { drivers } });
+    } catch (e) {
+      if (e.message && e.message.includes('no such table')) {
+        return res.status(200).json({ success: true, data: { drivers: [] } });
+      }
+      console.error('Admin drivers list error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to list drivers' });
+    }
+  });
+
+  app.post('/api/admin/drivers', auth, requireAdminOrSuper, (req, res) => {
+    const { name, mobile, email, vehicleType, vehicleNumber, licenseNumber } = req.body || {};
+    if (!name || !String(name).trim() || !mobile || !String(mobile).trim()) {
+      return res.status(400).json({ success: false, message: 'name and mobile are required' });
+    }
+    const normalizedMobile = String(mobile).trim();
+    try {
+      const existing = db.prepare('SELECT id FROM drivers WHERE mobile = ?').get(normalizedMobile);
+      if (existing) {
+        return res.status(400).json({ success: false, message: 'Driver with this mobile already exists' });
+      }
+      db.prepare(`
+        INSERT INTO drivers (name, mobile, email, vehicleType, vehicleNumber, licenseNumber, photo, latitude, longitude, rating, isVerified, isBlocked)
+        VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 5, 0, 0)
+      `).run(
+        String(name).trim(),
+        normalizedMobile,
+        email ? String(email).trim() : null,
+        vehicleType ? String(vehicleType).trim() : null,
+        vehicleNumber ? String(vehicleNumber).trim() : null,
+        licenseNumber ? String(licenseNumber).trim() : null
+      );
+      const driver = db.prepare('SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, createdAt FROM drivers WHERE mobile = ?').get(normalizedMobile);
+      return res.status(201).json({
+        success: true,
+        message: 'Driver added successfully',
+        data: {
+          driver: {
+            id: driver.id,
+            name: driver.name,
+            mobile: driver.mobile,
+            email: driver.email,
+            vehicleType: driver.vehicleType,
+            vehicleNumber: driver.vehicleNumber,
+            licenseNumber: driver.licenseNumber,
+            isBlocked: Boolean(driver.isBlocked),
+            createdAt: driver.createdAt,
+          },
+        },
+      });
+    } catch (e) {
+      console.error('Admin add driver error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to add driver' });
+    }
+  });
+
+  app.patch('/api/admin/drivers/:id', auth, requireAdminOrSuper, (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid driver id' });
+    const driver = db.prepare('SELECT * FROM drivers WHERE id = ?').get(id);
+    if (!driver) return res.status(404).json({ success: false, message: 'Driver not found' });
+    const { name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked } = req.body || {};
+    const updates = [];
+    const values = [];
+    if (name !== undefined) { updates.push('name = ?'); values.push(String(name).trim()); }
+    if (mobile !== undefined) { updates.push('mobile = ?'); values.push(String(mobile).trim()); }
+    if (email !== undefined) { updates.push('email = ?'); values.push(email ? String(email).trim() : null); }
+    if (vehicleType !== undefined) { updates.push('vehicleType = ?'); values.push(vehicleType ? String(vehicleType).trim() : null); }
+    if (vehicleNumber !== undefined) { updates.push('vehicleNumber = ?'); values.push(vehicleNumber ? String(vehicleNumber).trim() : null); }
+    if (licenseNumber !== undefined) { updates.push('licenseNumber = ?'); values.push(licenseNumber ? String(licenseNumber).trim() : null); }
+    if (isBlocked !== undefined) { updates.push('isBlocked = ?'); values.push(isBlocked ? 1 : 0); }
+    if (updates.length === 0) {
+      return res.status(400).json({ success: false, message: 'No fields to update' });
+    }
+    values.push(id);
+    try {
+      db.prepare(`UPDATE drivers SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+      const updated = db.prepare('SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, createdAt FROM drivers WHERE id = ?').get(id);
+      return res.status(200).json({
+        success: true,
+        data: {
+          driver: {
+            id: updated.id,
+            name: updated.name,
+            mobile: updated.mobile,
+            email: updated.email,
+            vehicleType: updated.vehicleType,
+            vehicleNumber: updated.vehicleNumber,
+            licenseNumber: updated.licenseNumber,
+            isBlocked: Boolean(updated.isBlocked),
+            createdAt: updated.createdAt,
+          },
+        },
+      });
+    } catch (e) {
+      console.error('Admin update driver error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to update driver' });
+    }
+  });
+
+  app.delete('/api/admin/drivers/:id', auth, requireAdminOrSuper, (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid driver id' });
+    try {
+      const driver = db.prepare('SELECT id FROM drivers WHERE id = ?').get(id);
+      if (!driver) return res.status(404).json({ success: false, message: 'Driver not found' });
+      db.prepare('UPDATE orders SET driverId = NULL, driverName = NULL WHERE driverId = ?').run(id);
+      db.prepare('DELETE FROM drivers WHERE id = ?').run(id);
+      return res.status(200).json({ success: true, message: 'Driver removed' });
+    } catch (e) {
+      console.error('Admin delete driver error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to remove driver' });
     }
   });
 

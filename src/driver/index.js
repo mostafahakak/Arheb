@@ -75,11 +75,22 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
       longitude REAL,
       rating REAL DEFAULT 5,
       isVerified INTEGER DEFAULT 0,
+      isBlocked INTEGER DEFAULT 0,
       createdAt TEXT DEFAULT CURRENT_TIMESTAMP
     )
   `);
   try {
+    db.exec(`ALTER TABLE drivers ADD COLUMN isBlocked INTEGER DEFAULT 0`);
+  } catch (e) {
+    // column exists
+  }
+  try {
     db.exec(`ALTER TABLE orders ADD COLUMN driverId INTEGER`);
+  } catch (e) {
+    // column exists
+  }
+  try {
+    db.exec(`ALTER TABLE orders ADD COLUMN driverName TEXT`);
   } catch (e) {
     // column exists
   }
@@ -88,13 +99,8 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
   const findDriverByMobile = db.prepare('SELECT * FROM drivers WHERE mobile = ?');
   const findOrderById = db.prepare('SELECT * FROM orders WHERE id = ?');
   const findOrderItems = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
-  const updateOrderDriver = db.prepare('UPDATE orders SET driverId = ?, status = ? WHERE id = ?');
+  const updateOrderDriver = db.prepare('UPDATE orders SET driverId = ?, driverName = ?, status = ? WHERE id = ?');
   const updateOrderStatus = db.prepare('UPDATE orders SET status = ? WHERE id = ?');
-
-  const insertDriver = db.prepare(`
-    INSERT INTO drivers (name, mobile, email, vehicleType, vehicleNumber, licenseNumber, photo, latitude, longitude, rating, isVerified)
-    VALUES (@name, @mobile, @email, @vehicleType, @vehicleNumber, @licenseNumber, @photo, @latitude, @longitude, @rating, @isVerified)
-  `);
 
   function driverAuth(req, res, next) {
     const authHeader = req.headers.authorization;
@@ -110,6 +116,9 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
       const driver = findDriverById.get(payload.driverId);
       if (!driver) {
         return res.status(401).json({ success: false, message: 'Driver not found' });
+      }
+      if (driver.isBlocked) {
+        return res.status(403).json({ success: false, message: 'Account is blocked' });
       }
       req.driver = driver;
       next();
@@ -144,7 +153,10 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     }
     const driver = findDriverByMobile.get(String(mobile).trim());
     if (!driver) {
-      return res.status(401).json({ success: false, message: 'Driver not found. Register first.' });
+      return res.status(401).json({ success: false, message: 'Driver not found. Contact admin to be added.' });
+    }
+    if (driver.isBlocked) {
+      return res.status(403).json({ success: false, message: 'Account is blocked' });
     }
     const token = jwt.sign(
       { driverId: driver.id, mobile: driver.mobile },
@@ -169,64 +181,6 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
           longitude: d.longitude,
           rating: d.rating ?? 5,
           isVerified: Boolean(d.isVerified),
-        },
-        token: `Bearer ${token}`,
-        refreshToken: null,
-      },
-    });
-  });
-
-  // POST /api/driver/register
-  app.post('/api/driver/register', (req, res) => {
-    const { name, mobile, email, vehicleType, vehicleNumber, licenseNumber, otpCode } = req.body || {};
-    if (!name || !mobile) {
-      return res.status(400).json({ success: false, message: 'name and mobile are required' });
-    }
-    const normalizedMobile = String(mobile).trim();
-    if (findDriverByMobile.get(normalizedMobile)) {
-      return res.status(400).json({ success: false, message: 'Driver with this mobile already exists' });
-    }
-    try {
-      insertDriver.run({
-        name: String(name).trim(),
-        mobile: normalizedMobile,
-        email: email ? String(email).trim() : null,
-        vehicleType: vehicleType ? String(vehicleType).trim() : null,
-        vehicleNumber: vehicleNumber ? String(vehicleNumber).trim() : null,
-        licenseNumber: licenseNumber ? String(licenseNumber).trim() : null,
-        photo: null,
-        latitude: null,
-        longitude: null,
-        rating: 5,
-        isVerified: 0,
-      });
-    } catch (e) {
-      return res.status(500).json({ success: false, message: 'Registration failed' });
-    }
-    const driver = findDriverByMobile.get(normalizedMobile);
-    const token = jwt.sign(
-      { driverId: driver.id, mobile: driver.mobile },
-      JWT_SECRET,
-      { expiresIn: '7d' }
-    );
-    return res.status(200).json({
-      success: true,
-      message: 'Registration successful',
-      data: {
-        driver: {
-          id: String(driver.id),
-          name: driver.name,
-          photo: driver.photo,
-          mobile: driver.mobile,
-          email: driver.email,
-          vehicleType: driver.vehicleType,
-          vehicleNumber: driver.vehicleNumber,
-          licenseNumber: driver.licenseNumber,
-          latitude: driver.latitude,
-          longitude: driver.longitude,
-          rating: driver.rating ?? 5,
-          isVerified: Boolean(driver.isVerified),
-          createdAt: driver.createdAt,
         },
         token: `Bearer ${token}`,
         refreshToken: null,
@@ -382,7 +336,9 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     const order = findOrderById.get(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     if (order.driverId != null) return res.status(400).json({ success: false, message: 'Order already assigned' });
-    updateOrderDriver.run(driverId, 'On the way', orderId);
+    const driverRowForAccept = findDriverById.get(driverId);
+    const driverName = driverRowForAccept ? driverRowForAccept.name : null;
+    updateOrderDriver.run(driverId, driverName, 'On the way', orderId);
     const updated = findOrderById.get(orderId);
     const items = findOrderItems.all(orderId);
     const driverRow = findDriverById.get(driverId);

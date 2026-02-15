@@ -107,10 +107,10 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
   - [Admin Dashboard Sales](#admin-dashboard-sales)
   - [Admin Arheb Box](#admin-arheb-box)
   - [Admin Categories](#admin-categories)
+  - [Admin Drivers](#admin-drivers)
 - [Driver API](#driver-api)
   - [Driver Send OTP](#driver-send-otp)
   - [Driver Login](#driver-login)
-  - [Driver Register](#driver-register)
   - [Driver Home](#driver-home)
   - [Driver Stats](#driver-stats)
   - [Driver Orders List](#driver-orders-list)
@@ -1864,11 +1864,13 @@ All under `/api/admin/stores/:storeId/products`. Store Admin can only access the
 
 ### Admin Orders
 
+Order list and order detail responses include **`driverId`** and **`driverName`** when a driver has been assigned (set when driver accepts the order; status becomes "On the way").
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/admin/orders/counts` | Returns `{ active, complete }`: active = orders not Delivered/Cancelled; complete = Delivered or Cancelled. Store Admin: only their store. |
-| GET | `/api/admin/orders` | List orders (Store Admin: only their store). Query: `dateFrom`, `dateTo`, `status`, `orderType` (`active` \| `complete`), `storeId`, `storeName`, `name` (customer name/phone). Sorted by `createdAt DESC, id DESC`. |
-| GET | `/api/admin/orders/:orderId` | Get one order with full details (items, address, notes, paymentType, storeName, etc.). Store Admin: only their store. |
+| GET | `/api/admin/orders` | List orders (Store Admin: only their store). Each order includes driverId, driverName when assigned. Query: `dateFrom`, `dateTo`, `status`, `orderType` (`active` \| `complete`), `storeId`, `storeName`, `name` (customer name/phone). Sorted by `createdAt DESC, id DESC`. |
+| GET | `/api/admin/orders/:orderId` | Get one order with full details (items, address, notes, paymentType, storeName, driverId, driverName, etc.). Store Admin: only their store. |
 | PATCH | `/api/admin/orders/:orderId/status` | Update order status. Body: `{ "status": "Confirmed" }`. |
 | DELETE | `/api/admin/orders/:orderId` | Delete order (Admin and SuperAdmin only). Removes order and its items. |
 
@@ -1919,9 +1921,22 @@ All under `/api/admin/stores/:storeId/products`. Store Admin can only access the
 
 ---
 
+### Admin Drivers
+
+**Access:** SuperAdmin and Admin only (Store Admin cannot manage drivers). Drivers are created by admin only; there is no public driver registration. Blocked drivers cannot log in or access any driver data.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/admin/drivers` | List all drivers (id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, createdAt) |
+| POST | `/api/admin/drivers` | Add driver. Body: `name`, `mobile` (required); `email`, `vehicleType`, `vehicleNumber`, `licenseNumber` (optional). No OTP. |
+| PATCH | `/api/admin/drivers/:id` | Update driver and/or block. Body: any of `name`, `mobile`, `email`, `vehicleType`, `vehicleNumber`, `licenseNumber`, `isBlocked` (boolean). |
+| DELETE | `/api/admin/drivers/:id` | Remove driver (unassigns from orders then deletes). |
+
+---
+
 ## Driver API
 
-The Driver API allows delivery drivers to authenticate (OTP-based), view their home dashboard (stats, current order, available orders, in-progress orders), list and view order details, accept orders (assign to themselves), and mark orders as completed. All protected endpoints require a **Driver JWT** in the `Authorization` header as `Bearer <token>`. The token is obtained from **Driver Login** or **Driver Register**.
+Drivers are **added, removed, and blocked only by SuperAdmin and Admin** (see [Admin API – Drivers](#admin-drivers)). There is no public driver registration. Drivers authenticate with **OTP-based login only** (Send OTP → Login with mobile + OTP). **Blocked drivers** cannot log in and cannot access any driver data (home, stats, orders, accept, complete). All protected driver endpoints require a **Driver JWT** in the `Authorization` header as `Bearer <token>`, obtained from **Driver Login**.
 
 **Base path:** `/api/driver`
 
@@ -1996,61 +2011,7 @@ Authenticates a driver by mobile and OTP code. Returns driver profile and JWT fo
 }
 ```
 
-**Error Response (401):** `{ "success": false, "message": "Driver not found. Register first." }`
-
----
-
-### Driver Register
-
-Creates a new driver account. Returns driver profile and JWT.
-
-**Endpoint:** `POST /api/driver/register`
-
-**Authentication:** Not required
-
-**Request Body:**
-```json
-{
-  "name": "Ahmed Driver",
-  "mobile": "0790000000",
-  "email": "ahmed@example.com",
-  "vehicleType": "car",
-  "vehicleNumber": "ABC-123",
-  "licenseNumber": "DL-12345",
-  "otpCode": "123456"
-}
-```
-
-**Required:** `name`, `mobile`. All other fields are optional.
-
-**Success Response (200):**
-```json
-{
-  "success": true,
-  "message": "Registration successful",
-  "data": {
-    "driver": {
-      "id": "1",
-      "name": "Ahmed Driver",
-      "photo": null,
-      "mobile": "0790000000",
-      "email": "ahmed@example.com",
-      "vehicleType": "car",
-      "vehicleNumber": "ABC-123",
-      "licenseNumber": "DL-12345",
-      "latitude": null,
-      "longitude": null,
-      "rating": 5,
-      "isVerified": false,
-      "createdAt": "2024-01-15T10:30:00Z"
-    },
-    "token": "Bearer eyJhbGciOiJIUzI1NiIs...",
-    "refreshToken": null
-  }
-}
-```
-
-**Error Response (400):** `{ "success": false, "message": "Driver with this mobile already exists" }`
+**Error Responses:** `401` – Driver not found (contact admin to be added); `403` – Account is blocked
 
 ---
 
@@ -2245,6 +2206,8 @@ Assigns an order to the authenticated driver and sets its status to "On the way"
 
 `driverId` is optional; if omitted, the authenticated driver's ID is used. You can only accept for yourself.
 
+**Effect:** The order's `status` is set to **"On the way"**, and **`driverId`** and **`driverName`** are set on the order so Admin can track which driver is assigned (see Admin Orders).
+
 **Success Response (200):**
 ```json
 {
@@ -2312,14 +2275,15 @@ Marks an order as delivered. Order must be assigned to the authenticated driver.
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
 | POST | `/api/driver/send-otp` | No | Send OTP (mock; returns verificationId) |
-| POST | `/api/driver/login` | No | Login with mobile + otpCode; returns driver + token |
-| POST | `/api/driver/register` | No | Register driver; returns driver + token |
-| GET | `/api/driver/home` | Yes | Driver dashboard: driver, stats, currentOrder, availableOrders, inProgressOrders |
+| POST | `/api/driver/login` | No | Login with mobile + otpCode; returns driver + token (blocked drivers get 403) |
+| GET | `/api/driver/home` | Yes | Driver dashboard (blocked drivers get 403) |
 | GET | `/api/driver/stats` | Yes | Stats (earnings, orders, period) |
 | GET | `/api/driver/orders` | Yes | List orders (filter, page, perPage) |
 | GET | `/api/driver/orders/:orderId` | Yes | Order detail |
 | POST | `/api/driver/orders/accept` | Yes | Accept order (assign to driver) |
 | POST | `/api/driver/orders/complete` | Yes | Mark order delivered |
+
+**Note:** Drivers are created only via Admin API (SuperAdmin/Admin). Blocked drivers receive `403 Account is blocked` on login and on all authenticated driver endpoints.
 
 ---
 
@@ -2364,7 +2328,7 @@ This interactive interface allows you to:
 - ✅ Create and manage orders
 - ✅ Test real-time order tracking (WebSocket) with map visualization
 - ✅ Validate promo codes
-- ✅ **Driver API**: Send OTP, Login, Register, Home, Stats, Orders list/detail, Accept order, Complete order (token stored after login/register)
+- ✅ **Driver API**: Send OTP, Login (token stored), Home, Stats, Orders list/detail, Accept order, Complete order. **Admin**: List/Add/Block/Remove drivers.
 - ✅ Test contact endpoints (admin)
 
 ---
@@ -2417,7 +2381,7 @@ const profileResponse = await fetch('https://arheb-backend.onrender.com/api/prof
 - 👨‍💼 Admin users have access to contact management endpoints
 - 🚚 Real-time order tracking uses WebSocket (Socket.IO) for live location updates
 - 📍 Drivers send location updates every 3 seconds, customers receive updates in real-time
-- 🚗 **Driver API** uses separate JWT (from `/api/driver/login` or `/api/driver/register`); drivers can accept and complete orders via REST
+- 🚗 **Driver API** uses separate JWT (from `/api/driver/login`). Only SuperAdmin/Admin add, remove, or block drivers; blocked drivers cannot access data.
 
 ---
 

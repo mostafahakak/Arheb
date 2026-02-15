@@ -950,12 +950,76 @@
             <button id="adminDeleteCategoryBtn" class="danger">Delete Category</button>
             <div id="adminDeleteCategoryOutput" class="output" style="display: none;"></div>
           </div>
+
+          <div class="card">
+            <h3>Drivers (SuperAdmin / Admin only)</h3>
+            <button id="adminListDriversBtn">List Drivers</button>
+            <div id="adminListDriversOutput" class="output" style="display: none;"></div>
+          </div>
+          <div class="card">
+            <h3>Add Driver (POST)</h3>
+            <div class="row form-group">
+              <div class="form-group">
+                <label for="adminDriverName">Name</label>
+                <input id="adminDriverName" type="text" placeholder="Ahmed Driver" />
+              </div>
+              <div class="form-group">
+                <label for="adminDriverMobile">Mobile</label>
+                <input id="adminDriverMobile" type="tel" placeholder="0790000000" />
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="adminDriverEmail">Email</label>
+              <input id="adminDriverEmail" type="email" placeholder="ahmed@example.com" />
+            </div>
+            <div class="row form-group">
+              <div class="form-group">
+                <label for="adminDriverVehicleType">Vehicle Type</label>
+                <input id="adminDriverVehicleType" type="text" placeholder="car" />
+              </div>
+              <div class="form-group">
+                <label for="adminDriverVehicleNumber">Vehicle Number</label>
+                <input id="adminDriverVehicleNumber" type="text" placeholder="ABC-123" />
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="adminDriverLicense">License Number</label>
+              <input id="adminDriverLicense" type="text" placeholder="DL-12345" />
+            </div>
+            <button id="adminAddDriverBtn" class="success">Add Driver</button>
+            <div id="adminAddDriverOutput" class="output" style="display: none;"></div>
+          </div>
+          <div class="card">
+            <h3>Block / Unblock Driver (PATCH)</h3>
+            <div class="form-group">
+              <label for="adminDriverIdBlock">Driver ID</label>
+              <input id="adminDriverIdBlock" type="text" placeholder="1" />
+            </div>
+            <div class="form-group">
+              <label for="adminDriverBlocked">Blocked</label>
+              <select id="adminDriverBlocked">
+                <option value="0">No (unblock)</option>
+                <option value="1">Yes (block)</option>
+              </select>
+            </div>
+            <button id="adminBlockDriverBtn">Update Block Status</button>
+            <div id="adminBlockDriverOutput" class="output" style="display: none;"></div>
+          </div>
+          <div class="card">
+            <h3>Remove Driver (DELETE)</h3>
+            <div class="form-group">
+              <label for="adminDriverIdDelete">Driver ID</label>
+              <input id="adminDriverIdDelete" type="text" placeholder="1" />
+            </div>
+            <button id="adminDeleteDriverBtn" class="danger">Remove Driver</button>
+            <div id="adminDeleteDriverOutput" class="output" style="display: none;"></div>
+          </div>
         </section>
 
         <!-- Driver Section -->
         <section id="driver" class="section">
           <h2>Driver <span class="badge auth">Driver Auth</span></h2>
-          <p style="font-size: 0.875rem; color: #718096; margin-bottom: 1rem;">Send OTP → Login or Register → use token for Home, Stats, Orders, Accept, Complete.</p>
+          <p style="font-size: 0.875rem; color: #718096; margin-bottom: 1rem;">Drivers are added by Admin only. Send OTP → Login (mobile + OTP) → use token for Home, Stats, Orders, Accept, Complete.</p>
 
           <div class="card">
             <h3>Send OTP</h3>
@@ -979,44 +1043,6 @@
             </div>
             <button id="driverLoginBtn">Login</button>
             <div id="driverLoginOutput" class="output" style="display: none;"></div>
-          </div>
-
-          <div class="card">
-            <h3>Driver Register</h3>
-            <div class="row form-group">
-              <div class="form-group">
-                <label for="driverRegName">Name</label>
-                <input id="driverRegName" type="text" placeholder="Ahmed Driver" value="Ahmed Driver" />
-              </div>
-              <div class="form-group">
-                <label for="driverRegMobile">Mobile</label>
-                <input id="driverRegMobile" type="tel" placeholder="0790000000" value="0790000001" />
-              </div>
-            </div>
-            <div class="form-group">
-              <label for="driverRegEmail">Email</label>
-              <input id="driverRegEmail" type="email" placeholder="ahmed@example.com" />
-            </div>
-            <div class="row form-group">
-              <div class="form-group">
-                <label for="driverRegVehicleType">Vehicle Type</label>
-                <input id="driverRegVehicleType" type="text" placeholder="car" value="car" />
-              </div>
-              <div class="form-group">
-                <label for="driverRegVehicleNumber">Vehicle Number</label>
-                <input id="driverRegVehicleNumber" type="text" placeholder="ABC-123" value="ABC-123" />
-              </div>
-            </div>
-            <div class="form-group">
-              <label for="driverRegLicense">License Number</label>
-              <input id="driverRegLicense" type="text" placeholder="DL-12345" />
-            </div>
-            <div class="form-group">
-              <label for="driverRegOtp">OTP Code</label>
-              <input id="driverRegOtp" type="text" placeholder="123456" value="123456" />
-            </div>
-            <button id="driverRegisterBtn">Register</button>
-            <div id="driverRegisterOutput" class="output" style="display: none;"></div>
           </div>
 
           <div class="card">
@@ -1863,6 +1889,69 @@
         }
       });
 
+      document.getElementById('adminListDriversBtn').addEventListener('click', async () => {
+        if (!lastAdminToken) { showOutput('adminListDriversOutput', { error: 'Admin login first' }); return; }
+        try {
+          const res = await fetch(`${getBackendBase()}/api/admin/drivers`, {
+            headers: { 'Authorization': lastAdminToken },
+          });
+          const data = await res.json();
+          showOutput('adminListDriversOutput', data);
+        } catch (e) {
+          showOutput('adminListDriversOutput', { error: e.message });
+        }
+      });
+      document.getElementById('adminAddDriverBtn').addEventListener('click', async () => {
+        if (!lastAdminToken) { showOutput('adminAddDriverOutput', { error: 'Admin login first' }); return; }
+        try {
+          const name = document.getElementById('adminDriverName').value.trim();
+          const mobile = document.getElementById('adminDriverMobile').value.trim();
+          const email = document.getElementById('adminDriverEmail').value.trim();
+          const vehicleType = document.getElementById('adminDriverVehicleType').value.trim();
+          const vehicleNumber = document.getElementById('adminDriverVehicleNumber').value.trim();
+          const licenseNumber = document.getElementById('adminDriverLicense').value.trim();
+          const res = await fetch(`${getBackendBase()}/api/admin/drivers`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': lastAdminToken },
+            body: JSON.stringify({ name, mobile, email, vehicleType, vehicleNumber, licenseNumber }),
+          });
+          const data = await res.json();
+          showOutput('adminAddDriverOutput', data);
+        } catch (e) {
+          showOutput('adminAddDriverOutput', { error: e.message });
+        }
+      });
+      document.getElementById('adminBlockDriverBtn').addEventListener('click', async () => {
+        if (!lastAdminToken) { showOutput('adminBlockDriverOutput', { error: 'Admin login first' }); return; }
+        try {
+          const id = document.getElementById('adminDriverIdBlock').value.trim();
+          const blocked = document.getElementById('adminDriverBlocked').value === '1';
+          const res = await fetch(`${getBackendBase()}/api/admin/drivers/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', 'Authorization': lastAdminToken },
+            body: JSON.stringify({ isBlocked: blocked }),
+          });
+          const data = await res.json();
+          showOutput('adminBlockDriverOutput', data);
+        } catch (e) {
+          showOutput('adminBlockDriverOutput', { error: e.message });
+        }
+      });
+      document.getElementById('adminDeleteDriverBtn').addEventListener('click', async () => {
+        if (!lastAdminToken) { showOutput('adminDeleteDriverOutput', { error: 'Admin login first' }); return; }
+        try {
+          const id = document.getElementById('adminDriverIdDelete').value.trim();
+          const res = await fetch(`${getBackendBase()}/api/admin/drivers/${id}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': lastAdminToken },
+          });
+          const data = await res.json();
+          showOutput('adminDeleteDriverOutput', data);
+        } catch (e) {
+          showOutput('adminDeleteDriverOutput', { error: e.message });
+        }
+      });
+
       // ——— Driver ———
       document.getElementById('driverSendOtpBtn').addEventListener('click', async () => {
         try {
@@ -1892,27 +1981,6 @@
           if (data.success && data.data && data.data.token) lastDriverToken = data.data.token;
         } catch (e) {
           showOutput('driverLoginOutput', { error: e.message });
-        }
-      });
-      document.getElementById('driverRegisterBtn').addEventListener('click', async () => {
-        try {
-          const name = document.getElementById('driverRegName').value.trim();
-          const mobile = document.getElementById('driverRegMobile').value.trim();
-          const email = document.getElementById('driverRegEmail').value.trim();
-          const vehicleType = document.getElementById('driverRegVehicleType').value.trim();
-          const vehicleNumber = document.getElementById('driverRegVehicleNumber').value.trim();
-          const licenseNumber = document.getElementById('driverRegLicense').value.trim();
-          const otpCode = document.getElementById('driverRegOtp').value.trim();
-          const res = await fetch(`${getBackendBase()}/api/driver/register`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, mobile, email, vehicleType, vehicleNumber, licenseNumber, otpCode }),
-          });
-          const data = await res.json();
-          showOutput('driverRegisterOutput', data);
-          if (data.success && data.data && data.data.token) lastDriverToken = data.data.token;
-        } catch (e) {
-          showOutput('driverRegisterOutput', { error: e.message });
         }
       });
       document.getElementById('driverHomeBtn').addEventListener('click', async () => {
