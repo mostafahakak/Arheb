@@ -1,7 +1,8 @@
 const jwt = require('jsonwebtoken');
+const { verifyAdminToken } = require('../admin/auth');
 
 // Store active order tracking sessions
-// Format: { orderId: { driverSocket: socket, customerSocket: socket, lastLocation: {long, lat} } }
+// Format: { orderId: { driverSocket, customerSocket, adminSockets: [], lastLocation } }
 const activeTrackings = new Map();
 
 // Uses the same db and orders table as checkout (creates orders) and admin (lists/updates orders).
@@ -48,18 +49,32 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
       return next(new Error('Order not found'));
     }
 
+    // Determine role: admin, driver, or customer
+    const adminPayload = verifyAdminToken(token, JWT_SECRET);
+    if (adminPayload && adminPayload.adminId) {
+      socket.role = 'admin';
+    } else if (user.driverId) {
+      socket.role = 'driver';
+    } else {
+      // Check customer ownership
+      const userId = user.phoneNumber;
+      if (order.userId === userId || order.phoneNumber === userId) {
+        socket.role = 'customer';
+      } else {
+        return next(new Error('Unauthorized: You are not authorized to track this order'));
+      }
+    }
+
     next();
   });
 
   // WebSocket connection handler
   io.on('connection', (socket) => {
-    const { orderId, user } = socket;
-    const userId = user.phoneNumber;
+    const { orderId, user, role } = socket;
+    const userId = user.phoneNumber || user.adminId || user.driverId;
 
-    console.log(`WebSocket connection: Order ${orderId}, User ${userId}`);
+    console.log(`WebSocket connection: Order ${orderId}, Role ${role}, User ${userId}`);
 
-    // Verify order ownership for customer connections
-    // Driver connections are assumed to be authorized (you can add driver verification later)
     const order = findOrderById.get(orderId);
     if (!order) {
       socket.emit('error', { message: 'Order not found' });
@@ -67,40 +82,29 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
       return;
     }
 
-    // Check if user is customer (order owner)
-    const isCustomer = order.userId === userId || order.phoneNumber === userId;
-    
-    // For now, if not customer, assume it's a driver
-    // You can add driver role check here later
-    const isDriver = !isCustomer;
-
-    if (isCustomer) {
-      // Customer connection
-      if (!activeTrackings.has(orderId)) {
-        activeTrackings.set(orderId, {
-          customerSocket: socket,
-          driverSocket: null,
-          lastLocation: null,
-        });
-      } else {
-        // Replace existing customer socket
-        const tracking = activeTrackings.get(orderId);
-        if (tracking.customerSocket) {
-          tracking.customerSocket.disconnect();
-        }
-        tracking.customerSocket = socket;
-      }
-
-      socket.join(`order:${orderId}`);
-      socket.emit('connected', { 
-        role: 'customer', 
-        orderId,
-        message: 'Connected to order tracking' 
+    // Initialize tracking entry if not exists
+    if (!activeTrackings.has(orderId)) {
+      activeTrackings.set(orderId, {
+        customerSocket: null,
+        driverSocket: null,
+        adminSockets: [],
+        lastLocation: null,
       });
+    }
 
+    const tracking = activeTrackings.get(orderId);
+
+    if (role === 'admin') {
+      // Admin observer connection
+      tracking.adminSockets.push(socket);
+      socket.join(`order:${orderId}`);
+      socket.emit('connected', {
+        role: 'admin',
+        orderId,
+        message: 'Connected as admin observer',
+      });
       // Send last known location if available
-      const tracking = activeTrackings.get(orderId);
-      if (tracking && tracking.lastLocation) {
+      if (tracking.lastLocation) {
         socket.emit('location_update', {
           orderId,
           longitude: tracking.lastLocation.longitude,
@@ -108,24 +112,33 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
           timestamp: tracking.lastLocation.timestamp,
         });
       }
-
-    } else if (isDriver) {
-      // Driver connection
-      if (!activeTrackings.has(orderId)) {
-        activeTrackings.set(orderId, {
-          customerSocket: null,
-          driverSocket: socket,
-          lastLocation: null,
-        });
-      } else {
-        // Replace existing driver socket
-        const tracking = activeTrackings.get(orderId);
-        if (tracking.driverSocket) {
-          tracking.driverSocket.disconnect();
-        }
-        tracking.driverSocket = socket;
+    } else if (role === 'customer') {
+      // Customer connection
+      if (tracking.customerSocket) {
+        tracking.customerSocket.disconnect();
       }
-
+      tracking.customerSocket = socket;
+      socket.join(`order:${orderId}`);
+      socket.emit('connected', { 
+        role: 'customer', 
+        orderId,
+        message: 'Connected to order tracking' 
+      });
+      // Send last known location if available
+      if (tracking.lastLocation) {
+        socket.emit('location_update', {
+          orderId,
+          longitude: tracking.lastLocation.longitude,
+          latitude: tracking.lastLocation.latitude,
+          timestamp: tracking.lastLocation.timestamp,
+        });
+      }
+    } else if (role === 'driver') {
+      // Driver connection
+      if (tracking.driverSocket) {
+        tracking.driverSocket.disconnect();
+      }
+      tracking.driverSocket = socket;
       socket.join(`order:${orderId}`);
       socket.emit('connected', { 
         role: 'driver', 
@@ -140,7 +153,7 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
 
     // Handle driver location updates
     socket.on('driver_location', (data) => {
-      if (!isDriver) {
+      if (role !== 'driver') {
         socket.emit('error', { message: 'Only drivers can send location updates' });
         return;
       }
@@ -154,30 +167,20 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
       }
 
       // Update last known location
-      const tracking = activeTrackings.get(orderId);
-      if (tracking) {
-        tracking.lastLocation = {
+      const t = activeTrackings.get(orderId);
+      if (t) {
+        t.lastLocation = {
           longitude,
           latitude,
           timestamp: new Date().toISOString(),
         };
 
-        // Broadcast to customer if connected
-        if (tracking.customerSocket) {
-          tracking.customerSocket.emit('location_update', {
-            orderId,
-            longitude,
-            latitude,
-            timestamp: tracking.lastLocation.timestamp,
-          });
-        }
-
-        // Also broadcast to room for multiple customer connections
+        // Broadcast to room (customers + admins)
         io.to(`order:${orderId}`).emit('location_update', {
           orderId,
           longitude,
           latitude,
-          timestamp: tracking.lastLocation.timestamp,
+          timestamp: t.lastLocation.timestamp,
         });
 
         socket.emit('location_sent', { 
@@ -189,22 +192,20 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
 
     // Handle disconnect
     socket.on('disconnect', () => {
-      console.log(`WebSocket disconnect: Order ${orderId}, User ${userId}`);
+      console.log(`WebSocket disconnect: Order ${orderId}, Role ${role}, User ${userId}`);
       
-      const tracking = activeTrackings.get(orderId);
-      if (tracking) {
-        if (isCustomer && tracking.customerSocket === socket) {
-          tracking.customerSocket = null;
-          // Clean up if no one is tracking
-          if (!tracking.driverSocket && !tracking.customerSocket) {
-            activeTrackings.delete(orderId);
-          }
-        } else if (isDriver && tracking.driverSocket === socket) {
-          tracking.driverSocket = null;
-          // Clean up if no one is tracking
-          if (!tracking.driverSocket && !tracking.customerSocket) {
-            activeTrackings.delete(orderId);
-          }
+      const t = activeTrackings.get(orderId);
+      if (t) {
+        if (role === 'customer' && t.customerSocket === socket) {
+          t.customerSocket = null;
+        } else if (role === 'driver' && t.driverSocket === socket) {
+          t.driverSocket = null;
+        } else if (role === 'admin') {
+          t.adminSockets = t.adminSockets.filter((s) => s !== socket);
+        }
+        // Clean up if no one is tracking
+        if (!t.driverSocket && !t.customerSocket && t.adminSockets.length === 0) {
+          activeTrackings.delete(orderId);
         }
       }
     });

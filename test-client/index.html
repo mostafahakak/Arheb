@@ -1052,6 +1052,30 @@
             <button id="adminDeleteDriverBtn" class="danger">Remove Driver</button>
             <div id="adminDeleteDriverOutput" class="output" style="display: none;"></div>
           </div>
+
+          <div class="card">
+            <h3>Live Order Tracking (Admin) <span class="badge admin">WebSocket</span></h3>
+            <p style="font-size: 0.8rem; color: #718096; margin-bottom: 0.5rem;">Connect as admin observer to watch driver location in real-time for any order.</p>
+            <div class="form-group">
+              <label for="adminTrackOrderId">Order ID</label>
+              <input id="adminTrackOrderId" type="number" placeholder="1" />
+            </div>
+            <div class="row">
+              <button id="adminTrackConnectBtn" class="success">Connect</button>
+              <button id="adminTrackDisconnectBtn" class="danger">Disconnect</button>
+            </div>
+            <div id="adminTrackStatus" class="status info" style="display: none; margin-top: 0.5rem;"></div>
+            <div id="adminMapContainer" style="height: 400px; width: 100%; border-radius: 8px; overflow: hidden; border: 1px solid #e2e8f0; display: none; margin-top: 1rem;">
+              <div id="adminTrackingMap" style="height: 100%; width: 100%;"></div>
+            </div>
+            <div id="adminTrackInfo" style="margin-top: 0.5rem; display: none;">
+              <div class="status info">
+                <strong>Last Update:</strong> <span id="adminLastUpdateTime">-</span><br>
+                <strong>Coordinates:</strong> <span id="adminCurrentCoords">-</span>
+              </div>
+            </div>
+            <div id="adminTrackOutput" class="output" style="max-height: 200px; display: none;"></div>
+          </div>
         </section>
 
         <!-- Driver Section -->
@@ -1151,6 +1175,30 @@
             </div>
             <button id="driverCompleteBtn">Complete Order</button>
             <div id="driverCompleteOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Live Tracking (Driver) <span class="badge auth">WebSocket</span></h3>
+            <p style="font-size: 0.8rem; color: #718096; margin-bottom: 0.5rem;">Connect as driver to send simulated location updates for an order. The admin and customer will see your location in real-time.</p>
+            <div class="form-group">
+              <label for="driverTrackOrderId">Order ID</label>
+              <input id="driverTrackOrderId" type="number" placeholder="1" value="1" />
+            </div>
+            <div class="row">
+              <button id="driverTrackConnectBtn" class="success">Start Tracking</button>
+              <button id="driverTrackDisconnectBtn" class="danger">Stop Tracking</button>
+            </div>
+            <div id="driverTrackStatus" class="status info" style="display: none; margin-top: 0.5rem;"></div>
+            <div id="driverMapContainer" style="height: 400px; width: 100%; border-radius: 8px; overflow: hidden; border: 1px solid #e2e8f0; display: none; margin-top: 1rem;">
+              <div id="driverTrackingMap" style="height: 100%; width: 100%;"></div>
+            </div>
+            <div id="driverTrackInfo" style="margin-top: 0.5rem; display: none;">
+              <div class="status info">
+                <strong>Position:</strong> <span id="driverCurrentPos">-</span><br>
+                <strong>Updates Sent:</strong> <span id="driverUpdateCount">0</span>
+              </div>
+            </div>
+            <div id="driverTrackOutput" class="output" style="max-height: 200px; display: none;"></div>
           </div>
         </section>
 
@@ -2445,6 +2493,204 @@
       document.getElementById('connectAsDriverBtn').addEventListener('click', connectAsDriver);
       document.getElementById('connectAsCustomerBtn').addEventListener('click', connectAsCustomer);
       document.getElementById('disconnectTrackingBtn').addEventListener('click', disconnectTracking);
+
+      // ——— Admin Live Order Tracking ———
+      let adminTrackSocket = null;
+      let adminTrackMap = null;
+      let adminDriverMarker = null;
+
+      function showAdminTrackStatus(msg, type) {
+        const el = document.getElementById('adminTrackStatus');
+        el.textContent = msg;
+        el.className = 'status ' + type;
+        el.style.display = 'block';
+      }
+
+      function initAdminMap() {
+        if (adminTrackMap) return;
+        document.getElementById('adminMapContainer').style.display = 'block';
+        adminTrackMap = L.map('adminTrackingMap').setView(aqabaCenter, 13);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '© OpenStreetMap'
+        }).addTo(adminTrackMap);
+        const driverIcon = L.divIcon({
+          html: '<div class="location-marker">🏍️</div>',
+          className: '',
+          iconSize: [40, 40],
+          iconAnchor: [20, 20]
+        });
+        adminDriverMarker = L.marker(aqabaCenter, { icon: driverIcon })
+          .addTo(adminTrackMap)
+          .bindPopup('Driver Location');
+        document.getElementById('adminTrackInfo').style.display = 'block';
+      }
+
+      document.getElementById('adminTrackConnectBtn').addEventListener('click', () => {
+        if (!lastAdminToken) {
+          showAdminTrackStatus('Please Admin Login first', 'error');
+          return;
+        }
+        const orderId = document.getElementById('adminTrackOrderId').value.trim();
+        if (!orderId) {
+          showAdminTrackStatus('Enter Order ID', 'error');
+          return;
+        }
+        if (adminTrackSocket) adminTrackSocket.disconnect();
+
+        adminTrackSocket = io(getBackendBase(), {
+          auth: { token: lastAdminToken, orderId: parseInt(orderId) }
+        });
+
+        adminTrackSocket.on('connect', () => {
+          showAdminTrackStatus('Connected as Admin observer', 'success');
+          initAdminMap();
+        });
+
+        adminTrackSocket.on('connected', (data) => {
+          showOutput('adminTrackOutput', { event: 'connected', data });
+        });
+
+        adminTrackSocket.on('location_update', (data) => {
+          showOutput('adminTrackOutput', { event: 'location_update', data, ts: new Date().toISOString() });
+          if (adminDriverMarker && adminTrackMap) {
+            const latlng = [data.latitude, data.longitude];
+            adminDriverMarker.setLatLng(latlng);
+            adminTrackMap.panTo(latlng, { animate: true, duration: 1 });
+            document.getElementById('adminLastUpdateTime').textContent = new Date(data.timestamp).toLocaleTimeString();
+            document.getElementById('adminCurrentCoords').textContent = data.latitude.toFixed(6) + ', ' + data.longitude.toFixed(6);
+          }
+        });
+
+        adminTrackSocket.on('error', (err) => {
+          showAdminTrackStatus('Error: ' + (err.message || JSON.stringify(err)), 'error');
+          showOutput('adminTrackOutput', { event: 'error', err });
+        });
+
+        adminTrackSocket.on('disconnect', () => {
+          showAdminTrackStatus('Disconnected', 'info');
+        });
+      });
+
+      document.getElementById('adminTrackDisconnectBtn').addEventListener('click', () => {
+        if (adminTrackSocket) { adminTrackSocket.disconnect(); adminTrackSocket = null; }
+        showAdminTrackStatus('Disconnected', 'info');
+      });
+
+      // ——— Driver Live Tracking ———
+      let driverTrackSocket = null;
+      let driverTrackMap = null;
+      let driverTrackMarker = null;
+      let driverTrackInterval = null;
+      let driverTrackUpdateCount = 0;
+      let driverTrackRouteIdx = 0;
+
+      function showDriverTrackStatus(msg, type) {
+        const el = document.getElementById('driverTrackStatus');
+        el.textContent = msg;
+        el.className = 'status ' + type;
+        el.style.display = 'block';
+      }
+
+      function initDriverTrackMap() {
+        if (driverTrackMap) return;
+        document.getElementById('driverMapContainer').style.display = 'block';
+        driverTrackMap = L.map('driverTrackingMap').setView(aqabaCenter, 13);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '© OpenStreetMap'
+        }).addTo(driverTrackMap);
+        const driverIcon = L.divIcon({
+          html: '<div class="location-marker">🏍️</div>',
+          className: '',
+          iconSize: [40, 40],
+          iconAnchor: [20, 20]
+        });
+        driverTrackMarker = L.marker(aqabaCenter, { icon: driverIcon })
+          .addTo(driverTrackMap)
+          .bindPopup('My Location');
+        document.getElementById('driverTrackInfo').style.display = 'block';
+      }
+
+      document.getElementById('driverTrackConnectBtn').addEventListener('click', () => {
+        if (!lastDriverToken) {
+          showDriverTrackStatus('Please Driver Login first', 'error');
+          return;
+        }
+        const orderId = document.getElementById('driverTrackOrderId').value.trim();
+        if (!orderId) {
+          showDriverTrackStatus('Enter Order ID', 'error');
+          return;
+        }
+        if (driverTrackSocket) driverTrackSocket.disconnect();
+        if (driverTrackInterval) { clearInterval(driverTrackInterval); driverTrackInterval = null; }
+        driverTrackUpdateCount = 0;
+        driverTrackRouteIdx = 0;
+        document.getElementById('driverUpdateCount').textContent = '0';
+
+        driverTrackSocket = io(getBackendBase(), {
+          auth: { token: lastDriverToken, orderId: parseInt(orderId) }
+        });
+
+        driverTrackSocket.on('connect', () => {
+          showDriverTrackStatus('Connected as Driver — sending location updates every 3s', 'success');
+          initDriverTrackMap();
+
+          // Send first location immediately
+          const first = aqabaRoute[0];
+          driverTrackSocket.emit('driver_location', { longitude: first[1], latitude: first[0] });
+          if (driverTrackMarker && driverTrackMap) {
+            driverTrackMarker.setLatLng(first);
+            driverTrackMap.panTo(first, { animate: true });
+          }
+          driverTrackUpdateCount++;
+          document.getElementById('driverUpdateCount').textContent = driverTrackUpdateCount;
+          document.getElementById('driverCurrentPos').textContent = first[0].toFixed(6) + ', ' + first[1].toFixed(6);
+          driverTrackRouteIdx = 1;
+
+          driverTrackInterval = setInterval(() => {
+            if (!driverTrackSocket || !driverTrackSocket.connected) {
+              clearInterval(driverTrackInterval);
+              return;
+            }
+            const loc = aqabaRoute[driverTrackRouteIdx % aqabaRoute.length];
+            const lat = loc[0] + (Math.random() - 0.5) * 0.001;
+            const lng = loc[1] + (Math.random() - 0.5) * 0.001;
+            driverTrackSocket.emit('driver_location', { longitude: lng, latitude: lat });
+            if (driverTrackMarker && driverTrackMap) {
+              const ll = [lat, lng];
+              driverTrackMarker.setLatLng(ll);
+              driverTrackMap.panTo(ll, { animate: true, duration: 1 });
+            }
+            driverTrackUpdateCount++;
+            driverTrackRouteIdx++;
+            document.getElementById('driverUpdateCount').textContent = driverTrackUpdateCount;
+            document.getElementById('driverCurrentPos').textContent = lat.toFixed(6) + ', ' + lng.toFixed(6);
+          }, 3000);
+        });
+
+        driverTrackSocket.on('connected', (data) => {
+          showOutput('driverTrackOutput', { event: 'connected', data });
+        });
+
+        driverTrackSocket.on('location_sent', (data) => {
+          showOutput('driverTrackOutput', { event: 'location_sent', data, ts: new Date().toISOString() });
+        });
+
+        driverTrackSocket.on('error', (err) => {
+          showDriverTrackStatus('Error: ' + (err.message || JSON.stringify(err)), 'error');
+          showOutput('driverTrackOutput', { event: 'error', err });
+        });
+
+        driverTrackSocket.on('disconnect', () => {
+          showDriverTrackStatus('Disconnected', 'info');
+          if (driverTrackInterval) { clearInterval(driverTrackInterval); driverTrackInterval = null; }
+        });
+      });
+
+      document.getElementById('driverTrackDisconnectBtn').addEventListener('click', () => {
+        if (driverTrackInterval) { clearInterval(driverTrackInterval); driverTrackInterval = null; }
+        if (driverTrackSocket) { driverTrackSocket.disconnect(); driverTrackSocket = null; }
+        showDriverTrackStatus('Stopped', 'info');
+      });
 
       setupVerifier();
     }
