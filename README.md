@@ -103,6 +103,7 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
   - [Admins CRUD](#admins-crud)
   - [Admin Stores](#admin-stores)
   - [Admin Products](#admin-products)
+  - [Admin Pending Products (Approval Queue)](#admin-pending-products-approval-queue)
   - [Admin Orders](#admin-orders)
   - [Admin Dashboard Sales](#admin-dashboard-sales)
   - [Admin Arheb Box](#admin-arheb-box)
@@ -1853,12 +1854,56 @@ All admin endpoints require **Admin JWT** authentication. Send the token in the 
 
 All under `/api/admin/stores/:storeId/products`. Store Admin can only access their store.
 
+**Approval workflow:** When a **Store Admin** creates a product (POST), it is **not added directly** to the store. Instead, it enters a **pending approval queue**. A **SuperAdmin or Admin** must approve it before it becomes visible in the store and to users. If a **SuperAdmin or Admin** creates a product, it is added directly (no approval needed).
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/admin/stores/:storeId/products` | List products for store |
-| POST | `/api/admin/stores/:storeId/products` | Create product (name, nameAr, nameEn, image, images, price, originalPrice, discount, unit, category, description, stock, isAvailable) |
+| POST | `/api/admin/stores/:storeId/products` | Create product. **Store Admin**: product enters pending queue (returns `pendingId`, `status: "pending"`). **SuperAdmin/Admin**: product added directly. |
 | PATCH | `/api/admin/stores/:storeId/products/:productId` | Update product |
 | DELETE | `/api/admin/stores/:storeId/products/:productId` | Delete product |
+
+---
+
+### Admin Pending Products (Approval Queue)
+
+When Store Admin creates a product, it enters the `pending_products` table. SuperAdmin/Admin can list, view, approve, or reject pending products.
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| GET | `/api/admin/pending-products` | Admin | List pending products. Store Admin sees only their store's. SuperAdmin/Admin sees all. |
+| GET | `/api/admin/pending-products/:id` | Admin | View pending product detail (Store Admin: own store only). |
+| POST | `/api/admin/pending-products/:id/approve` | SuperAdmin/Admin | Approve: product is added to the live store products and becomes visible to users. |
+| POST | `/api/admin/pending-products/:id/reject` | SuperAdmin/Admin | Reject: product stays in pending with `status: "rejected"`. Optional body: `{ "note": "reason" }`. |
+
+**Pending product statuses:** `pending` → `approved` or `rejected`.
+
+**Approve response:**
+```json
+{
+  "success": true,
+  "message": "Product approved and added to store",
+  "data": { "product": { ... } }
+}
+```
+
+**Reject response:**
+```json
+{
+  "success": true,
+  "message": "Product rejected",
+  "data": { "id": 1, "status": "rejected", "note": "reason", "product": { ... } }
+}
+```
+
+**Store Admin create response (pending):**
+```json
+{
+  "success": true,
+  "message": "Product submitted for approval. An admin will review it.",
+  "data": { "pendingId": 1, "status": "pending", "product": { ... } }
+}
+```
 
 ---
 

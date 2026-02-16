@@ -952,6 +952,44 @@
           </div>
 
           <div class="card">
+            <h3>Pending Products (Approval Queue)</h3>
+            <p style="font-size: 0.8rem; color: #718096; margin-bottom: 0.5rem;">Store Admin products go here for approval. SuperAdmin/Admin approve or reject.</p>
+            <button id="adminListPendingBtn">List Pending Products</button>
+            <div id="adminListPendingOutput" class="output" style="display: none;"></div>
+          </div>
+          <div class="card">
+            <h3>View Pending Product Detail</h3>
+            <div class="form-group">
+              <label for="adminPendingDetailId">Pending ID</label>
+              <input id="adminPendingDetailId" type="text" placeholder="1" />
+            </div>
+            <button id="adminPendingDetailBtn" class="secondary">View Detail</button>
+            <div id="adminPendingDetailOutput" class="output" style="display: none;"></div>
+          </div>
+          <div class="card">
+            <h3>Approve Pending Product <span class="badge admin">SuperAdmin / Admin</span></h3>
+            <div class="form-group">
+              <label for="adminApproveId">Pending ID</label>
+              <input id="adminApproveId" type="text" placeholder="1" />
+            </div>
+            <button id="adminApproveBtn" class="success">Approve</button>
+            <div id="adminApproveOutput" class="output" style="display: none;"></div>
+          </div>
+          <div class="card">
+            <h3>Reject Pending Product <span class="badge admin">SuperAdmin / Admin</span></h3>
+            <div class="form-group">
+              <label for="adminRejectId">Pending ID</label>
+              <input id="adminRejectId" type="text" placeholder="1" />
+            </div>
+            <div class="form-group">
+              <label for="adminRejectNote">Rejection Note (optional)</label>
+              <input id="adminRejectNote" type="text" placeholder="Reason for rejection" />
+            </div>
+            <button id="adminRejectBtn" class="danger">Reject</button>
+            <div id="adminRejectOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
             <h3>Drivers (SuperAdmin / Admin only)</h3>
             <button id="adminListDriversBtn">List Drivers</button>
             <div id="adminListDriversOutput" class="output" style="display: none;"></div>
@@ -1889,6 +1927,64 @@
         }
       });
 
+      // ——— Pending Products ———
+      document.getElementById('adminListPendingBtn').addEventListener('click', async () => {
+        if (!lastAdminToken) { showOutput('adminListPendingOutput', { error: 'Admin login first' }); return; }
+        try {
+          const res = await fetch(`${getBackendBase()}/api/admin/pending-products`, {
+            headers: { 'Authorization': lastAdminToken },
+          });
+          const data = await res.json();
+          showOutput('adminListPendingOutput', data);
+        } catch (e) {
+          showOutput('adminListPendingOutput', { error: e.message });
+        }
+      });
+      document.getElementById('adminPendingDetailBtn').addEventListener('click', async () => {
+        if (!lastAdminToken) { showOutput('adminPendingDetailOutput', { error: 'Admin login first' }); return; }
+        try {
+          const id = document.getElementById('adminPendingDetailId').value.trim();
+          const res = await fetch(`${getBackendBase()}/api/admin/pending-products/${id}`, {
+            headers: { 'Authorization': lastAdminToken },
+          });
+          const data = await res.json();
+          showOutput('adminPendingDetailOutput', data);
+        } catch (e) {
+          showOutput('adminPendingDetailOutput', { error: e.message });
+        }
+      });
+      document.getElementById('adminApproveBtn').addEventListener('click', async () => {
+        if (!lastAdminToken) { showOutput('adminApproveOutput', { error: 'Admin login first' }); return; }
+        try {
+          const id = document.getElementById('adminApproveId').value.trim();
+          const res = await fetch(`${getBackendBase()}/api/admin/pending-products/${id}/approve`, {
+            method: 'POST',
+            headers: { 'Authorization': lastAdminToken },
+          });
+          const data = await res.json();
+          showOutput('adminApproveOutput', data);
+        } catch (e) {
+          showOutput('adminApproveOutput', { error: e.message });
+        }
+      });
+      document.getElementById('adminRejectBtn').addEventListener('click', async () => {
+        if (!lastAdminToken) { showOutput('adminRejectOutput', { error: 'Admin login first' }); return; }
+        try {
+          const id = document.getElementById('adminRejectId').value.trim();
+          const note = document.getElementById('adminRejectNote').value.trim();
+          const res = await fetch(`${getBackendBase()}/api/admin/pending-products/${id}/reject`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': lastAdminToken },
+            body: JSON.stringify({ note: note || undefined }),
+          });
+          const data = await res.json();
+          showOutput('adminRejectOutput', data);
+        } catch (e) {
+          showOutput('adminRejectOutput', { error: e.message });
+        }
+      });
+
+      // ——— Drivers ———
       document.getElementById('adminListDriversBtn').addEventListener('click', async () => {
         if (!lastAdminToken) { showOutput('adminListDriversOutput', { error: 'Admin login first' }); return; }
         try {

@@ -411,22 +411,25 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     return res.status(200).json({ success: true, message: 'Store deleted' });
   });
 
-  // ——— Products (per store) ———
-  app.get('/api/admin/stores/:storeId/products', auth, requireStoreAccess((req) => req.params.storeId), (req, res) => {
-    const products = loadProducts();
-    const storeProducts = products.filter((p) => p.store?.id === req.params.storeId);
-    return res.status(200).json({ success: true, data: { products: storeProducts } });
-  });
+  // ——— Pending products (approval queue) ———
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS pending_products (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      storeId TEXT NOT NULL,
+      submittedBy INTEGER NOT NULL,
+      productData TEXT NOT NULL,
+      status TEXT DEFAULT 'pending',
+      reviewedBy INTEGER,
+      reviewNote TEXT,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      reviewedAt TEXT
+    )
+  `);
 
-  app.post('/api/admin/stores/:storeId/products', auth, requireStoreAccess((req) => req.params.storeId), (req, res) => {
-    const storeId = req.params.storeId;
-    const stores = loadStores();
-    const store = stores.find((s) => s.id === storeId);
-    if (!store) return res.status(404).json({ success: false, message: 'Store not found' });
+  function buildProductObject(body, store) {
     const products = loadProducts();
-    const body = req.body || {};
     const id = String(products.length ? Math.max(...products.map((p) => parseInt(p.id, 10) || 0)) + 1 : 1);
-    const newProduct = {
+    return {
       id,
       name: body.name ?? '',
       nameAr: body.nameAr ?? body.name ?? '',
@@ -462,9 +465,149 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
         isFavorite: store.isFavorite,
       },
     };
+  }
+
+  // ——— Products (per store) ———
+  app.get('/api/admin/stores/:storeId/products', auth, requireStoreAccess((req) => req.params.storeId), (req, res) => {
+    const products = loadProducts();
+    const storeProducts = products.filter((p) => p.store?.id === req.params.storeId);
+    return res.status(200).json({ success: true, data: { products: storeProducts } });
+  });
+
+  app.post('/api/admin/stores/:storeId/products', auth, requireStoreAccess((req) => req.params.storeId), (req, res) => {
+    const storeId = req.params.storeId;
+    const stores = loadStores();
+    const store = stores.find((s) => s.id === storeId);
+    if (!store) return res.status(404).json({ success: false, message: 'Store not found' });
+    const body = req.body || {};
+
+    if (req.admin.role === ROLES.STORE_ADMIN) {
+      const productData = buildProductObject(body, store);
+      db.prepare(
+        'INSERT INTO pending_products (storeId, submittedBy, productData, status) VALUES (?, ?, ?, ?)'
+      ).run(storeId, req.admin.adminId, JSON.stringify(productData), 'pending');
+      const pending = db.prepare('SELECT * FROM pending_products WHERE id = last_insert_rowid()').get();
+      return res.status(201).json({
+        success: true,
+        message: 'Product submitted for approval. An admin will review it.',
+        data: {
+          pendingId: pending.id,
+          status: 'pending',
+          product: productData,
+        },
+      });
+    }
+
+    const products = loadProducts();
+    const newProduct = buildProductObject(body, store);
     products.push(newProduct);
     saveProducts(products);
     return res.status(201).json({ success: true, data: { product: newProduct } });
+  });
+
+  // List pending products
+  app.get('/api/admin/pending-products', auth, (req, res) => {
+    let rows;
+    if (req.admin.role === ROLES.STORE_ADMIN) {
+      rows = db.prepare('SELECT * FROM pending_products WHERE storeId = ? ORDER BY id DESC').all(req.admin.storeId);
+    } else {
+      rows = db.prepare('SELECT * FROM pending_products ORDER BY id DESC').all();
+    }
+    const list = rows.map((r) => {
+      let product = {};
+      try { product = JSON.parse(r.productData); } catch (_) {}
+      return {
+        id: r.id,
+        storeId: r.storeId,
+        submittedBy: r.submittedBy,
+        status: r.status,
+        reviewedBy: r.reviewedBy,
+        reviewNote: r.reviewNote,
+        createdAt: r.createdAt,
+        reviewedAt: r.reviewedAt,
+        product,
+      };
+    });
+    return res.status(200).json({ success: true, data: { pendingProducts: list } });
+  });
+
+  // View pending product detail
+  app.get('/api/admin/pending-products/:id', auth, (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
+    const row = db.prepare('SELECT * FROM pending_products WHERE id = ?').get(id);
+    if (!row) return res.status(404).json({ success: false, message: 'Pending product not found' });
+    if (req.admin.role === ROLES.STORE_ADMIN && row.storeId !== req.admin.storeId) {
+      return res.status(403).json({ success: false, message: 'Access denied' });
+    }
+    let product = {};
+    try { product = JSON.parse(row.productData); } catch (_) {}
+    return res.status(200).json({
+      success: true,
+      data: {
+        id: row.id,
+        storeId: row.storeId,
+        submittedBy: row.submittedBy,
+        status: row.status,
+        reviewedBy: row.reviewedBy,
+        reviewNote: row.reviewNote,
+        createdAt: row.createdAt,
+        reviewedAt: row.reviewedAt,
+        product,
+      },
+    });
+  });
+
+  // Approve pending product (SuperAdmin / Admin only)
+  app.post('/api/admin/pending-products/:id/approve', auth, requireAdminOrSuper, (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
+    const row = db.prepare('SELECT * FROM pending_products WHERE id = ?').get(id);
+    if (!row) return res.status(404).json({ success: false, message: 'Pending product not found' });
+    if (row.status !== 'pending') {
+      return res.status(400).json({ success: false, message: `Product already ${row.status}` });
+    }
+    let productData = {};
+    try { productData = JSON.parse(row.productData); } catch (_) {}
+
+    const products = loadProducts();
+    const newId = String(products.length ? Math.max(...products.map((p) => parseInt(p.id, 10) || 0)) + 1 : 1);
+    productData.id = newId;
+    products.push(productData);
+    saveProducts(products);
+
+    const now = new Date().toISOString();
+    db.prepare(
+      'UPDATE pending_products SET status = ?, reviewedBy = ?, reviewedAt = ?, productData = ? WHERE id = ?'
+    ).run('approved', req.admin.adminId, now, JSON.stringify(productData), id);
+    return res.status(200).json({
+      success: true,
+      message: 'Product approved and added to store',
+      data: { product: productData },
+    });
+  });
+
+  // Reject pending product (SuperAdmin / Admin only)
+  app.post('/api/admin/pending-products/:id/reject', auth, requireAdminOrSuper, (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
+    const row = db.prepare('SELECT * FROM pending_products WHERE id = ?').get(id);
+    if (!row) return res.status(404).json({ success: false, message: 'Pending product not found' });
+    if (row.status !== 'pending') {
+      return res.status(400).json({ success: false, message: `Product already ${row.status}` });
+    }
+    const { note } = req.body || {};
+    const now = new Date().toISOString();
+    db.prepare(
+      'UPDATE pending_products SET status = ?, reviewedBy = ?, reviewNote = ?, reviewedAt = ? WHERE id = ?'
+    ).run('rejected', req.admin.adminId, note || null, now, id);
+    let product = {};
+    try { product = JSON.parse(row.productData); } catch (_) {}
+    return res.status(200).json({
+      success: true,
+      message: 'Product rejected',
+      data: { id: row.id, status: 'rejected', note: note || null, product },
+    });
   });
 
   app.patch('/api/admin/stores/:storeId/products/:productId', auth, requireStoreAccess((req) => req.params.storeId), (req, res) => {
