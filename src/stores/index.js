@@ -267,7 +267,7 @@ module.exports = function attachStoresRoutes(app, db) {
     }
 
     const products = productsResponse?.data?.products ?? [];
-    const storeProducts = products.filter(p => p.store?.id === storeId);
+    const storeProducts = products.filter(p => p.store?.id === storeId && p.isAvailable !== false);
 
     return res.status(200).json({
       success: true,
@@ -316,7 +316,7 @@ module.exports = function attachStoresRoutes(app, db) {
     }
 
     const products = productsResponse?.data?.products ?? [];
-    const storeProducts = products.filter(p => p.store?.id === storeId);
+    const storeProducts = products.filter(p => p.store?.id === storeId && p.isAvailable !== false);
 
     const categoryNameLower = categoryName.toLowerCase().trim();
     const subCategoryQuery = (req.query.subCategory || '').trim().toLowerCase();

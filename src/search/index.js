@@ -54,7 +54,7 @@ module.exports = function attachSearchRoutes(app) {
     const productFields = ['name', 'nameAr', 'nameEn', 'productName', 'productNameAr', 'productNameEn', 'category', 'categoryName'];
 
     const matchedStores = stores.filter((s) => matchesText(s, q, storeFields));
-    const matchedProducts = products.filter((p) => matchesText(p, q, productFields));
+    const matchedProducts = products.filter((p) => p.isAvailable !== false && matchesText(p, q, productFields));
 
     return res.status(200).json({
       success: true,

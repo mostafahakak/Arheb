@@ -651,10 +651,12 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     }
     const wherePrefix = conditions.length ? ' WHERE ' + conditions.join(' AND ') + ' AND ' : ' WHERE ';
     const activeSql = 'SELECT COUNT(*) AS n FROM orders' + wherePrefix + "(status IS NULL OR status NOT IN ('Delivered', 'Cancelled'))";
-    const completeSql = "SELECT COUNT(*) AS n FROM orders" + wherePrefix + "status IN ('Delivered', 'Cancelled')";
+    const deliveredSql = "SELECT COUNT(*) AS n FROM orders" + wherePrefix + "status = 'Delivered'";
+    const cancelledSql = "SELECT COUNT(*) AS n FROM orders" + wherePrefix + "status = 'Cancelled'";
     const active = db.prepare(activeSql).get(...params)?.n ?? 0;
-    const complete = db.prepare(completeSql).get(...params)?.n ?? 0;
-    return res.status(200).json({ success: true, data: { active, complete } });
+    const delivered = db.prepare(deliveredSql).get(...params)?.n ?? 0;
+    const cancelled = db.prepare(cancelledSql).get(...params)?.n ?? 0;
+    return res.status(200).json({ success: true, data: { active, delivered, cancelled, complete: delivered + cancelled } });
   });
 
   // ——— Orders (sorted newest first; filter by date range, status, store, name, orderType) ———
@@ -679,6 +681,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       conditions.push("(status IS NULL OR status NOT IN ('Delivered', 'Cancelled'))");
     } else if (orderType === 'complete') {
       conditions.push("status IN ('Delivered', 'Cancelled')");
+    } else if (orderType === 'delivered') {
+      conditions.push("status = 'Delivered'");
+    } else if (orderType === 'cancelled') {
+      conditions.push("status = 'Cancelled'");
     }
     if (status && String(status).trim()) {
       conditions.push('status = ?');

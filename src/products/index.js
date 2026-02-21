@@ -24,7 +24,7 @@ module.exports = function attachProductsRoutes(app, db) {
       });
     }
 
-    const allProducts = productsResponse?.data?.products ?? [];
+    const allProducts = (productsResponse?.data?.products ?? []).filter(p => p.isAvailable !== false);
     const totalProducts = allProducts.length;
     
     // Get page parameter, default to 1 if not provided
@@ -97,6 +97,13 @@ module.exports = function attachProductsRoutes(app, db) {
 
     const products = productsResponse?.data?.products ?? [];
     const product = products.find(p => String(p.id) === String(productId));
+
+    if (product && product.isAvailable === false) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found'
+      });
+    }
     
     if (!product) {
       return res.status(404).json({

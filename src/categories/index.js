@@ -296,7 +296,7 @@ function attachCategoriesRoutes(app, db) {
       return false;
     };
 
-    const products = productsResponse?.data?.products ?? [];
+    const products = (productsResponse?.data?.products ?? []).filter(p => p.isAvailable !== false);
     let filtered = products.filter(p => matchTerms.some(term => productMatchesTerm(p, term)));
 
     if (subCategoryQuery) {
