@@ -2436,6 +2436,51 @@ For issues or questions, please contact: `contact@arheb.app`
 
 ---
 
+## API Changelog
+
+**Last updated: 2025-01-31**
+
+### New APIs
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| GET | `/api/admin/orders/:orderId/available-drivers` | Admin (Store Admin: own store orders only) | Returns non-blocked drivers that do not already have a pending request for this order. Used when assigning a driver to an order. |
+| POST | `/api/admin/orders/:orderId/request-driver` | Admin (Store Admin: own store orders only) | Sends a delivery request to one or more drivers. Body: `{ "driverIds": [1, 2, 3] }`. Allowed only when order status is "Preparing" or "Waiting confirmation" and order has no driver assigned. |
+| GET | `/api/admin/orders/:orderId/tracking` | Admin (Store Admin: own store orders only) | Returns order tracking state for the dashboard: `orderId`, `orderStatus`, `driverId`, `driverName`, `isTracking`, `driverConnected`, `lastLocation` (latitude, longitude, timestamp). Used with Socket.IO for live driver tracking. |
+| GET | `/api/driver/requests` | Driver | Returns pending delivery requests for the authenticated driver. Each request includes full order payload (store name/address/mapsUrl, client address, total, delivery fee, item count, etc.). Driver accepts via existing `POST /api/driver/orders/accept`. |
+
+### Adjusted / Updated APIs
+
+- **Stores (public)**  
+  - All store responses now include **`closingTime`** (string or `null`).  
+  - **`arhebFee`** is never exposed in public APIs.
+
+- **Admin Stores**  
+  - **GET** `/api/admin/stores` and **GET** `/api/admin/stores/:id`: **`arhebFee`** is included only for SuperAdmin; omitted for Admin and Store Admin. **`closingTime`** always included.  
+  - **POST** `/api/admin/stores`: Body may include `closingTime`, and `arhebFee` (only applied if requester is SuperAdmin).  
+  - **PATCH** `/api/admin/stores/:id`: **`closingTime`** allowed for all roles. **`arhebFee`** allowed only for SuperAdmin; others get `403` if sent.  
+  - **Clone** store: Copies `closingTime` and `arhebFee` from source; body may override `closingTime`.
+
+- **Admin Orders**  
+  - **GET** `/api/admin/orders`: Supports filter by **`status`** (exact value: e.g. `Waiting confirmation`, `Preparing`, `On the way`, `Delivered`, `Cancelled`) in addition to existing `orderType`, `dateFrom`, `dateTo`, `storeId`, `storeName`, `name`.
+
+- **Driver order detail**  
+  - **GET** `/api/driver/orders/:orderId` (and all driver order payloads): Response now includes **`storeName`**, **`storeAddress`**, **`storeMapsUrl`**, **`clientMapsUrl`** (Google Maps link for delivery address), **`numberOfItems`**, in addition to existing `totalPrice`, `deliveryFee`, `address`, and products.
+
+- **Order tracking (WebSocket)**  
+  - **Admin** role: Store Admin may connect only for orders where `order.storeId` is their store or `null`; otherwise connection is rejected.  
+  - **Driver** role: Driver may connect only for orders assigned to them (`order.driverId === driver.id`); otherwise connection is rejected.  
+  - New event **`status_update`**: Emitted to the order room when driver accepts (status `"On the way"`) or completes (status `"Delivered"`). Payload: `{ orderId, status }`.  
+  - Customer and admin observers receive **`location_update`** (unchanged) and **`status_update`** for live tracking from driver accept until delivery.
+
+---
+
+## Support
+
+For issues or questions, please contact: `contact@arheb.app`
+
+---
+
 <div align="center">
 
 **Built with ❤️ for Arheb E-commerce Platform**
