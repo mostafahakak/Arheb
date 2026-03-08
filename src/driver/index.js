@@ -1,7 +1,29 @@
 const jwt = require('jsonwebtoken');
+const fs = require('fs');
+const { getJsonPath } = require('../config/jsonPaths');
 
-// Map DB order + items + driver to API shape
-function orderToDriverApi(order, items = [], driverRow = null) {
+function emitOrderStatus(orderId, status) {
+  try {
+    const { emitOrderEvent } = require('../order');
+    if (emitOrderEvent) emitOrderEvent(orderId, 'status_update', { status });
+  } catch (e) {
+    // order module may not be loaded yet
+  }
+}
+
+function loadStores() {
+  try {
+    const path = getJsonPath('stores_listing_response.json');
+    const raw = fs.readFileSync(path, 'utf-8');
+    const data = JSON.parse(raw);
+    return data?.data?.stores ?? [];
+  } catch (e) {
+    return [];
+  }
+}
+
+// Map DB order + items + driver to API shape; optional store adds storeAddress, storeMapsUrl, etc.
+function orderToDriverApi(order, items = [], driverRow = null, store = null) {
   const address = order.nearby || [order.addressName, order.addressLong, order.addressLat].filter(Boolean).join(', ') || '';
   const driver = driverRow ? {
     id: String(driverRow.id),
@@ -14,25 +36,33 @@ function orderToDriverApi(order, items = [], driverRow = null) {
     longitude: driverRow.longitude,
     rating: driverRow.rating ?? 5,
   } : null;
-  return {
+  const productList = (items || []).map((i) => ({
+    id: i.productId,
+    name: i.productName,
+    image: null,
+    price: i.price,
+    quantity: i.quantity,
+    unit: '',
+    category: null,
+    description: null,
+    discount: null,
+    stock: null,
+    isAvailable: true,
+    preparationTime: null,
+    ingredients: [],
+    allergens: [],
+  }));
+  const numberOfItems = productList.reduce((sum, p) => sum + (p.quantity || 0), 0);
+  const clientMapsUrl =
+    order.addressLat != null && order.addressLong != null
+      ? `https://www.google.com/maps?q=${order.addressLat},${order.addressLong}`
+      : (order.addressName || address)
+        ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(order.addressName || address)}`
+        : null;
+  const out = {
     id: String(order.id),
     orderNumber: `ORD-${String(order.id).padStart(4, '0')}`,
-    products: (items || []).map((i) => ({
-      id: i.productId,
-      name: i.productName,
-      image: null,
-      price: i.price,
-      quantity: i.quantity,
-      unit: '',
-      category: null,
-      description: null,
-      discount: null,
-      stock: null,
-      isAvailable: true,
-      preparationTime: null,
-      ingredients: [],
-      allergens: [],
-    })),
+    products: productList,
     totalPrice: order.totalAmount ?? 0,
     deliveryFee: order.deliveryFee ?? 0,
     discountAmount: order.discount ?? 0,
@@ -46,7 +76,15 @@ function orderToDriverApi(order, items = [], driverRow = null) {
     driver,
     driver_latitude: driver ? driverRow.latitude : null,
     driver_longitude: driver ? driverRow.longitude : null,
+    numberOfItems,
+    clientMapsUrl,
   };
+  if (store) {
+    out.storeName = store.nameEn || store.name || store.nameAr || null;
+    out.storeAddress = store.addressEn || store.address || store.addressAr || null;
+    out.storeMapsUrl = store.mapsUrl || null;
+  }
+  return out;
 }
 
 function mapOrderStatus(s) {
@@ -101,6 +139,15 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
   const findOrderItems = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
   const updateOrderDriver = db.prepare('UPDATE orders SET driverId = ?, driverName = ?, status = ? WHERE id = ?');
   const updateOrderStatus = db.prepare('UPDATE orders SET status = ? WHERE id = ?');
+  let findDriverRequestsByDriver, updateDriverRequestStatus, rejectOtherRequestsForOrder;
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS driver_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, orderId INTEGER NOT NULL, driverId INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending', createdAt TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(orderId, driverId))`);
+    findDriverRequestsByDriver = db.prepare('SELECT * FROM driver_requests WHERE driverId = ? AND status = ? ORDER BY createdAt DESC');
+    updateDriverRequestStatus = db.prepare('UPDATE driver_requests SET status = ? WHERE orderId = ? AND driverId = ?');
+    rejectOtherRequestsForOrder = db.prepare('UPDATE driver_requests SET status = ? WHERE orderId = ? AND driverId != ?');
+  } catch (e) {
+    if (!e.message || !e.message.includes('no such table')) throw e;
+  }
 
   function driverAuth(req, res, next) {
     const authHeader = req.headers.authorization;
@@ -223,10 +270,13 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
       rating: req.driver.rating ?? 5,
     };
 
+    const storesList = loadStores();
+    const storeById = Object.fromEntries(storesList.map((s) => [s.id, s]));
     const buildOrder = (order) => {
       const items = findOrderItems.all(order.id);
       const dr = order.driverId ? findDriverById.get(order.driverId) : null;
-      return orderToDriverApi(order, items, dr);
+      const store = order.storeId ? storeById[order.storeId] : null;
+      return orderToDriverApi(order, items, dr, store);
     };
 
     return res.status(200).json({
@@ -295,16 +345,46 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     }
     const total = orders.length;
     const slice = orders.slice(offset, offset + perPage);
+    const storesList = loadStores();
+    const storeById = Object.fromEntries(storesList.map((s) => [s.id, s]));
     const findDriverByIdRun = (id) => (id ? findDriverById.get(id) : null);
     const list = slice.map((o) => {
       const items = findOrderItems.all(o.id);
-      return orderToDriverApi(o, items, findDriverByIdRun(o.driverId));
+      const store = o.storeId ? storeById[o.storeId] : null;
+      return orderToDriverApi(o, items, findDriverByIdRun(o.driverId), store);
     });
 
     return res.status(200).json({
       success: true,
       message: 'Orders loaded successfully',
       data: { filter, page, perPage, total, orders: list },
+    });
+  });
+
+  // GET /api/driver/requests — pending delivery requests (admin requested this driver to pick up order)
+  app.get('/api/driver/requests', driverAuth, (req, res) => {
+    if (!findDriverRequestsByDriver) {
+      return res.status(200).json({ success: true, data: { requests: [] } });
+    }
+    const rows = findDriverRequestsByDriver.all(req.driver.id, 'pending');
+    const storesList = loadStores();
+    const storeById = Object.fromEntries(storesList.map((s) => [s.id, s]));
+    const requests = rows.map((r) => {
+      const order = findOrderById.get(r.orderId);
+      if (!order || order.driverId != null) return null;
+      const items = findOrderItems.all(r.orderId);
+      const store = order.storeId ? storeById[order.storeId] : null;
+      return {
+        requestId: r.id,
+        orderId: r.orderId,
+        createdAt: r.createdAt,
+        order: orderToDriverApi(order, items, null, store),
+      };
+    }).filter(Boolean);
+    return res.status(200).json({
+      success: true,
+      message: 'Requests loaded',
+      data: { requests },
     });
   });
 
@@ -319,10 +399,12 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     }
     const items = findOrderItems.all(orderId);
     const driverRow = order.driverId ? findDriverById.get(order.driverId) : null;
+    const storesList = loadStores();
+    const store = order.storeId ? storesList.find((s) => s.id === order.storeId) : null;
     return res.status(200).json({
       success: true,
       message: 'Order loaded successfully',
-      data: { order: orderToDriverApi(order, items, driverRow) },
+      data: { order: orderToDriverApi(order, items, driverRow, store) },
     });
   });
 
@@ -336,16 +418,26 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     const order = findOrderById.get(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     if (order.driverId != null) return res.status(400).json({ success: false, message: 'Order already assigned' });
+    if (updateDriverRequestStatus) {
+      const existing = db.prepare('SELECT id FROM driver_requests WHERE orderId = ? AND driverId = ? AND status = ?').get(orderId, driverId, 'pending');
+      if (existing) {
+        updateDriverRequestStatus.run('accepted', orderId, driverId);
+        if (rejectOtherRequestsForOrder) rejectOtherRequestsForOrder.run('rejected', orderId, driverId);
+      }
+    }
     const driverRowForAccept = findDriverById.get(driverId);
     const driverName = driverRowForAccept ? driverRowForAccept.name : null;
     updateOrderDriver.run(driverId, driverName, 'On the way', orderId);
+    emitOrderStatus(orderId, 'On the way');
     const updated = findOrderById.get(orderId);
     const items = findOrderItems.all(orderId);
     const driverRow = findDriverById.get(driverId);
+    const storesList = loadStores();
+    const store = updated.storeId ? storesList.find((s) => s.id === updated.storeId) : null;
     return res.status(200).json({
       success: true,
       message: 'Order accepted successfully',
-      data: { order: orderToDriverApi(updated, items, driverRow) },
+      data: { order: orderToDriverApi(updated, items, driverRow, store) },
     });
   });
 
@@ -360,13 +452,16 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     if (order.driverId !== driverId) return res.status(403).json({ success: false, message: 'Order not assigned to you' });
     updateOrderStatus.run('Delivered', orderId);
+    emitOrderStatus(orderId, 'Delivered');
     const updated = findOrderById.get(orderId);
     const items = findOrderItems.all(orderId);
     const driverRow = findDriverById.get(driverId);
+    const storesList = loadStores();
+    const store = updated.storeId ? storesList.find((s) => s.id === updated.storeId) : null;
     return res.status(200).json({
       success: true,
       message: 'Order completed successfully',
-      data: { order: orderToDriverApi(updated, items, driverRow) },
+      data: { order: orderToDriverApi(updated, items, driverRow, store) },
     });
   });
 };

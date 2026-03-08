@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const { verifyAdminToken } = require('../admin/auth');
+const { setOrderTrackingIo, emitOrderEvent } = require('./trackingEmitter');
 
 // Store active order tracking sessions
 // Format: { orderId: { driverSocket, customerSocket, adminSockets: [], lastLocation } }
@@ -7,6 +8,7 @@ const activeTrackings = new Map();
 
 // Uses the same db and orders table as checkout (creates orders) and admin (lists/updates orders).
 module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateRequest, JWT_SECRET) {
+  setOrderTrackingIo(io);
   const findOrderById = db.prepare('SELECT * FROM orders WHERE id = ?');
 
   // Helper function to verify token and get user info
@@ -49,11 +51,20 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
       return next(new Error('Order not found'));
     }
 
-    // Determine role: admin, driver, or customer
+    // Determine role: admin, driver, or customer (with access checks)
     const adminPayload = verifyAdminToken(token, JWT_SECRET);
     if (adminPayload && adminPayload.adminId) {
+      if (adminPayload.role === 'store_admin') {
+        if (order.storeId != null && order.storeId !== adminPayload.storeId) {
+          return next(new Error('Access denied: You can only track orders for your store'));
+        }
+      }
       socket.role = 'admin';
+      socket.adminPayload = adminPayload;
     } else if (user.driverId) {
+      if (order.driverId != null && order.driverId !== user.driverId) {
+        return next(new Error('Access denied: You can only track orders assigned to you'));
+      }
       socket.role = 'driver';
     } else {
       // Check customer ownership
@@ -278,3 +289,6 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
     }
   });
 };
+
+module.exports.emitOrderEvent = emitOrderEvent;
+module.exports.getOrderTrackingState = (orderId) => activeTrackings.get(orderId);

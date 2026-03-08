@@ -156,6 +156,12 @@ const seedStoresTable = (db, stores) => {
   insertAll(stores);
 };
 
+// Public store shape: include closingTime, never expose arhebFee
+function toPublicStore(store) {
+  const { arhebFee, ...rest } = store;
+  return { ...rest, closingTime: store.closingTime ?? null };
+}
+
 module.exports = function attachStoresRoutes(app, db) {
   seedStoresTable(db, storesListForSeed);
   if (storesListForSeed.length === 0) {
@@ -165,7 +171,8 @@ module.exports = function attachStoresRoutes(app, db) {
   app.get('/api/stores', (req, res) => {
     const storesResponse = loadStoresResponse();
     // When file is missing (e.g. deploy), return empty list so test client / app do not get 500
-    const stores = storesResponse?.data?.stores ?? [];
+    const raw = storesResponse?.data?.stores ?? [];
+    const stores = raw.map(toPublicStore);
     return res.status(200).json({
       success: true,
       message: 'Stores listing retrieved successfully',
@@ -176,7 +183,7 @@ module.exports = function attachStoresRoutes(app, db) {
 
   app.get('/api/stores/top-rated', (req, res) => {
     const storesResponse = loadStoresResponse();
-    const storesList = storesResponse?.data?.stores ?? [];
+    const storesList = (storesResponse?.data?.stores ?? []).map(toPublicStore);
     const limit = req.query.limit ? parseInt(req.query.limit) : null;
     const topRatedStores = storesList
       .filter(store => store.rate != null && typeof store.rate === 'number')
@@ -200,7 +207,7 @@ module.exports = function attachStoresRoutes(app, db) {
   // Get premium stores (set by SuperAdmin/Admin)
   app.get('/api/stores/premium', (req, res) => {
     const storesResponse = loadStoresResponse();
-    const storesList = storesResponse?.data?.stores ?? [];
+    const storesList = (storesResponse?.data?.stores ?? []).map(toPublicStore);
     const limit = req.query.limit ? parseInt(req.query.limit) : null;
     const premiumStores = storesList.filter(store => store.isPremium === true);
     const result = limit ? premiumStores.slice(0, limit) : premiumStores;
@@ -223,7 +230,7 @@ module.exports = function attachStoresRoutes(app, db) {
       return res.status(400).json({ success: false, message: 'Category name is required' });
     }
     const storesResponse = loadStoresResponse();
-    const storesList = storesResponse?.data?.stores ?? [];
+    const storesList = (storesResponse?.data?.stores ?? []).map(toPublicStore);
     const categoryNameLower = categoryName.toLowerCase().trim();
     const matches = (val) => {
       if (val == null) return false;
@@ -279,7 +286,8 @@ module.exports = function attachStoresRoutes(app, db) {
           nameAr: store.nameAr,
           nameEn: store.nameEn,
           logo: store.logo,
-          cover: store.cover
+          cover: store.cover,
+          closingTime: store.closingTime ?? null
         },
         products: storeProducts,
         count: storeProducts.length
@@ -389,7 +397,8 @@ module.exports = function attachStoresRoutes(app, db) {
           cover: store.cover,
           category: store.category,
           categoryAr: store.categoryAr,
-          categoryEn: store.categoryEn
+          categoryEn: store.categoryEn,
+          closingTime: store.closingTime ?? null
         },
         categoryName: categoryName,
         subCategory: subCategoryQuery || null,

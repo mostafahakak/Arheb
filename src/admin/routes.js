@@ -290,11 +290,11 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
   // ——— Stores ———
   app.get('/api/admin/stores', auth, (req, res) => {
     const stores = loadStores();
-    if (req.admin.role === ROLES.STORE_ADMIN) {
-      const filtered = stores.filter((s) => s.id === req.admin.storeId);
-      return res.status(200).json({ success: true, data: { stores: filtered } });
+    let list = req.admin.role === ROLES.STORE_ADMIN ? stores.filter((s) => s.id === req.admin.storeId) : stores;
+    if (req.admin.role !== ROLES.SUPERADMIN) {
+      list = list.map((s) => { const { arhebFee, ...rest } = s; return rest; });
     }
-    return res.status(200).json({ success: true, data: { stores } });
+    return res.status(200).json({ success: true, data: { stores: list } });
   });
 
   app.post('/api/admin/stores', auth, requireAdminOrSuper, (req, res) => {
@@ -329,6 +329,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       categoryEn: body.categoryEn ?? body.category ?? '',
       subCategories: Array.isArray(body.subCategories) ? body.subCategories : [],
       isPremium: body.isPremium === true,
+      mapsUrl: body.mapsUrl ?? '',
+      closingTime: body.closingTime ?? null,
+      arhebFee: req.admin.role === ROLES.SUPERADMIN && body.arhebFee != null ? (typeof body.arhebFee === 'number' ? body.arhebFee : parseFloat(body.arhebFee)) : null,
     };
     stores.push(newStore);
     saveStores(stores);
@@ -371,14 +374,15 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const stores = loadStores();
     const store = stores.find((s) => s.id === req.params.id);
     if (!store) return res.status(404).json({ success: false, message: 'Store not found' });
-    return res.status(200).json({ success: true, data: { store } });
+    const out = req.admin.role === ROLES.SUPERADMIN ? store : (() => { const { arhebFee, ...rest } = store; return rest; })();
+    return res.status(200).json({ success: true, data: { store: out } });
   });
 
   app.patch('/api/admin/stores/:id', auth, requireStoreAccess((req) => req.params.id), (req, res) => {
     const stores = loadStores();
     const idx = stores.findIndex((s) => s.id === req.params.id);
     if (idx === -1) return res.status(404).json({ success: false, message: 'Store not found' });
-    const allowed = ['name', 'nameAr', 'nameEn', 'cover', 'logo', 'deliveryTime', 'deliveryFee', 'minimumOrder', 'isOpen', 'openingHours', 'address', 'addressAr', 'addressEn', 'phone', 'category', 'categoryAr', 'categoryEn', 'subCategories'];
+    const allowed = ['name', 'nameAr', 'nameEn', 'cover', 'logo', 'deliveryTime', 'deliveryFee', 'minimumOrder', 'isOpen', 'openingHours', 'address', 'addressAr', 'addressEn', 'phone', 'category', 'categoryAr', 'categoryEn', 'subCategories', 'mapsUrl', 'closingTime'];
     const body = req.body || {};
     if (body.subCategories !== undefined) {
       stores[idx].subCategories = Array.isArray(body.subCategories) ? body.subCategories : [];
@@ -389,11 +393,122 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       }
       stores[idx].isPremium = Boolean(body.isPremium);
     }
+    if (body.arhebFee !== undefined) {
+      if (req.admin.role !== ROLES.SUPERADMIN) {
+        return res.status(403).json({ success: false, message: 'Only SuperAdmin can set arhebFee' });
+      }
+      stores[idx].arhebFee = body.arhebFee === null || body.arhebFee === '' ? null : (typeof body.arhebFee === 'number' ? body.arhebFee : parseFloat(body.arhebFee));
+    }
     for (const key of allowed) {
       if (body[key] !== undefined) stores[idx][key] = body[key];
     }
     saveStores(stores);
     return res.status(200).json({ success: true, data: { store: stores[idx] } });
+  });
+
+  // Clone store: SuperAdmin/Admin can clone any store; Store Admin can clone only their store
+  app.post('/api/admin/stores/:id/clone', auth, requireStoreAccess((req) => req.params.id), (req, res) => {
+    const sourceId = req.params.id;
+    const body = req.body || {};
+    const stores = loadStores();
+    const sourceStore = stores.find((s) => String(s.id) === String(sourceId));
+    if (!sourceStore) return res.status(404).json({ success: false, message: 'Store not found' });
+
+    const ids = stores.map((s) => parseInt(String(s.id), 10)).filter((n) => !isNaN(n));
+    const nextId = ids.length ? String(Math.max(...ids) + 1) : '1';
+
+    const newStore = {
+      id: nextId,
+      name: sourceStore.name ?? '',
+      nameAr: sourceStore.nameAr ?? sourceStore.name ?? '',
+      nameEn: sourceStore.nameEn ?? sourceStore.name ?? '',
+      cover: sourceStore.cover ?? '',
+      logo: sourceStore.logo ?? '',
+      rate: sourceStore.rate ?? 4,
+      numberOfReviews: 0,
+      isFavorite: false,
+      deliveryTime: sourceStore.deliveryTime ?? '30-45 min',
+      deliveryFee: sourceStore.deliveryFee ?? 0,
+      minimumOrder: sourceStore.minimumOrder ?? 0,
+      isOpen: sourceStore.isOpen !== false,
+      openingHours: sourceStore.openingHours ? { ...sourceStore.openingHours } : { open: '09:00', close: '23:00' },
+      address: body.address ?? body.addressEn ?? sourceStore.address ?? '',
+      addressAr: body.addressAr ?? body.address ?? sourceStore.addressAr ?? '',
+      addressEn: body.addressEn ?? body.address ?? sourceStore.addressEn ?? '',
+      phone: sourceStore.phone ?? '',
+      category: sourceStore.category ?? 'restaurants',
+      categoryAr: sourceStore.categoryAr ?? sourceStore.category ?? '',
+      categoryEn: sourceStore.categoryEn ?? sourceStore.category ?? '',
+      subCategories: Array.isArray(sourceStore.subCategories) ? [...sourceStore.subCategories] : [],
+      isPremium: sourceStore.isPremium === true,
+      mapsUrl: body.mapsUrl ?? sourceStore.mapsUrl ?? '',
+      closingTime: body.closingTime ?? sourceStore.closingTime ?? null,
+      arhebFee: sourceStore.arhebFee != null ? sourceStore.arhebFee : null,
+    };
+    stores.push(newStore);
+    saveStores(stores);
+
+    try {
+      const insertStoreListing = db.prepare(`
+        INSERT INTO store_listings (id, name, nameAr, nameEn, cover, logo, rate, numberOfReviews, isFavorite, deliveryTime, deliveryFee, minimumOrder, isOpen, openingHoursOpen, openingHoursClose, address, addressAr, addressEn, phone, category, categoryAr, categoryEn)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      insertStoreListing.run(
+        newStore.id,
+        newStore.name ?? null,
+        newStore.nameAr ?? null,
+        newStore.nameEn ?? null,
+        newStore.cover ?? null,
+        newStore.logo ?? null,
+        newStore.rate ?? null,
+        0,
+        0,
+        newStore.deliveryTime ?? null,
+        newStore.deliveryFee ?? null,
+        newStore.minimumOrder ?? null,
+        newStore.isOpen ? 1 : 0,
+        newStore.openingHours?.open ?? null,
+        newStore.openingHours?.close ?? null,
+        newStore.address ?? null,
+        newStore.addressAr ?? null,
+        newStore.addressEn ?? null,
+        newStore.phone ?? null,
+        newStore.category ?? null,
+        newStore.categoryAr ?? null,
+        newStore.categoryEn ?? null
+      );
+    } catch (e) {
+      if (!e.message || !e.message.includes('no such table')) throw e;
+    }
+
+    const products = loadProducts();
+    const sourceProducts = products.filter((p) => String(p.store?.id) === String(sourceId));
+    const maxProductId = products.length ? Math.max(...products.map((p) => parseInt(p.id, 10) || 0)) : 0;
+    let nextProductId = maxProductId + 1;
+    const newProducts = sourceProducts.map((p) => {
+      const cloned = JSON.parse(JSON.stringify(p));
+      cloned.id = String(nextProductId++);
+      cloned.store = {
+        id: newStore.id,
+        name: newStore.name,
+        nameAr: newStore.nameAr,
+        nameEn: newStore.nameEn,
+        cover: newStore.cover,
+        logo: newStore.logo,
+        rate: newStore.rate,
+        numberOfReviews: newStore.numberOfReviews,
+        isFavorite: newStore.isFavorite,
+      };
+      return cloned;
+    });
+    products.push(...newProducts);
+    saveProducts(products);
+
+    return res.status(201).json({
+      success: true,
+      message: 'Store cloned successfully',
+      data: { store: newStore, productsCloned: newProducts.length },
+    });
   });
 
   app.delete('/api/admin/stores/:id', auth, requireAdminOrSuper, (req, res) => {
@@ -641,6 +756,22 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     return res.status(200).json({ success: true, message: 'Product deleted' });
   });
 
+  // ——— Driver requests (orderId, driverId, status: pending|accepted|rejected) ———
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS driver_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        orderId INTEGER NOT NULL,
+        driverId INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(orderId, driverId)
+      )
+    `);
+  } catch (e) {
+    // table exists
+  }
+
   // ——— Orders: same DB/table as checkout and order tracking; Store Admin sees their store or unassigned (null storeId) ———
   app.get('/api/admin/orders/counts', auth, (req, res) => {
     const conditions = [];
@@ -778,6 +909,101 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
           ...updated,
           items: items.map((i) => ({ id: i.productId, name: i.productName, price: i.price, quantity: i.quantity })),
         },
+      },
+    });
+  });
+
+  // ——— Get available drivers for assigning to an order (Store Admin / Admin / SuperAdmin) ———
+  app.get('/api/admin/orders/:orderId/available-drivers', auth, (req, res) => {
+    const orderId = parseInt(req.params.orderId, 10);
+    if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
+    const order = findOrderById.get(orderId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && order.storeId !== req.admin.storeId) {
+      return res.status(403).json({ success: false, message: 'Access denied to this order' });
+    }
+    let drivers = [];
+    try {
+      drivers = db.prepare('SELECT id, name, mobile, vehicleType, vehicleNumber FROM drivers WHERE isBlocked = 0 ORDER BY name').all();
+    } catch (e) {
+      if (!e.message || !e.message.includes('no such table')) throw e;
+    }
+    const pendingDriverIds = new Set();
+    try {
+      const pending = db.prepare('SELECT driverId FROM driver_requests WHERE orderId = ? AND status = ?').all(orderId, 'pending');
+      pending.forEach((r) => pendingDriverIds.add(r.driverId));
+    } catch (e) {
+      if (!e.message || !e.message.includes('no such table')) throw e;
+    }
+    const list = drivers
+      .filter((d) => !pendingDriverIds.has(d.id))
+      .map((d) => ({ id: d.id, name: d.name, mobile: d.mobile, vehicleType: d.vehicleType || null, vehicleNumber: d.vehicleNumber || null }));
+    return res.status(200).json({ success: true, data: { drivers: list } });
+  });
+
+  // ——— Request driver(s) to pick up order (when status is Preparing) ———
+  app.post('/api/admin/orders/:orderId/request-driver', auth, (req, res) => {
+    const orderId = parseInt(req.params.orderId, 10);
+    if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
+    const order = findOrderById.get(orderId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && order.storeId !== req.admin.storeId) {
+      return res.status(403).json({ success: false, message: 'Access denied to this order' });
+    }
+    const statusLower = (order.status || '').toLowerCase();
+    if (!statusLower.includes('preparing') && !statusLower.includes('waiting')) {
+      return res.status(400).json({ success: false, message: 'Can only request driver when order is Preparing or Waiting confirmation' });
+    }
+    if (order.driverId != null) {
+      return res.status(400).json({ success: false, message: 'Order already has a driver assigned' });
+    }
+    const { driverIds } = req.body || {};
+    const ids = Array.isArray(driverIds) ? driverIds.map((id) => parseInt(id, 10)).filter((n) => !isNaN(n)) : [];
+    if (ids.length === 0) return res.status(400).json({ success: false, message: 'driverIds array is required' });
+    const insertRequest = db.prepare('INSERT OR IGNORE INTO driver_requests (orderId, driverId, status) VALUES (?, ?, ?)');
+    for (const driverId of ids) {
+      const driver = db.prepare('SELECT id FROM drivers WHERE id = ? AND isBlocked = 0').get(driverId);
+      if (driver) insertRequest.run(orderId, driverId, 'pending');
+    }
+    return res.status(200).json({
+      success: true,
+      message: 'Request sent to driver(s). They can accept in the driver app.',
+      data: { orderId },
+    });
+  });
+
+  // ——— Get order tracking state (for dashboard live map; Store Admin / Admin / SuperAdmin) ———
+  app.get('/api/admin/orders/:orderId/tracking', auth, (req, res) => {
+    const orderId = parseInt(req.params.orderId, 10);
+    if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
+    const order = findOrderById.get(orderId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && order.storeId !== req.admin.storeId) {
+      return res.status(403).json({ success: false, message: 'Access denied to this order' });
+    }
+    let getOrderTrackingState;
+    try {
+      getOrderTrackingState = require('../order').getOrderTrackingState;
+    } catch (e) {
+      getOrderTrackingState = null;
+    }
+    const tracking = getOrderTrackingState ? getOrderTrackingState(orderId) : null;
+    const lastLocation = tracking?.lastLocation || null;
+    return res.status(200).json({
+      success: true,
+      data: {
+        orderId,
+        orderStatus: order.status,
+        driverId: order.driverId,
+        driverName: order.driverName,
+        isTracking: !!lastLocation,
+        driverConnected: !!(tracking && tracking.driverSocket),
+        lastLocation: lastLocation ? {
+          latitude: lastLocation.latitude,
+          longitude: lastLocation.longitude,
+          timestamp: lastLocation.timestamp,
+        } : null,
+        trackFrom: 'driver_accept_until_delivery',
       },
     });
   });
