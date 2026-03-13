@@ -2438,7 +2438,7 @@ For issues or questions, please contact: `contact@arheb.app`
 
 ## API Changelog
 
-**Last updated: 2025-01-31**
+**Last updated: 2026-01-31**
 
 ### New APIs
 
@@ -2448,6 +2448,10 @@ For issues or questions, please contact: `contact@arheb.app`
 | POST | `/api/admin/orders/:orderId/request-driver` | Admin (Store Admin: own store orders only) | Sends a delivery request to one or more drivers. Body: `{ "driverIds": [1, 2, 3] }`. Allowed only when order status is "Preparing" or "Waiting confirmation" and order has no driver assigned. |
 | GET | `/api/admin/orders/:orderId/tracking` | Admin (Store Admin: own store orders only) | Returns order tracking state for the dashboard: `orderId`, `orderStatus`, `driverId`, `driverName`, `isTracking`, `driverConnected`, `lastLocation` (latitude, longitude, timestamp). Used with Socket.IO for live driver tracking. |
 | GET | `/api/driver/requests` | Driver | Returns pending delivery requests for the authenticated driver. Each request includes full order payload (store name/address/mapsUrl, client address, total, delivery fee, item count, etc.). Driver accepts via existing `POST /api/driver/orders/accept`. |
+| GET | `/api/admin/info` | Admin / SuperAdmin | Returns app-level contact info and Cliq number for the platform: `{ email, phone, cliqNumber }`. Used by the admin dashboard `App info` page. |
+| PATCH | `/api/admin/info` | Admin / SuperAdmin | Updates app contact info and Cliq number. Body: any subset of `{ email, phone, cliqNumber }`. Missing fields are left unchanged. |
+| POST | `/api/admin/stores/:storeId/products/import` | Admin / SuperAdmin / Store Admin (per-store) | Imports products for a store from an Excel file. Expects `multipart/form-data` with field `file` (`.xlsx`/`.xls`). Store Admin rows go to the pending products queue; Admin/SuperAdmin rows are imported directly. |
+| GET | `/api/admin/stores/:storeId/products/export` | Admin / SuperAdmin / Store Admin (per-store) | Exports all products for the given store as an Excel file. Columns include `nameEn`, `nameAr`, `price`, `discount`, `unit`, `category`, `description`, `stock`, `isAvailable`. |
 
 ### Adjusted / Updated APIs
 
@@ -2472,6 +2476,37 @@ For issues or questions, please contact: `contact@arheb.app`
   - **Driver** role: Driver may connect only for orders assigned to them (`order.driverId === driver.id`); otherwise connection is rejected.  
   - New event **`status_update`**: Emitted to the order room when driver accepts (status `"On the way"`) or completes (status `"Delivered"`). Payload: `{ orderId, status }`.  
   - Customer and admin observers receive **`location_update`** (unchanged) and **`status_update`** for live tracking from driver accept until delivery.
+
+- **Contact / App Info**  
+  - **GET** `/api/contact`: Response `data.contact` now includes **`cliqNumber`** in addition to `email` and `phone`.  
+  - **PUT** `/api/contact`: Body may include optional `cliqNumber` (string). If provided, it updates the stored Cliq number along with email/phone.  
+  - **GET** `/api/admin/info` / **PATCH** `/api/admin/info` (see New APIs) provide an admin-only way to view and update the same contact info used by the app.
+
+- **Checkout & Orders (Cliq payments)**  
+  - **POST** `/api/checkout`:  
+    - Accepts optional **`paymentVerificationImage`** (string URL) in the request body.  
+    - When `paymentType` is `"Cliq"` (case-insensitive), new orders start with status **`'Waiting cliq confirmation'`** instead of `'Waiting confirmation'`.  
+  - **GET** `/api/checkout` and **GET** `/api/checkout/:orderId`:  
+    - Order objects now include **`paymentVerificationImage`** when present.  
+  - **GET** `/api/home`:  
+    - `activeOrder.status` can now also be `'Waiting cliq confirmation'` in addition to previous active statuses.
+
+- **Driver Orders (visibility)**  
+  - **GET** `/api/driver/home`:  
+    - `availableOrders` now includes only **unassigned orders with status `Preparing`**.  
+  - **GET** `/api/driver/orders?filter=available`:  
+    - Returns only unassigned orders where `status = 'Preparing'`. Other filters (`mine`, `in_progress`, `all`) continue to show orders assigned to the authenticated driver.
+
+- **Admin Orders (Cliq review + tracking UI)**  
+  - **GET** `/api/admin/orders` and **GET** `/api/admin/orders/:orderId`:  
+    - Order objects now include **`paymentType`** and **`paymentVerificationImage`** (if present) for Cliq payments, enabling the dashboard to show the user’s payment screenshot.  
+  - **PATCH** `/api/admin/orders/:orderId/status`:  
+    - Admins can move Cliq orders from `'Waiting cliq confirmation'` → `'Waiting confirmation'` (approved) or to `'Payment rejected'` (rejected), which then flows through existing order processing as usual.
+
+- **Stores (public + admin) – Store categories**  
+  - All public store responses (`GET /api/stores`, `/api/stores/top-rated`, `/api/stores/premium`, `/api/stores/category/:categoryName`) now include **`storeCategories`** (array) as part of each store.  
+  - **GET** `/api/stores/:id/products` and **GET** `/api/stores/:id/products/category/:categoryName` include `store.storeCategories` so clients can know which categories belong to that store.  
+  - **Admin** store APIs allow managing `storeCategories` per store; dashboard product forms now pick categories from the store’s own `storeCategories` instead of global categories.
 
 ---
 

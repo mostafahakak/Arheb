@@ -1054,6 +1054,28 @@
           </div>
 
           <div class="card">
+            <h3>Admin App Info (/api/admin/info)</h3>
+            <p style="font-size: 0.8rem; color: #718096; margin-bottom: 0.5rem;">View and update app-level contact email, phone, and Cliq number used by the app.</p>
+            <div class="row form-group">
+              <button id="adminGetInfoBtn" class="secondary">Get Admin Info</button>
+            </div>
+            <div class="form-group">
+              <label for="adminInfoEmail">Email</label>
+              <input id="adminInfoEmail" type="email" placeholder="contact@arheb.com" />
+            </div>
+            <div class="form-group">
+              <label for="adminInfoPhone">Phone</label>
+              <input id="adminInfoPhone" type="tel" placeholder="+201234567890" />
+            </div>
+            <div class="form-group">
+              <label for="adminInfoCliq">Cliq Number</label>
+              <input id="adminInfoCliq" type="text" placeholder="Cliq number" />
+            </div>
+            <button id="adminUpdateInfoBtn" class="secondary">Update Admin Info</button>
+            <div id="adminInfoOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
             <h3>Live Order Tracking (Admin) <span class="badge admin">WebSocket</span></h3>
             <p style="font-size: 0.8rem; color: #718096; margin-bottom: 0.5rem;">Connect as admin observer to watch driver location in real-time for any order.</p>
             <div class="form-group">
@@ -1221,6 +1243,10 @@
             <div class="form-group">
               <label for="contactPhone">Phone</label>
               <input id="contactPhone" type="tel" placeholder="+201234567890" />
+            </div>
+            <div class="form-group">
+              <label for="contactCliq">Cliq Number (optional)</label>
+              <input id="contactCliq" type="text" placeholder="Cliq number" />
             </div>
             <button id="updateContactBtn" class="secondary">Update Contact</button>
             <div id="updateContactOutput" class="output" style="display: none;"></div>
@@ -1653,7 +1679,8 @@
           discount: 2.0,
           deliveryFee: 2.5,
           totalAmount: 15.5,
-          paymentType: "cash",
+          paymentType: "Cliq",
+          paymentVerificationImage: "https://via.placeholder.com/400x300.png?text=Cliq+Proof",
           promoCode: "SAVE10",
           storeId: "1",
           nearby: "Near the shopping mall",
@@ -1822,8 +1849,10 @@
         const updateData = {};
         const email = document.getElementById('contactEmail').value.trim();
         const phone = document.getElementById('contactPhone').value.trim();
+        const cliq = document.getElementById('contactCliq').value.trim();
         if (email) updateData.email = email;
         if (phone) updateData.phone = phone;
+        if (cliq) updateData.cliqNumber = cliq;
         if (Object.keys(updateData).length === 0) {
           showOutput('updateContactOutput', { error: 'Please fill at least one field' });
           return;
@@ -1842,6 +1871,56 @@
       });
 
       // Admin
+      document.getElementById('adminGetInfoBtn').addEventListener('click', async () => {
+        if (!lastAdminToken) {
+          showOutput('adminInfoOutput', { error: 'Please Admin Login first' });
+          return;
+        }
+        try {
+          const res = await fetch(`${getBackendBase()}/api/admin/info`, {
+            headers: { 'Authorization': lastAdminToken },
+          });
+          const data = await res.json();
+          showOutput('adminInfoOutput', data);
+          if (data.success && data.data && data.data.info) {
+            const info = data.data.info;
+            document.getElementById('adminInfoEmail').value = info.email || '';
+            document.getElementById('adminInfoPhone').value = info.phone || '';
+            document.getElementById('adminInfoCliq').value = info.cliqNumber || '';
+          }
+        } catch (error) {
+          showOutput('adminInfoOutput', { error: error.message });
+        }
+      });
+
+      document.getElementById('adminUpdateInfoBtn').addEventListener('click', async () => {
+        if (!lastAdminToken) {
+          showOutput('adminInfoOutput', { error: 'Please Admin Login first' });
+          return;
+        }
+        const body = {};
+        const email = document.getElementById('adminInfoEmail').value.trim();
+        const phone = document.getElementById('adminInfoPhone').value.trim();
+        const cliq = document.getElementById('adminInfoCliq').value.trim();
+        if (email) body.email = email;
+        if (phone) body.phone = phone;
+        if (cliq) body.cliqNumber = cliq;
+        if (Object.keys(body).length === 0) {
+          showOutput('adminInfoOutput', { error: 'Please fill at least one field' });
+          return;
+        }
+        try {
+          const res = await fetch(`${getBackendBase()}/api/admin/info`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', 'Authorization': lastAdminToken },
+            body: JSON.stringify(body),
+          });
+          const data = await res.json();
+          showOutput('adminInfoOutput', data);
+        } catch (error) {
+          showOutput('adminInfoOutput', { error: error.message });
+        }
+      });
       document.getElementById('adminLoginBtn').addEventListener('click', async () => {
         const email = document.getElementById('adminEmailInput').value.trim();
         const password = document.getElementById('adminPasswordInput').value;
