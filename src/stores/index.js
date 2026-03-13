@@ -156,10 +156,14 @@ const seedStoresTable = (db, stores) => {
   insertAll(stores);
 };
 
-// Public store shape: include closingTime, never expose arhebFee
+// Public store shape: include closingTime and storeCategories, never expose arhebFee
 function toPublicStore(store) {
   const { arhebFee, ...rest } = store;
-  return { ...rest, closingTime: store.closingTime ?? null };
+  return {
+    ...rest,
+    closingTime: store.closingTime ?? null,
+    storeCategories: Array.isArray(store.storeCategories) ? store.storeCategories : [],
+  };
 }
 
 module.exports = function attachStoresRoutes(app, db) {
@@ -287,7 +291,8 @@ module.exports = function attachStoresRoutes(app, db) {
           nameEn: store.nameEn,
           logo: store.logo,
           cover: store.cover,
-          closingTime: store.closingTime ?? null
+          closingTime: store.closingTime ?? null,
+          storeCategories: Array.isArray(store.storeCategories) ? store.storeCategories : [],
         },
         products: storeProducts,
         count: storeProducts.length
@@ -398,7 +403,8 @@ module.exports = function attachStoresRoutes(app, db) {
           category: store.category,
           categoryAr: store.categoryAr,
           categoryEn: store.categoryEn,
-          closingTime: store.closingTime ?? null
+          closingTime: store.closingTime ?? null,
+          storeCategories: Array.isArray(store.storeCategories) ? store.storeCategories : [],
         },
         categoryName: categoryName,
         subCategory: subCategoryQuery || null,

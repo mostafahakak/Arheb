@@ -241,7 +241,10 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     const driverOrders = db.prepare('SELECT * FROM orders WHERE driverId = ? ORDER BY id DESC').all(driverId);
     const currentOrder = driverOrders.find((o) => mapOrderStatus(o.status) === 'delivering');
     const inProgressOrders = driverOrders.filter((o) => mapOrderStatus(o.status) === 'delivering' && o.id !== (currentOrder && currentOrder.id));
-    const availableOrders = db.prepare('SELECT * FROM orders WHERE driverId IS NULL AND status NOT IN (?, ?) ORDER BY id DESC LIMIT 50').all('Delivered', 'Cancelled');
+    // Available orders for drivers: only unassigned Preparing orders
+    const availableOrders = db
+      .prepare("SELECT * FROM orders WHERE driverId IS NULL AND status = 'Preparing' ORDER BY id DESC LIMIT 50")
+      .all();
 
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
@@ -337,7 +340,10 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
 
     let orders = [];
     if (filter === 'available') {
-      orders = db.prepare('SELECT * FROM orders WHERE driverId IS NULL AND status NOT IN (?, ?) ORDER BY id DESC').all('Delivered', 'Cancelled');
+      // Drivers can only see available orders that are in Preparing status and not yet assigned
+      orders = db
+        .prepare("SELECT * FROM orders WHERE driverId IS NULL AND status = 'Preparing' ORDER BY id DESC")
+        .all();
     } else if (filter === 'in_progress' || filter === 'mine') {
       orders = db.prepare('SELECT * FROM orders WHERE driverId = ? AND status NOT IN (?, ?) ORDER BY id DESC').all(driverId, 'Delivered', 'Cancelled');
     } else {

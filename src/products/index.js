@@ -112,12 +112,28 @@ module.exports = function attachProductsRoutes(app, db) {
       });
     }
 
-    // Return product from listing
+    // Related products: same store, similar name (exclude self), limit 8
+    const storeId = product.store?.id ?? null;
+    const productName = (product.nameEn || product.name || product.nameAr || '').toLowerCase();
+    const productWords = productName.split(/\s+/).filter(Boolean);
+    const related = products
+      .filter((p) => String(p.id) !== String(productId) && p.isAvailable !== false)
+      .filter((p) => !storeId || (p.store && String(p.store.id) === String(storeId)))
+      .map((p) => {
+        const name = (p.nameEn || p.name || p.nameAr || '').toLowerCase();
+        const matchCount = productWords.filter((w) => w.length > 1 && name.includes(w)).length;
+        return { product: p, score: matchCount };
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 8)
+      .map((x) => x.product);
+
     return res.status(200).json({
       success: true,
       message: 'Product details retrieved successfully',
       data: {
-        product: product
+        product,
+        relatedProducts: related
       },
       timestamp: new Date().toISOString()
     });

@@ -5,17 +5,21 @@ module.exports = function attachContactRoutes(app, db, authenticateRequest) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       email TEXT NOT NULL,
       phone TEXT NOT NULL,
+      cliqNumber TEXT,
       updatedAt TEXT DEFAULT CURRENT_TIMESTAMP
     );
   `);
+  try {
+    db.exec('ALTER TABLE contact_us ADD COLUMN cliqNumber TEXT');
+  } catch (e) { /* column already exists */ }
 
   // Add dummy data if table is empty
   const checkContactData = db.prepare('SELECT COUNT(*) as count FROM contact_us');
   const contactCount = checkContactData.get();
   
   if (contactCount.count === 0) {
-    const insertContact = db.prepare('INSERT INTO contact_us (email, phone) VALUES (?, ?)');
-    insertContact.run('contact@arheb.com', '+201234567890');
+    const insertContact = db.prepare('INSERT INTO contact_us (email, phone, cliqNumber) VALUES (?, ?, ?)');
+    insertContact.run('contact@arheb.com', '+201234567890', '');
     console.log('Contact us dummy data inserted');
   }
 
@@ -34,10 +38,10 @@ module.exports = function attachContactRoutes(app, db, authenticateRequest) {
     next();
   };
 
-  // Get contact us data
+  // Get contact us data (includes cliqNumber for app/users)
   app.get('/api/contact', (req, res) => {
     try {
-      const getContact = db.prepare('SELECT email, phone FROM contact_us ORDER BY id DESC LIMIT 1');
+      const getContact = db.prepare('SELECT email, phone, cliqNumber FROM contact_us ORDER BY id DESC LIMIT 1');
       const contact = getContact.get();
 
       if (!contact) {
@@ -53,7 +57,8 @@ module.exports = function attachContactRoutes(app, db, authenticateRequest) {
         data: {
           contact: {
             email: contact.email,
-            phone: contact.phone
+            phone: contact.phone,
+            cliqNumber: contact.cliqNumber != null ? contact.cliqNumber : ''
           }
         },
         timestamp: new Date().toISOString()
@@ -70,13 +75,13 @@ module.exports = function attachContactRoutes(app, db, authenticateRequest) {
   // Update contact us data (Admin only)
   app.put('/api/contact', authenticateRequest, checkAdmin, (req, res) => {
     try {
-      const { email, phone } = req.body;
+      const { email, phone, cliqNumber } = req.body;
 
       // At least one field must be provided
-      if (email === undefined && phone === undefined) {
+      if (email === undefined && phone === undefined && cliqNumber === undefined) {
         return res.status(400).json({
           success: false,
-          message: 'At least one field (email or phone) must be provided'
+          message: 'At least one field (email, phone or cliqNumber) must be provided'
         });
       }
 
@@ -108,16 +113,24 @@ module.exports = function attachContactRoutes(app, db, authenticateRequest) {
         }
       }
 
+      if (cliqNumber !== undefined && cliqNumber !== null && typeof cliqNumber !== 'string') {
+        return res.status(400).json({
+          success: false,
+          message: 'Cliq number must be a string'
+        });
+      }
+
       // Get current contact data
       const getContact = db.prepare('SELECT * FROM contact_us ORDER BY id DESC LIMIT 1');
       const currentContact = getContact.get();
 
       if (!currentContact) {
         // If no contact data exists, create new record
-        const insertContact = db.prepare('INSERT INTO contact_us (email, phone) VALUES (?, ?)');
+        const insertContact = db.prepare('INSERT INTO contact_us (email, phone, cliqNumber) VALUES (?, ?, ?)');
         insertContact.run(
           email !== undefined ? email.trim() : 'contact@arheb.com',
-          phone !== undefined ? phone.trim() : '+201234567890'
+          phone !== undefined ? phone.trim() : '+201234567890',
+          cliqNumber !== undefined ? String(cliqNumber).trim() : ''
         );
       } else {
         // Update existing record
@@ -126,13 +139,16 @@ module.exports = function attachContactRoutes(app, db, authenticateRequest) {
           SET 
             email = COALESCE(?, email),
             phone = COALESCE(?, phone),
+            cliqNumber = CASE WHEN ? IS NOT NULL THEN ? ELSE cliqNumber END,
             updatedAt = CURRENT_TIMESTAMP
           WHERE id = ?
         `);
-        
+        const cliqVal = cliqNumber !== undefined ? String(cliqNumber).trim() : null;
         updateContact.run(
           email !== undefined ? email.trim() : null,
           phone !== undefined ? phone.trim() : null,
+          cliqVal,
+          cliqVal,
           currentContact.id
         );
       }
@@ -141,11 +157,13 @@ module.exports = function attachContactRoutes(app, db, authenticateRequest) {
       const updatedFields = [];
       if (email !== undefined) updatedFields.push('email');
       if (phone !== undefined) updatedFields.push('phone');
+      if (cliqNumber !== undefined) updatedFields.push('cliqNumber');
       
       const successMessage = `Fields updated successfully: ${updatedFields.join(', ')}`;
 
       // Fetch updated contact data
-      const updatedContact = getContact.get();
+      const getContactFull = db.prepare('SELECT email, phone, cliqNumber FROM contact_us ORDER BY id DESC LIMIT 1');
+      const updatedContact = getContactFull.get();
 
       return res.status(200).json({
         success: true,
@@ -153,7 +171,8 @@ module.exports = function attachContactRoutes(app, db, authenticateRequest) {
         data: {
           contact: {
             email: updatedContact.email,
-            phone: updatedContact.phone
+            phone: updatedContact.phone,
+            cliqNumber: updatedContact.cliqNumber != null ? updatedContact.cliqNumber : ''
           }
         },
         timestamp: new Date().toISOString()

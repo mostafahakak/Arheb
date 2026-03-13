@@ -262,7 +262,7 @@ const seedHomeTables = (db, homeResponse) => {
   insertData();
 };
 
-const ACTIVE_ORDER_STATUSES = ['Waiting confirmation', 'Being prepared', 'On the way'];
+const ACTIVE_ORDER_STATUSES = ['Waiting confirmation', 'Waiting cliq confirmation', 'Being prepared', 'On the way'];
 
 module.exports = function attachHomeRoutes(app, db, JWT_SECRET) {
   const initialHome = loadHomeResponse();
@@ -278,7 +278,7 @@ module.exports = function attachHomeRoutes(app, db, JWT_SECRET) {
 
   const findActiveOrderByPhone = db.prepare(`
     SELECT id, status FROM orders
-    WHERE phoneNumber = ? AND status IN (?, ?, ?)
+    WHERE phoneNumber = ? AND status IN (?, ?, ?, ?)
     ORDER BY createdAt DESC LIMIT 1
   `);
 

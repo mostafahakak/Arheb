@@ -47,6 +47,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       storeId TEXT,
       nearby TEXT,
       notes TEXT,
+      paymentVerificationImage TEXT,
       createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (phoneNumber) REFERENCES users(phoneNumber)
     );
@@ -84,6 +85,11 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   } catch (e) {
     // Column already exists
   }
+  try {
+    db.exec(`ALTER TABLE orders ADD COLUMN paymentVerificationImage TEXT`);
+  } catch (e) {
+    // Column already exists
+  }
 
   const findUserByPhone = db.prepare('SELECT * FROM users WHERE phoneNumber = ?');
   const findOrderById = db.prepare('SELECT * FROM orders WHERE id = ?');
@@ -118,7 +124,8 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         promoCode,
         storeId,
         nearby,
-        notes
+        notes,
+        paymentVerificationImage
       } = req.body;
 
       // Validation
@@ -157,6 +164,22 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         return res.status(400).json({
           success: false,
           message: 'paymentType is required'
+        });
+      }
+
+      let normalizedPaymentType = String(paymentType).trim();
+      if (!normalizedPaymentType) {
+        return res.status(400).json({
+          success: false,
+          message: 'paymentType is required'
+        });
+      }
+      const lowerPaymentType = normalizedPaymentType.toLowerCase();
+
+      if (paymentVerificationImage !== undefined && paymentVerificationImage !== null && typeof paymentVerificationImage !== 'string') {
+        return res.status(400).json({
+          success: false,
+          message: 'paymentVerificationImage must be a string (URL)'
         });
       }
 
@@ -243,7 +266,8 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
             orderRating,
             storeId,
             nearby,
-            notes
+            notes,
+            paymentVerificationImage
           ) VALUES (
             @userId,
             @phoneNumber,
@@ -260,7 +284,8 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
             @orderRating,
             @storeId,
             @nearby,
-            @notes
+            @notes,
+            @paymentVerificationImage
           )
         `);
 
@@ -274,13 +299,14 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
           discount: orderData.discount || 0,
           deliveryFee: orderData.deliveryFee || 0,
           totalAmount: orderData.totalAmount,
-          status: 'Waiting confirmation',
+          status: orderData.status,
           paymentType: orderData.paymentType,
           promoCode: orderData.promoCode,
           orderRating: 0,
           storeId: orderData.storeId,
           nearby: orderData.nearby || null,
-          notes: orderData.notes || null
+          notes: orderData.notes || null,
+          paymentVerificationImage: orderData.paymentVerificationImage || null
         });
 
         const orderId = orderResult.lastInsertRowid;
@@ -315,6 +341,9 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         return orderId;
       });
 
+      const initialStatus =
+        lowerPaymentType === 'cliq' ? 'Waiting cliq confirmation' : 'Waiting confirmation';
+
       const orderId = createOrder({
         userId,
         phoneNumber,
@@ -325,11 +354,13 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         discount: finalDiscount,
         deliveryFee: deliveryFee || 0,
         totalAmount,
-        paymentType,
+        status: initialStatus,
+        paymentType: normalizedPaymentType,
         promoCode: finalPromoCode,
         storeId: finalStoreId,
         nearby: nearby || null,
         notes: notes || null,
+        paymentVerificationImage: paymentVerificationImage || null,
         items
       });
 
@@ -403,6 +434,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
           orderRating: order.orderRating || 0,
           nearby: order.nearby,
           notes: order.notes,
+          paymentVerificationImage: order.paymentVerificationImage || null,
           createdAt: order.createdAt,
           items: items.map(item => ({
             id: item.productId,
@@ -486,6 +518,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
             orderRating: order.orderRating || 0,
             nearby: order.nearby,
             notes: order.notes,
+            paymentVerificationImage: order.paymentVerificationImage || null,
             createdAt: order.createdAt,
             items: items.map(item => ({
               id: item.productId,

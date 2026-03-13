@@ -1,11 +1,15 @@
 const fs = require('fs');
 const path = require('path');
+const multer = require('multer');
+const XLSX = require('xlsx');
 const {
   hashPassword,
   comparePassword,
   signAdminToken,
   verifyAdminToken,
 } = require('./auth');
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 const { seedAdmins, ROLES } = require('./seed');
 const {
   authenticateAdmin,
@@ -21,6 +25,7 @@ const storesResponsePath = getJsonPath('stores_listing_response.json');
 const productsResponsePath = getJsonPath('products_listing_response.json');
 const categoriesResponsePath = getJsonPath('categories_response.json');
 const popupJsonPath = getJsonPath('popup.json');
+const homeJsonPath = getJsonPath('home_response.json');
 
 function loadStores() {
   try {
@@ -29,6 +34,32 @@ function loadStores() {
     return data?.data?.stores ?? [];
   } catch (e) {
     return [];
+  }
+}
+
+function loadHome() {
+  try {
+    const raw = fs.readFileSync(homeJsonPath, 'utf-8');
+    return JSON.parse(raw);
+  } catch (e) {
+    return {
+      success: true,
+      message: 'Home data retrieved successfully',
+      data: {
+        banners: [],
+        categories: [],
+        mostPopularStores: [],
+        offers: [],
+      },
+    };
+  }
+}
+
+function saveHome(data) {
+  try {
+    fs.writeFileSync(homeJsonPath, JSON.stringify(data, null, 2), 'utf-8');
+  } catch (e) {
+    throw new Error('Failed to save home_response.json');
   }
 }
 
@@ -332,6 +363,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       mapsUrl: body.mapsUrl ?? '',
       closingTime: body.closingTime ?? null,
       arhebFee: req.admin.role === ROLES.SUPERADMIN && body.arhebFee != null ? (typeof body.arhebFee === 'number' ? body.arhebFee : parseFloat(body.arhebFee)) : null,
+      storeCategories: Array.isArray(body.storeCategories) ? body.storeCategories : [],
     };
     stores.push(newStore);
     saveStores(stores);
@@ -375,6 +407,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const store = stores.find((s) => s.id === req.params.id);
     if (!store) return res.status(404).json({ success: false, message: 'Store not found' });
     const out = req.admin.role === ROLES.SUPERADMIN ? store : (() => { const { arhebFee, ...rest } = store; return rest; })();
+    out.storeCategories = Array.isArray(out.storeCategories) ? out.storeCategories : [];
     return res.status(200).json({ success: true, data: { store: out } });
   });
 
@@ -386,6 +419,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const body = req.body || {};
     if (body.subCategories !== undefined) {
       stores[idx].subCategories = Array.isArray(body.subCategories) ? body.subCategories : [];
+    }
+    if (body.storeCategories !== undefined) {
+      stores[idx].storeCategories = Array.isArray(body.storeCategories) ? body.storeCategories : [];
     }
     if (body.isPremium !== undefined) {
       if (req.admin.role === ROLES.STORE_ADMIN) {
@@ -444,6 +480,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       mapsUrl: body.mapsUrl ?? sourceStore.mapsUrl ?? '',
       closingTime: body.closingTime ?? sourceStore.closingTime ?? null,
       arhebFee: sourceStore.arhebFee != null ? sourceStore.arhebFee : null,
+      storeCategories: Array.isArray(sourceStore.storeCategories) ? [...sourceStore.storeCategories] : [],
     };
     stores.push(newStore);
     saveStores(stores);
@@ -618,6 +655,107 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     products.push(newProduct);
     saveProducts(products);
     return res.status(201).json({ success: true, data: { product: newProduct } });
+  });
+
+  const EXCEL_HEADERS = ['nameEn', 'nameAr', 'name', 'price', 'originalPrice', 'discount', 'unit', 'category', 'categoryAr', 'categoryEn', 'description', 'stock', 'isAvailable'];
+
+  app.post('/api/admin/stores/:storeId/products/import', auth, requireStoreAccess((req) => req.params.storeId), upload.single('file'), (req, res) => {
+    const storeId = req.params.storeId;
+    const stores = loadStores();
+    const store = stores.find((s) => s.id === storeId);
+    if (!store) return res.status(404).json({ success: false, message: 'Store not found' });
+    if (!req.file || !req.file.buffer) return res.status(400).json({ success: false, message: 'No file uploaded. Use field name "file".' });
+    let workbook;
+    try {
+      workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+    } catch (e) {
+      return res.status(400).json({ success: false, message: 'Invalid Excel file' });
+    }
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    if (!sheet) return res.status(400).json({ success: false, message: 'Empty workbook' });
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+    if (rows.length < 2) return res.status(400).json({ success: false, message: 'Excel must have header row and at least one data row' });
+    const headerRow = rows[0].map((h) => (h != null ? String(h).trim() : ''));
+    const colIndex = (key) => headerRow.findIndex((h) => h.toLowerCase() === key.toLowerCase() || h === key);
+    const products = loadProducts();
+    const isStoreAdmin = req.admin.role === ROLES.STORE_ADMIN;
+    let created = 0;
+    let errors = [];
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      if (!Array.isArray(row)) continue;
+      const get = (key) => {
+        const idx = colIndex(key);
+        if (idx < 0) return '';
+        const v = row[idx];
+        return v != null ? String(v).trim() : '';
+      };
+      const nameEn = get('nameEn') || get('name');
+      if (!nameEn) continue;
+      const body = {
+        nameEn,
+        nameAr: get('nameAr') || nameEn,
+        name: get('name') || nameEn,
+        price: parseFloat(get('price')) || 0,
+        originalPrice: get('originalPrice') ? parseFloat(get('originalPrice')) : undefined,
+        discount: get('discount') || null,
+        unit: get('unit') || 'piece',
+        category: get('category'),
+        categoryAr: get('categoryAr') || get('category'),
+        categoryEn: get('categoryEn') || get('category'),
+        description: get('description'),
+        stock: parseInt(get('stock'), 10) || 0,
+        isAvailable: (get('isAvailable') || 'Y').toUpperCase() !== 'N',
+      };
+      try {
+        const newProduct = buildProductObject(body, store);
+        if (isStoreAdmin) {
+          db.prepare('INSERT INTO pending_products (storeId, submittedBy, productData, status) VALUES (?, ?, ?, ?)').run(storeId, req.admin.adminId, JSON.stringify(newProduct), 'pending');
+        } else {
+          products.push(newProduct);
+          saveProducts(products);
+        }
+        created++;
+      } catch (e) {
+        errors.push(`Row ${i + 1}: ${e.message || 'Failed'}`);
+      }
+    }
+    return res.status(200).json({
+      success: true,
+      message: isStoreAdmin ? `${created} product(s) submitted for approval` : `${created} product(s) imported`,
+      data: { created, errors: errors.length ? errors : undefined },
+    });
+  });
+
+  app.get('/api/admin/stores/:storeId/products/export', auth, requireStoreAccess((req) => req.params.storeId), (req, res) => {
+    const storeId = req.params.storeId;
+    const products = loadProducts();
+    const storeProducts = products.filter((p) => p.store?.id === storeId);
+    const rows = [EXCEL_HEADERS];
+    storeProducts.forEach((p) => {
+      rows.push([
+        p.nameEn ?? '',
+        p.nameAr ?? '',
+        p.name ?? '',
+        p.price ?? 0,
+        p.originalPrice ?? '',
+        p.discount ?? '',
+        p.unit ?? 'piece',
+        p.category ?? '',
+        p.categoryAr ?? '',
+        p.categoryEn ?? '',
+        p.description ?? '',
+        p.stock ?? 0,
+        p.isAvailable !== false ? 'Y' : 'N',
+      ]);
+    });
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    XLSX.utils.book_append_sheet(wb, ws, 'Products');
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    res.setHeader('Content-Disposition', `attachment; filename="store-${storeId}-products.xlsx"`);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.send(buf);
   });
 
   // List pending products
@@ -1330,6 +1468,104 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     };
     savePopup(updated);
     return res.status(200).json({ success: true, data: { popup: updated } });
+  });
+
+  // ——— Home banners (SuperAdmin / Admin only) ———
+  app.get('/api/admin/home/banners', auth, requireAdminOrSuper, (req, res) => {
+    const home = loadHome();
+    const banners = home?.data?.banners ?? [];
+    return res.status(200).json({ success: true, data: { banners } });
+  });
+
+  app.patch('/api/admin/home/banners', auth, requireAdminOrSuper, (req, res) => {
+    const body = req.body || {};
+    const home = loadHome();
+    const data = home.data || {};
+    const banners = Array.isArray(body.banners) ? body.banners : data.banners || [];
+    const next = {
+      ...home,
+      data: {
+        ...data,
+        banners,
+      },
+    };
+    saveHome(next);
+    return res.status(200).json({ success: true, data: { banners } });
+  });
+
+  // ——— App info / Contact (email, phone, cliqNumber) — Admin & SuperAdmin only ———
+  app.get('/api/admin/info', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      const row = db.prepare('SELECT email, phone, cliqNumber FROM contact_us ORDER BY id DESC LIMIT 1').get();
+      if (!row) {
+        return res.status(200).json({
+          success: true,
+          data: { info: { email: '', phone: '', cliqNumber: '' } },
+        });
+      }
+      return res.status(200).json({
+        success: true,
+        data: {
+          info: {
+            email: row.email ?? '',
+            phone: row.phone ?? '',
+            cliqNumber: row.cliqNumber != null ? row.cliqNumber : '',
+          },
+        },
+      });
+    } catch (e) {
+      if (e.message && e.message.includes('no such table')) {
+        return res.status(200).json({ success: true, data: { info: { email: '', phone: '', cliqNumber: '' } } });
+      }
+      console.error('Admin get info error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to load info' });
+    }
+  });
+
+  app.patch('/api/admin/info', auth, requireAdminOrSuper, (req, res) => {
+    const body = req.body || {};
+    const email = body.email !== undefined ? String(body.email).trim() : undefined;
+    const phone = body.phone !== undefined ? String(body.phone).trim() : undefined;
+    const cliqNumber = body.cliqNumber !== undefined ? String(body.cliqNumber).trim() : undefined;
+    if (email !== undefined && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ success: false, message: 'Invalid email format' });
+    }
+    try {
+      const row = db.prepare('SELECT id, email, phone, cliqNumber FROM contact_us ORDER BY id DESC LIMIT 1').get();
+      if (!row) {
+        db.prepare('INSERT INTO contact_us (email, phone, cliqNumber) VALUES (?, ?, ?)').run(
+          email ?? 'contact@arheb.com',
+          phone ?? '+201234567890',
+          cliqNumber ?? ''
+        );
+      } else {
+        db.prepare(`
+          UPDATE contact_us SET
+            email = COALESCE(?, email),
+            phone = COALESCE(?, phone),
+            cliqNumber = COALESCE(?, cliqNumber),
+            updatedAt = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `).run(email ?? null, phone ?? null, cliqNumber ?? null, row.id);
+      }
+      const updated = db.prepare('SELECT email, phone, cliqNumber FROM contact_us ORDER BY id DESC LIMIT 1').get();
+      return res.status(200).json({
+        success: true,
+        data: {
+          info: {
+            email: updated.email ?? '',
+            phone: updated.phone ?? '',
+            cliqNumber: updated.cliqNumber != null ? updated.cliqNumber : '',
+          },
+        },
+      });
+    } catch (e) {
+      if (e.message && e.message.includes('no such table')) {
+        return res.status(500).json({ success: false, message: 'Contact table not initialized' });
+      }
+      console.error('Admin patch info error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to update info' });
+    }
   });
 
   // ——— Promo codes (SuperAdmin / Admin only) ———
