@@ -20,6 +20,8 @@ const {
 } = require('./middleware');
 const { syncCategoriesToDb } = require('../categories');
 const { getJsonPath } = require('../config/jsonPaths');
+const fcm = require('../fcm');
+const { getActiveFromListWithDistance } = require('../driverPresence');
 
 const storesResponsePath = getJsonPath('stores_listing_response.json');
 const productsResponsePath = getJsonPath('products_listing_response.json');
@@ -364,6 +366,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       closingTime: body.closingTime ?? null,
       arhebFee: req.admin.role === ROLES.SUPERADMIN && body.arhebFee != null ? (typeof body.arhebFee === 'number' ? body.arhebFee : parseFloat(body.arhebFee)) : null,
       storeCategories: Array.isArray(body.storeCategories) ? body.storeCategories : [],
+      paused: false,
+      blocked: false,
     };
     stores.push(newStore);
     saveStores(stores);
@@ -415,6 +419,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const stores = loadStores();
     const idx = stores.findIndex((s) => s.id === req.params.id);
     if (idx === -1) return res.status(404).json({ success: false, message: 'Store not found' });
+    const store = stores[idx];
+    if (store.blocked === true && req.admin.role === ROLES.STORE_ADMIN) {
+      return res.status(403).json({ success: false, message: 'Store is blocked. Only Admin or SuperAdmin can make changes.' });
+    }
     const allowed = ['name', 'nameAr', 'nameEn', 'cover', 'logo', 'deliveryTime', 'deliveryFee', 'minimumOrder', 'isOpen', 'openingHours', 'address', 'addressAr', 'addressEn', 'phone', 'category', 'categoryAr', 'categoryEn', 'subCategories', 'mapsUrl', 'closingTime'];
     const body = req.body || {};
     if (body.subCategories !== undefined) {
@@ -434,6 +442,18 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
         return res.status(403).json({ success: false, message: 'Only SuperAdmin can set arhebFee' });
       }
       stores[idx].arhebFee = body.arhebFee === null || body.arhebFee === '' ? null : (typeof body.arhebFee === 'number' ? body.arhebFee : parseFloat(body.arhebFee));
+    }
+    if (body.paused !== undefined) {
+      if (store.blocked === true && req.admin.role === ROLES.STORE_ADMIN) {
+        return res.status(403).json({ success: false, message: 'Store is blocked' });
+      }
+      stores[idx].paused = Boolean(body.paused);
+    }
+    if (body.blocked !== undefined) {
+      if (req.admin.role !== ROLES.SUPERADMIN && req.admin.role !== ROLES.ADMIN) {
+        return res.status(403).json({ success: false, message: 'Only Admin or SuperAdmin can block or unblock a store' });
+      }
+      stores[idx].blocked = Boolean(body.blocked);
     }
     for (const key of allowed) {
       if (body[key] !== undefined) stores[idx][key] = body[key];
@@ -481,6 +501,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       closingTime: body.closingTime ?? sourceStore.closingTime ?? null,
       arhebFee: sourceStore.arhebFee != null ? sourceStore.arhebFee : null,
       storeCategories: Array.isArray(sourceStore.storeCategories) ? [...sourceStore.storeCategories] : [],
+      paused: false,
+      blocked: false,
     };
     stores.push(newStore);
     saveStores(stores);
@@ -631,6 +653,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const stores = loadStores();
     const store = stores.find((s) => s.id === storeId);
     if (!store) return res.status(404).json({ success: false, message: 'Store not found' });
+    if (store.blocked === true && req.admin.role === ROLES.STORE_ADMIN) {
+      return res.status(403).json({ success: false, message: 'Store is blocked. Only Admin or SuperAdmin can add products.' });
+    }
     const body = req.body || {};
 
     if (req.admin.role === ROLES.STORE_ADMIN) {
@@ -664,6 +689,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const stores = loadStores();
     const store = stores.find((s) => s.id === storeId);
     if (!store) return res.status(404).json({ success: false, message: 'Store not found' });
+    if (store.blocked === true && req.admin.role === ROLES.STORE_ADMIN) {
+      return res.status(403).json({ success: false, message: 'Store is blocked. Only Admin or SuperAdmin can import products.' });
+    }
     if (!req.file || !req.file.buffer) return res.status(400).json({ success: false, message: 'No file uploaded. Use field name "file".' });
     let workbook;
     try {
@@ -865,6 +893,11 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
 
   app.patch('/api/admin/stores/:storeId/products/:productId', auth, requireStoreAccess((req) => req.params.storeId), (req, res) => {
     const { storeId, productId } = req.params;
+    const stores = loadStores();
+    const store = stores.find((s) => s.id === storeId);
+    if (store && store.blocked === true && req.admin.role === ROLES.STORE_ADMIN) {
+      return res.status(403).json({ success: false, message: 'Store is blocked. Only Admin or SuperAdmin can edit products.' });
+    }
     const products = loadProducts();
     const idx = products.findIndex((p) => p.id === productId && p.store?.id === storeId);
     if (idx === -1) return res.status(404).json({ success: false, message: 'Product not found' });
@@ -886,6 +919,11 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
 
   app.delete('/api/admin/stores/:storeId/products/:productId', auth, requireStoreAccess((req) => req.params.storeId), (req, res) => {
     const { storeId, productId } = req.params;
+    const stores = loadStores();
+    const store = stores.find((s) => s.id === storeId);
+    if (store && store.blocked === true && req.admin.role === ROLES.STORE_ADMIN) {
+      return res.status(403).json({ success: false, message: 'Store is blocked. Only Admin or SuperAdmin can delete products.' });
+    }
     const products = loadProducts();
     const idx = products.findIndex((p) => p.id === productId && p.store?.id === storeId);
     if (idx === -1) return res.status(404).json({ success: false, message: 'Product not found' });
@@ -1040,6 +1078,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     db.prepare('UPDATE orders SET status = ? WHERE id = ?').run(status.trim(), orderId);
     const updated = findOrderById.get(orderId);
     const items = findOrderItems.all(orderId);
+    // Notify customer of order status change via FCM
+    fcm.sendToUserByPhone(db, order.phoneNumber, 'Order status updated', `Order #${orderId} is now: ${status.trim()}`, null, { orderId: String(orderId), status: status.trim(), type: 'order_status' }).catch(() => {});
     return res.status(200).json({
       success: true,
       data: {
@@ -1079,6 +1119,46 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     return res.status(200).json({ success: true, data: { drivers: list } });
   });
 
+  // ——— Get nearby active drivers for an order (presence + distance to store; Store Admin / Admin / SuperAdmin) ———
+  app.get('/api/admin/orders/:orderId/nearby-drivers', auth, (req, res) => {
+    const orderId = parseInt(req.params.orderId, 10);
+    if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
+    const order = findOrderById.get(orderId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && order.storeId !== req.admin.storeId) {
+      return res.status(403).json({ success: false, message: 'Access denied to this order' });
+    }
+    let drivers = [];
+    try {
+      drivers = db.prepare('SELECT id, name, mobile, vehicleType, vehicleNumber FROM drivers WHERE isBlocked = 0 ORDER BY name').all();
+    } catch (e) {
+      if (!e.message || !e.message.includes('no such table')) throw e;
+    }
+    const pendingDriverIds = new Set();
+    try {
+      const pending = db.prepare('SELECT driverId FROM driver_requests WHERE orderId = ? AND status = ?').all(orderId, 'pending');
+      pending.forEach((r) => pendingDriverIds.add(r.driverId));
+    } catch (e) {
+      if (!e.message || !e.message.includes('no such table')) throw e;
+    }
+    const candidateIds = drivers.filter((d) => !pendingDriverIds.has(d.id)).map((d) => d.id);
+    const stores = loadStores();
+    const store = order.storeId ? stores.find((s) => String(s.id) === String(order.storeId)) : null;
+    const storeLat = store && (store.latitude != null || store.lat != null) ? (store.latitude ?? store.lat) : null;
+    const storeLong = store && (store.longitude != null || store.long != null) ? (store.longitude ?? store.long) : null;
+    const withDistance = getActiveFromListWithDistance(candidateIds, storeLat, storeLong);
+    const driverById = Object.fromEntries(drivers.map((d) => [d.id, d]));
+    const list = withDistance.map((d) => ({
+      ...driverById[d.driverId],
+      id: d.driverId,
+      latitude: d.latitude,
+      longitude: d.longitude,
+      lastSeen: d.lastSeen,
+      distanceKm: d.distanceKm,
+    }));
+    return res.status(200).json({ success: true, data: { drivers: list } });
+  });
+
   // ——— Request driver(s) to pick up order (when status is Preparing) ———
   app.post('/api/admin/orders/:orderId/request-driver', auth, (req, res) => {
     const orderId = parseInt(req.params.orderId, 10);
@@ -1099,14 +1179,72 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const ids = Array.isArray(driverIds) ? driverIds.map((id) => parseInt(id, 10)).filter((n) => !isNaN(n)) : [];
     if (ids.length === 0) return res.status(400).json({ success: false, message: 'driverIds array is required' });
     const insertRequest = db.prepare('INSERT OR IGNORE INTO driver_requests (orderId, driverId, status) VALUES (?, ?, ?)');
+    const insertedIds = [];
     for (const driverId of ids) {
       const driver = db.prepare('SELECT id FROM drivers WHERE id = ? AND isBlocked = 0').get(driverId);
-      if (driver) insertRequest.run(orderId, driverId, 'pending');
+      if (driver) {
+        insertRequest.run(orderId, driverId, 'pending');
+        insertedIds.push(driverId);
+      }
     }
+    fcm.sendToDrivers(db, insertedIds, 'New delivery request', `Order #${orderId} has been assigned to you. Open the app to accept.`, { orderId: String(orderId), type: 'driver_request' }).catch(() => {});
     return res.status(200).json({
       success: true,
       message: 'Request sent to driver(s). They can accept in the driver app.',
       data: { orderId },
+    });
+  });
+
+  // ——— Auto-assign order to nearest active driver ———
+  app.post('/api/admin/orders/:orderId/auto-assign', auth, (req, res) => {
+    const orderId = parseInt(req.params.orderId, 10);
+    if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
+    const order = findOrderById.get(orderId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && order.storeId !== req.admin.storeId) {
+      return res.status(403).json({ success: false, message: 'Access denied to this order' });
+    }
+    const statusLower = (order.status || '').toLowerCase();
+    if (!statusLower.includes('preparing') && !statusLower.includes('waiting')) {
+      return res.status(400).json({ success: false, message: 'Can only auto-assign when order is Preparing or Waiting confirmation' });
+    }
+    if (order.driverId != null) {
+      return res.status(400).json({ success: false, message: 'Order already has a driver assigned' });
+    }
+    let drivers = [];
+    try {
+      drivers = db.prepare('SELECT id FROM drivers WHERE isBlocked = 0').all();
+    } catch (e) {
+      if (!e.message || !e.message.includes('no such table')) throw e;
+    }
+    const pendingDriverIds = new Set();
+    try {
+      const pending = db.prepare('SELECT driverId FROM driver_requests WHERE orderId = ? AND status = ?').all(orderId, 'pending');
+      pending.forEach((r) => pendingDriverIds.add(r.driverId));
+    } catch (e) {
+      if (!e.message || !e.message.includes('no such table')) throw e;
+    }
+    const candidateIds = drivers.filter((d) => !pendingDriverIds.has(d.id)).map((d) => d.id);
+    const stores = loadStores();
+    const store = order.storeId ? stores.find((s) => String(s.id) === String(order.storeId)) : null;
+    const storeLat = store && (store.latitude != null || store.lat != null) ? (store.latitude ?? store.lat) : null;
+    const storeLong = store && (store.longitude != null || store.long != null) ? (store.longitude ?? store.long) : null;
+    const withDistance = getActiveFromListWithDistance(candidateIds, storeLat, storeLong);
+    const nearest = withDistance[0];
+    if (!nearest) {
+      return res.status(404).json({
+        success: false,
+        message: 'No active drivers nearby. Ask drivers to go online (connect to the app).',
+        data: { orderId },
+      });
+    }
+    const insertRequest = db.prepare('INSERT OR IGNORE INTO driver_requests (orderId, driverId, status) VALUES (?, ?, ?)');
+    insertRequest.run(orderId, nearest.driverId, 'pending');
+    fcm.sendToDriver(db, nearest.driverId, 'New delivery assigned', `Order #${orderId} has been auto-assigned to you. Open the app to accept.`, { orderId: String(orderId), type: 'driver_request' }).catch(() => {});
+    return res.status(200).json({
+      success: true,
+      message: 'Order auto-assigned to nearest active driver. They will be notified.',
+      data: { orderId, driverId: nearest.driverId },
     });
   });
 
@@ -1157,6 +1295,27 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     return res.status(200).json({ success: true, message: 'Order deleted' });
   });
 
+  // ——— Send broadcast notification to all registered app users (Admin / SuperAdmin) ———
+  app.post('/api/admin/notifications/broadcast', auth, requireAdminOrSuper, async (req, res) => {
+    const { title, body, imageUrl } = req.body || {};
+    if (!title || typeof title !== 'string' || !title.trim()) {
+      return res.status(400).json({ success: false, message: 'title is required' });
+    }
+    const bodyStr = typeof body === 'string' ? body : (body != null ? String(body) : '');
+    const image = typeof imageUrl === 'string' && imageUrl.trim() ? imageUrl.trim() : null;
+    try {
+      const result = await fcm.sendToAllUsers(db, title.trim(), bodyStr, image, { type: 'broadcast' });
+      return res.status(200).json({
+        success: true,
+        message: 'Broadcast notification sent',
+        data: { successCount: result.successCount, failureCount: result.failureCount },
+      });
+    } catch (e) {
+      console.error('Broadcast notification error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to send broadcast notification' });
+    }
+  });
+
   // ——— Dashboard sales ———
   app.get('/api/admin/dashboard/sales', auth, (req, res) => {
     let orders;
@@ -1186,11 +1345,11 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     });
   });
 
-  // ——— Arheb Box requests (admin can list and update status) ———
+  // ——— Arheb Box requests (admin can list, update status, assign driver) ———
   app.get('/api/admin/arheb-box', auth, (req, res) => {
     try {
       const rows = db.prepare(
-        'SELECT id, phoneNumber, userName, pickup, dropoff, notes, status, createdAt FROM arheb_box_requests ORDER BY createdAt DESC, id DESC'
+        'SELECT id, phoneNumber, userName, pickup, dropoff, notes, status, driverId, driverName, createdAt FROM arheb_box_requests ORDER BY createdAt DESC, id DESC'
       ).all();
       const requests = rows.map((r) => ({
         id: r.id,
@@ -1200,6 +1359,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
         dropoff: (() => { try { return JSON.parse(r.dropoff); } catch (e) { return {}; } })(),
         notes: r.notes,
         status: r.status,
+        driverId: r.driverId ?? null,
+        driverName: r.driverName ?? null,
         createdAt: r.createdAt,
       }));
       return res.status(200).json({ success: true, data: { requests } });
@@ -1220,11 +1381,17 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       return res.status(400).json({ success: false, message: 'status is required' });
     }
     try {
+      const rowBefore = db.prepare('SELECT id, phoneNumber, fcmToken FROM arheb_box_requests WHERE id = ?').get(id);
+      if (!rowBefore) return res.status(404).json({ success: false, message: 'Arheb box request not found' });
       const run = db.prepare('UPDATE arheb_box_requests SET status = ? WHERE id = ?').run(status.trim(), id);
       if (run.changes === 0) {
         return res.status(404).json({ success: false, message: 'Arheb box request not found' });
       }
-      const row = db.prepare('SELECT id, phoneNumber, userName, pickup, dropoff, notes, status, createdAt FROM arheb_box_requests WHERE id = ?').get(id);
+      fcm.sendToToken(rowBefore.fcmToken, 'Arheb Box update', `Your request #${id} is now: ${status.trim()}`, null, { type: 'arheb_box_status', requestId: String(id), status: status.trim() }).catch(() => {});
+      if (!rowBefore.fcmToken) {
+        fcm.sendToUserByPhone(db, rowBefore.phoneNumber, 'Arheb Box update', `Your request #${id} is now: ${status.trim()}`, null, { type: 'arheb_box_status', requestId: String(id), status: status.trim() }).catch(() => {});
+      }
+      const row = db.prepare('SELECT id, phoneNumber, userName, pickup, dropoff, notes, status, driverId, driverName, createdAt FROM arheb_box_requests WHERE id = ?').get(id);
       const request = {
         id: row.id,
         phoneNumber: row.phoneNumber,
@@ -1233,12 +1400,52 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
         dropoff: (() => { try { return JSON.parse(row.dropoff); } catch (e) { return {}; } })(),
         notes: row.notes,
         status: row.status,
+        driverId: row.driverId ?? null,
+        driverName: row.driverName ?? null,
         createdAt: row.createdAt,
       };
       return res.status(200).json({ success: true, data: { request } });
     } catch (e) {
       console.error('Arheb box update error:', e);
       return res.status(500).json({ success: false, message: 'Failed to update' });
+    }
+  });
+
+  app.post('/api/admin/arheb-box/:id/assign-driver', auth, (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
+    const { driverId } = req.body || {};
+    const driverIdNum = driverId != null ? parseInt(driverId, 10) : NaN;
+    if (!driverIdNum || isNaN(driverIdNum)) return res.status(400).json({ success: false, message: 'driverId is required' });
+    try {
+      const row = db.prepare('SELECT id FROM arheb_box_requests WHERE id = ?').get(id);
+      if (!row) return res.status(404).json({ success: false, message: 'Arheb box request not found' });
+      const driver = db.prepare('SELECT id, name FROM drivers WHERE id = ? AND isBlocked = 0').get(driverIdNum);
+      if (!driver) return res.status(404).json({ success: false, message: 'Driver not found or blocked' });
+      db.prepare('UPDATE arheb_box_requests SET driverId = ?, driverName = ?, status = ? WHERE id = ?').run(driverIdNum, driver.name, 'assigned', id);
+      fcm.sendToDriver(db, driverIdNum, 'New Arheb Box delivery', `Request #${id} has been assigned to you. Open the app to accept.`, { type: 'arheb_box_assigned', requestId: String(id) }).catch(() => {});
+      const updated = db.prepare('SELECT id, phoneNumber, userName, pickup, dropoff, notes, status, driverId, driverName, createdAt FROM arheb_box_requests WHERE id = ?').get(id);
+      return res.status(200).json({
+        success: true,
+        message: 'Driver assigned. They will be notified.',
+        data: {
+          request: {
+            id: updated.id,
+            phoneNumber: updated.phoneNumber,
+            userName: updated.userName,
+            pickup: (() => { try { return JSON.parse(updated.pickup); } catch (e) { return {}; } })(),
+            dropoff: (() => { try { return JSON.parse(updated.dropoff); } catch (e) { return {}; } })(),
+            notes: updated.notes,
+            status: updated.status,
+            driverId: updated.driverId,
+            driverName: updated.driverName,
+            createdAt: updated.createdAt,
+          },
+        },
+      });
+    } catch (e) {
+      console.error('Arheb box assign driver error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to assign driver' });
     }
   });
 

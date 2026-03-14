@@ -49,6 +49,15 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
 
 ---
 
+## Push notifications (FCM) and driver presence
+
+- **Firebase Cloud Messaging (FCM)** is used to send push notifications to drivers (e.g. new order assigned) and to app users (order status updates, broadcast messages). Set **`FIREBASE_SERVICE_ACCOUNT_JSON`** in `.env` to a **stringified JSON** of your Firebase service account key (Project settings → Service accounts → Generate new private key). If unset, the backend uses `GOOGLE_APPLICATION_CREDENTIALS` (path to key file). Without valid credentials, FCM send is skipped (no crash).
+- **Driver presence**: Drivers connect to the **Socket.IO namespace `/driver-presence`** with their driver JWT and send `location` events (`latitude`, `longitude`). The server keeps a list of active drivers and their last location. Admin can request **nearby drivers** for an order (by distance to store) and **auto-assign** the nearest active driver; the driver is notified via FCM.
+- **User FCM**: Users can set `fcmToken` via **PUT /api/profile** or send it with **POST /api/checkout**. Order status changes (and broadcast notifications) are sent to the user’s token.
+- **Broadcast**: Admin/SuperAdmin can send a notification to all registered users via **POST /api/admin/notifications/broadcast** (`title`, `body`, optional `imageUrl`).
+
+---
+
 ## 📋 Table of Contents
 
 - [Overview](#overview)
@@ -397,11 +406,15 @@ Retrieves detailed information about a specific product.
         "id": "1",
         "name": "كريسبي تشيكن"
       }
-    }
+    },
+    "relatedProducts": [
+      { "id": "2", "name": "وجبة مزدوجة", "price": 8, "store": { "id": "1", "name": "كريسبي تشيكن" } }
+    ]
   },
   "timestamp": "2024-01-15T10:30:00Z"
 }
 ```
+- `relatedProducts`: array of up to 8 products from the same store, ordered by name similarity (excludes the current product). Omitted if none.
 
 **Not Found Response (404):**
 ```json
@@ -415,9 +428,11 @@ Retrieves detailed information about a specific product.
 
 ## Stores
 
+Stores can be **paused** (hidden from users; admins see status "Paused") or **blocked** (hidden from users; only Admin/SuperAdmin can unblock; Store Admin cannot edit or add/remove products). Paused and blocked stores are excluded from all public store APIs (`GET /api/stores`, top-rated, premium, by category, and store products). Admin APIs return all stores and support `paused` and `blocked` via `PATCH /api/admin/stores/:id`.
+
 ### Get All Stores
 
-Retrieves all available stores.
+Retrieves all available (non-paused, non-blocked) stores.
 
 **Endpoint:** `GET /api/stores`
 
@@ -1076,11 +1091,13 @@ Creates a new order with items, customer information, and delivery details.
 
 ### Get All Orders
 
-Retrieves all orders for the authenticated user.
+Retrieves **all** orders for the authenticated user. Every status is included (e.g. **Waiting confirmation**, **Preparing**, **On the way**, **Delivered**, **Cancelled**). Use this list in the customer app so that orders in "Preparing" are visible.
 
 **Endpoint:** `GET /api/checkout`
 
 **Authentication:** Required (Bearer token)
+
+Each order includes `status`, `storeId`, `driverId`, `driverName` (when assigned), and `items`.
 
 **Success Response (200):**
 ```json
@@ -1108,11 +1125,13 @@ Retrieves all orders for the authenticated user.
 
 ---
 
-### Get Order by ID
+### Get Order by ID (live status)
 
-Retrieves a specific order by ID. Only returns orders belonging to the authenticated user.
+Retrieves a specific order by ID with **current status**. Use this so the customer can track their order by order ID and always see live status. Only returns orders belonging to the authenticated user.
 
-**Endpoint:** `GET /api/checkout/:orderId`
+**Endpoints (both return the same order with live status):**
+- `GET /api/checkout/:orderId`
+- `GET /api/orders/:orderId`
 
 **Authentication:** Required (Bearer token)
 
@@ -1206,7 +1225,19 @@ const response = await fetch('https://arheb-backend.onrender.com/api/checkout/1/
 
 ---
 
-## Order Tracking (WebSocket)
+## Order Tracking
+
+### Get tracking status (REST, includes live order status)
+
+**Endpoint:** `GET /api/orders/:orderId/tracking`
+
+**Authentication:** Required (Bearer token)
+
+Returns the current tracking state and **live order status** so the customer can poll by order ID and show both status and driver location. Response includes `data.status` (e.g. Preparing, On the way, Delivered), `data.location` (when driver is connected), and `data.isTracking`, `data.driverConnected`.
+
+---
+
+### Order Tracking (WebSocket)
 
 The Order Tracking system allows real-time tracking of orders using WebSocket connections. Drivers send location updates every 3 seconds, and customers receive these updates in real-time to track their delivery.
 
@@ -2507,6 +2538,38 @@ For issues or questions, please contact: `contact@arheb.app`
   - All public store responses (`GET /api/stores`, `/api/stores/top-rated`, `/api/stores/premium`, `/api/stores/category/:categoryName`) now include **`storeCategories`** (array) as part of each store.  
   - **GET** `/api/stores/:id/products` and **GET** `/api/stores/:id/products/category/:categoryName` include `store.storeCategories` so clients can know which categories belong to that store.  
   - **Admin** store APIs allow managing `storeCategories` per store; dashboard product forms now pick categories from the store’s own `storeCategories` instead of global categories.
+
+### FCM, driver presence, store pause/block, customer orders & tracking, Arheb Box
+
+- **Push notifications (FCM)**  
+  - **Driver:** **PATCH** `/api/driver/fcm` – body `{ fcmToken }` to register/update token when driver is active. Drivers receive FCM when an order is requested/auto-assigned to them.  
+  - **User:** **PUT** `/api/profile` and **POST** `/api/checkout` accept optional **`fcmToken`**. Order status changes (and broadcast) send FCM to the user.  
+  - **Broadcast:** **POST** `/api/admin/notifications/broadcast` (Admin/SuperAdmin) – body `{ title, body, imageUrl? }` sends FCM to all users with a stored token.
+
+- **Driver presence (WebSocket)**  
+  - Drivers connect to Socket.IO namespace **`/driver-presence`** with driver JWT and emit **`location`** `{ latitude, longitude }`.  
+  - **GET** `/api/admin/orders/:orderId/nearby-drivers` – returns active drivers with distance to store (when store has lat/long).  
+  - **POST** `/api/admin/orders/:orderId/auto-assign` – assigns the nearest active driver and sends FCM to that driver.  
+  - **POST** `/api/admin/orders/:orderId/request-driver` – sends FCM to each requested driver.
+
+- **Stores: Pause & Block**  
+  - Stores can be **paused** (hidden from users; admins see status “Paused”) or **blocked** (hidden from users; only Admin/SuperAdmin can unblock; Store Admin cannot edit or add/remove products).  
+  - Public store APIs exclude paused and blocked stores. **PATCH** `/api/admin/stores/:id` accepts **`paused`** (any admin for their store) and **`blocked`** (Admin/SuperAdmin only).
+
+- **Products: Related products**  
+  - **GET** `/api/products/:id` response includes **`relatedProducts`** (array of up to 8 same-store products by name similarity). Documented in [Get Product by ID](#get-product-by-id).
+
+- **Customer orders & tracking**  
+  - **GET** `/api/checkout` returns **all** orders for the user, including status **Preparing**; each order includes **`storeId`**, **`driverId`**, **`driverName`**.  
+  - **GET** `/api/orders/:orderId` (customer auth) – returns order with **live status** and items for tracking by order ID.  
+  - **GET** `/api/orders/:orderId/tracking` – response now includes **`data.status`** (current order status) in addition to location and driver connected.
+
+- **Arheb Box: FCM & drivers**  
+  - **POST** `/api/arheb-box` accepts optional **`fcmToken`**; stored on the request and used for status notifications.  
+  - **PATCH** `/api/admin/arheb-box/:id` (status) – sends FCM to the user on status change.  
+  - **POST** `/api/admin/arheb-box/:id/assign-driver` – body `{ driverId }`; sets request to **assigned** and sends FCM to the driver.  
+  - **GET** `/api/driver/arheb-box` – list Arheb Box requests assigned to the driver.  
+  - **POST** `/api/driver/arheb-box/:id/accept` – driver accepts; status → **in_progress**, FCM sent to user.
 
 ---
 

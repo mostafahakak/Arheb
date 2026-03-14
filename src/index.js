@@ -16,6 +16,7 @@ const attachProfileRoutes = require('./profile');
 const attachCheckoutRoutes = require('./checkout');
 const attachContactRoutes = require('./contact');
 const attachOrderTrackingRoutes = require('./order');
+const attachDriverPresence = require('./driverPresence');
 const attachAdmin = require('./admin');
 const attachPopupRoutes = require('./popup');
 const attachArhebBoxRoutes = require('./arhebBox');
@@ -99,6 +100,11 @@ try {
 }
 try {
   db.exec(`ALTER TABLE users ADD COLUMN addresses TEXT DEFAULT '[]'`);
+} catch (e) {
+  // Column already exists
+}
+try {
+  db.exec(`ALTER TABLE users ADD COLUMN fcmToken TEXT`);
 } catch (e) {
   // Column already exists
 }
@@ -234,6 +240,7 @@ attachCheckoutRoutes(app, db, authenticateRequest);
 attachContactRoutes(app, db, authenticateRequest);
 attachArhebBoxRoutes(app, db, authenticateRequest);
 attachOrderTrackingRoutes(io, app, db, authenticateRequest, JWT_SECRET);
+attachDriverPresence(io, db, JWT_SECRET);
 
 app.post('/api/auth/verify-otp', async (req, res) => {
   const { phoneNumber, sessionInfo, otp } = req.body;

@@ -57,21 +57,32 @@ module.exports = function attachProfileRoutes(app, db, authenticateRequest) {
     }
   });
 
-  // Update user profile (name only)
+  // Update user profile (name, fcmToken)
   app.put('/api/profile', authenticateRequest, (req, res) => {
     try {
       const phoneNumber = req.user.phoneNumber;
-      const { name } = req.body || {};
+      const { name, fcmToken } = req.body || {};
 
-      if (name === undefined) {
+      if (name === undefined && fcmToken === undefined) {
         return res.status(400).json({
           success: false,
           message: 'No fields to update'
         });
       }
 
-      const updateUser = db.prepare('UPDATE users SET name = @name WHERE phoneNumber = @phoneNumber');
-      updateUser.run({ name: name || null, phoneNumber });
+      const updates = [];
+      const values = { phoneNumber };
+      if (name !== undefined) {
+        updates.push('name = @name');
+        values.name = name || null;
+      }
+      if (fcmToken !== undefined) {
+        updates.push('fcmToken = @fcmToken');
+        values.fcmToken = typeof fcmToken === 'string' ? fcmToken.trim() || null : null;
+      }
+      if (updates.length) {
+        db.prepare(`UPDATE users SET ${updates.join(', ')} WHERE phoneNumber = @phoneNumber`).run(values);
+      }
 
       const user = findUserByPhone.get(phoneNumber);
       const addresses = parseAddresses(user);

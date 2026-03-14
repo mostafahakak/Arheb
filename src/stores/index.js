@@ -166,6 +166,11 @@ function toPublicStore(store) {
   };
 }
 
+// Exclude paused and blocked stores from user-facing responses
+function filterActiveStores(stores) {
+  return (stores || []).filter((s) => s.paused !== true && s.blocked !== true);
+}
+
 module.exports = function attachStoresRoutes(app, db) {
   seedStoresTable(db, storesListForSeed);
   if (storesListForSeed.length === 0) {
@@ -187,7 +192,7 @@ module.exports = function attachStoresRoutes(app, db) {
 
   app.get('/api/stores/top-rated', (req, res) => {
     const storesResponse = loadStoresResponse();
-    const storesList = (storesResponse?.data?.stores ?? []).map(toPublicStore);
+    const storesList = filterActiveStores((storesResponse?.data?.stores ?? []).map(toPublicStore));
     const limit = req.query.limit ? parseInt(req.query.limit) : null;
     const topRatedStores = storesList
       .filter(store => store.rate != null && typeof store.rate === 'number')
@@ -211,7 +216,7 @@ module.exports = function attachStoresRoutes(app, db) {
   // Get premium stores (set by SuperAdmin/Admin)
   app.get('/api/stores/premium', (req, res) => {
     const storesResponse = loadStoresResponse();
-    const storesList = (storesResponse?.data?.stores ?? []).map(toPublicStore);
+    const storesList = filterActiveStores((storesResponse?.data?.stores ?? []).map(toPublicStore));
     const limit = req.query.limit ? parseInt(req.query.limit) : null;
     const premiumStores = storesList.filter(store => store.isPremium === true);
     const result = limit ? premiumStores.slice(0, limit) : premiumStores;
@@ -234,7 +239,7 @@ module.exports = function attachStoresRoutes(app, db) {
       return res.status(400).json({ success: false, message: 'Category name is required' });
     }
     const storesResponse = loadStoresResponse();
-    const storesList = (storesResponse?.data?.stores ?? []).map(toPublicStore);
+    const storesList = filterActiveStores((storesResponse?.data?.stores ?? []).map(toPublicStore));
     const categoryNameLower = categoryName.toLowerCase().trim();
     const matches = (val) => {
       if (val == null) return false;
@@ -262,6 +267,9 @@ module.exports = function attachStoresRoutes(app, db) {
     const storesList = storesResponse?.data?.stores ?? [];
     const store = storesList.find(s => s.id === storeId);
     if (!store) {
+      return res.status(404).json({ success: false, message: 'Store not found' });
+    }
+    if (store.paused === true || store.blocked === true) {
       return res.status(404).json({ success: false, message: 'Store not found' });
     }
 
@@ -313,6 +321,9 @@ module.exports = function attachStoresRoutes(app, db) {
     const storesList = storesResponse?.data?.stores ?? [];
     const store = storesList.find(s => s.id === storeId);
     if (!store) {
+      return res.status(404).json({ success: false, message: 'Store not found' });
+    }
+    if (store.paused === true || store.blocked === true) {
       return res.status(404).json({ success: false, message: 'Store not found' });
     }
 

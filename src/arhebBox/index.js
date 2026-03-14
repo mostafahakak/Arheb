@@ -1,3 +1,5 @@
+const fcm = require('../fcm');
+
 module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS arheb_box_requests (
@@ -8,14 +10,26 @@ module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest) {
       dropoff TEXT NOT NULL,
       notes TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
+      fcmToken TEXT,
+      driverId INTEGER,
+      driverName TEXT,
       createdAt TEXT DEFAULT CURRENT_TIMESTAMP
     )
   `);
+  try {
+    db.exec('ALTER TABLE arheb_box_requests ADD COLUMN fcmToken TEXT');
+  } catch (e) { /* exists */ }
+  try {
+    db.exec('ALTER TABLE arheb_box_requests ADD COLUMN driverId INTEGER');
+  } catch (e) { /* exists */ }
+  try {
+    db.exec('ALTER TABLE arheb_box_requests ADD COLUMN driverName TEXT');
+  } catch (e) { /* exists */ }
 
   const findUserByPhone = db.prepare('SELECT * FROM users WHERE phoneNumber = ?');
   const insertRequest = db.prepare(`
-    INSERT INTO arheb_box_requests (phoneNumber, userName, pickup, dropoff, notes, status)
-    VALUES (@phoneNumber, @userName, @pickup, @dropoff, @notes, @status)
+    INSERT INTO arheb_box_requests (phoneNumber, userName, pickup, dropoff, notes, status, fcmToken)
+    VALUES (@phoneNumber, @userName, @pickup, @dropoff, @notes, @status, @fcmToken)
   `);
 
   app.post('/api/arheb-box', authenticateRequest, (req, res) => {
@@ -24,7 +38,13 @@ module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest) {
       const user = findUserByPhone.get(phoneNumber);
       const userName = user?.name || null;
 
-      const { pickup, dropoff, notes } = req.body || {};
+      const { pickup, dropoff, notes, fcmToken } = req.body || {};
+      const fcmTokenStr = typeof fcmToken === 'string' ? fcmToken.trim() || null : null;
+      if (fcmTokenStr) {
+        try {
+          db.prepare('UPDATE users SET fcmToken = ? WHERE phoneNumber = ?').run(fcmTokenStr, phoneNumber);
+        } catch (e) { /* ignore */ }
+      }
 
       if (!pickup || typeof pickup !== 'object') {
         return res.status(400).json({
@@ -82,7 +102,8 @@ module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest) {
         pickup: pickupJson,
         dropoff: dropoffJson,
         notes: notesStr,
-        status: 'pending'
+        status: 'pending',
+        fcmToken: fcmTokenStr,
       });
 
       const row = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(result.lastInsertRowid);
@@ -99,6 +120,7 @@ module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest) {
             dropoff: JSON.parse(row.dropoff),
             notes: row.notes,
             status: row.status,
+            fcmToken: row.fcmToken ? true : false,
             createdAt: row.createdAt
           }
         },

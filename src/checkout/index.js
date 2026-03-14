@@ -125,7 +125,8 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         storeId,
         nearby,
         notes,
-        paymentVerificationImage
+        paymentVerificationImage,
+        fcmToken
       } = req.body;
 
       // Validation
@@ -244,6 +245,18 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       let finalStoreId = storeId;
       if (!finalStoreId && items.length > 0 && items[0].id) {
         finalStoreId = getStoreIdFromProduct(items[0].id);
+      }
+
+      // Optionally update user FCM token for order status push notifications
+      if (fcmToken != null && typeof fcmToken === 'string' && phoneNumber) {
+        const trimmed = fcmToken.trim();
+        if (trimmed) {
+          try {
+            db.prepare('UPDATE users SET fcmToken = ? WHERE phoneNumber = ?').run(trimmed, phoneNumber);
+          } catch (e) {
+            // ignore
+          }
+        }
       }
 
       // Use transaction to ensure both order and items are created atomically
@@ -415,6 +428,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       // Fetch items for each order
       const findOrderItems = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
       
+      // All orders for this user, including every status (Waiting confirmation, Preparing, On the way, Delivered, Cancelled, etc.)
       const ordersWithItems = orders.map(order => {
         const items = findOrderItems.all(order.id);
         return {
@@ -429,6 +443,9 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
           deliveryFee: order.deliveryFee,
           totalAmount: order.totalAmount,
           status: order.status,
+          storeId: order.storeId ?? null,
+          driverId: order.driverId ?? null,
+          driverName: order.driverName ?? null,
           paymentType: order.paymentType,
           promoCode: order.promoCode || null,
           orderRating: order.orderRating || 0,
@@ -513,6 +530,9 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
             deliveryFee: order.deliveryFee,
             totalAmount: order.totalAmount,
             status: order.status,
+            storeId: order.storeId ?? null,
+            driverId: order.driverId ?? null,
+            driverName: order.driverName ?? null,
             paymentType: order.paymentType,
             promoCode: order.promoCode || null,
             orderRating: order.orderRating || 0,

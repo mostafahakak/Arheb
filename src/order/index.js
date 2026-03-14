@@ -228,7 +228,66 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
     });
   });
 
-  // REST API endpoint to get current order tracking status
+  // REST API: customer get order by ID with live status (for order tracking screen)
+  app.get('/api/orders/:orderId', authenticateRequest, (req, res) => {
+    try {
+      const orderId = parseInt(req.params.orderId);
+      const userId = req.user.phoneNumber;
+      if (isNaN(orderId)) {
+        return res.status(400).json({ success: false, message: 'Invalid order ID' });
+      }
+      const order = findOrderById.get(orderId);
+      if (!order) {
+        return res.status(404).json({ success: false, message: 'Order not found' });
+      }
+      if (order.userId !== userId && order.phoneNumber !== userId) {
+        return res.status(403).json({ success: false, message: 'Access denied' });
+      }
+      const findOrderItems = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
+      const items = findOrderItems.all(orderId);
+      return res.status(200).json({
+        success: true,
+        message: 'Order retrieved successfully',
+        data: {
+          order: {
+            id: order.id,
+            userId: order.userId,
+            phoneNumber: order.phoneNumber,
+            name: order.name,
+            addressName: order.addressName,
+            addressLong: order.addressLong,
+            addressLat: order.addressLat,
+            discount: order.discount,
+            deliveryFee: order.deliveryFee,
+            totalAmount: order.totalAmount,
+            status: order.status,
+            storeId: order.storeId ?? null,
+            driverId: order.driverId ?? null,
+            driverName: order.driverName ?? null,
+            paymentType: order.paymentType,
+            promoCode: order.promoCode || null,
+            orderRating: order.orderRating || 0,
+            nearby: order.nearby,
+            notes: order.notes,
+            paymentVerificationImage: order.paymentVerificationImage || null,
+            createdAt: order.createdAt,
+            items: items.map((item) => ({
+              id: item.productId,
+              name: item.productName,
+              price: item.price,
+              quantity: item.quantity,
+            })),
+          },
+        },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error('Get order error:', error);
+      return res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  });
+
+  // REST API endpoint to get current order tracking status (includes live order status)
   app.get('/api/orders/:orderId/tracking', authenticateRequest, (req, res) => {
     try {
       const orderId = parseInt(req.params.orderId);
@@ -249,17 +308,27 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
         });
       }
 
+      const order = findOrderById.get(orderId);
       const tracking = activeTrackings.get(orderId);
       
+      const baseData = {
+        orderId,
+        status: order ? order.status : null,
+        isTracking: !!(tracking && tracking.lastLocation),
+        location: (tracking && tracking.lastLocation) ? {
+          longitude: tracking.lastLocation.longitude,
+          latitude: tracking.lastLocation.latitude,
+          timestamp: tracking.lastLocation.timestamp
+        } : null,
+        driverConnected: !!(tracking && tracking.driverSocket),
+        customerConnected: !!(tracking && tracking.customerSocket)
+      };
+
       if (!tracking || !tracking.lastLocation) {
         return res.status(200).json({
           success: true,
           message: 'No tracking data available yet',
-          data: {
-            orderId,
-            isTracking: false,
-            location: null
-          },
+          data: baseData,
           timestamp: new Date().toISOString()
         });
       }
@@ -267,17 +336,7 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
       return res.status(200).json({
         success: true,
         message: 'Tracking data retrieved successfully',
-        data: {
-          orderId,
-          isTracking: true,
-          location: {
-            longitude: tracking.lastLocation.longitude,
-            latitude: tracking.lastLocation.latitude,
-            timestamp: tracking.lastLocation.timestamp
-          },
-          driverConnected: !!tracking.driverSocket,
-          customerConnected: !!tracking.customerSocket
-        },
+        data: baseData,
         timestamp: new Date().toISOString()
       });
     } catch (error) {
