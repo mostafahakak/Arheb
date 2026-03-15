@@ -156,12 +156,13 @@ const seedStoresTable = (db, stores) => {
   insertAll(stores);
 };
 
-// Public store shape: include closingTime and storeCategories, never expose arhebFee
+// Public store shape: include closingTime, openingTime, storeCategories; never expose arhebFee
 function toPublicStore(store) {
   const { arhebFee, ...rest } = store;
   return {
     ...rest,
     closingTime: store.closingTime ?? null,
+    openingTime: store.openingHours?.open ?? store.openingTime ?? null,
     storeCategories: Array.isArray(store.storeCategories) ? store.storeCategories : [],
   };
 }
@@ -300,6 +301,7 @@ module.exports = function attachStoresRoutes(app, db) {
           logo: store.logo,
           cover: store.cover,
           closingTime: store.closingTime ?? null,
+          openingTime: store.openingHours?.open ?? store.openingTime ?? null,
           storeCategories: Array.isArray(store.storeCategories) ? store.storeCategories : [],
         },
         products: storeProducts,
@@ -415,6 +417,7 @@ module.exports = function attachStoresRoutes(app, db) {
           categoryAr: store.categoryAr,
           categoryEn: store.categoryEn,
           closingTime: store.closingTime ?? null,
+          openingTime: store.openingHours?.open ?? store.openingTime ?? null,
           storeCategories: Array.isArray(store.storeCategories) ? store.storeCategories : [],
         },
         categoryName: categoryName,

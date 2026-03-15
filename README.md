@@ -454,12 +454,19 @@ Retrieves all available (non-paused, non-blocked) stores.
         "rate": 4.9,
         "numberOfReviews": 100,
         "deliveryFee": 2.5,
-        "isOpen": true
+        "isOpen": true,
+        "closingTime": "23:00",
+        "openingTime": "09:00",
+        "storeCategories": [
+          { "id": "1", "nameEn": "Meals", "nameAr": "وجبات", "name": "Meals" }
+        ]
       }
     ]
   }
 }
 ```
+
+Each store includes **`closingTime`** (string or `null`), **`openingTime`** (string or `null`), and **`storeCategories`** (array of `{ id, nameEn, nameAr, name }`) so the client can show store hours and product categories offered by the store.
 
 ---
 
@@ -579,7 +586,15 @@ Retrieves all products for a specific store.
     "store": {
       "id": "1",
       "name": "كريسبي تشيكن",
-      "logo": "https://example.com/stores/crispy.png"
+      "nameAr": "كريسبي تشيكن",
+      "nameEn": "Crispy Chicken",
+      "logo": "https://example.com/stores/crispy.png",
+      "cover": "https://example.com/stores/crispy_cover.jpg",
+      "closingTime": "23:00",
+      "openingTime": "09:00",
+      "storeCategories": [
+        { "id": "1", "nameEn": "Meals", "nameAr": "وجبات", "name": "Meals" }
+      ]
     },
     "products": [
       {
@@ -631,7 +646,12 @@ Retrieves all products for a specific store filtered by category name.
       "cover": "https://example.com/stores/crispy_cover.jpg",
       "category": "restaurant",
       "categoryAr": "مطعم",
-      "categoryEn": "Restaurant"
+      "categoryEn": "Restaurant",
+      "closingTime": "23:00",
+      "openingTime": "09:00",
+      "storeCategories": [
+        { "id": "1", "nameEn": "Meals", "nameAr": "وجبات", "name": "Meals" }
+      ]
     },
     "categoryName": "restaurant",
     "products": [
@@ -1876,7 +1896,7 @@ All admin endpoints require **Admin JWT** authentication. Send the token in the 
 | GET | `/api/admin/stores` | List stores (Store Admin sees only their store) |
 | POST | `/api/admin/stores` | Create store (Admin and SuperAdmin only). Body: name, nameEn, nameAr, cover, logo, phone, address, addressEn, deliveryFee, minimumOrder, etc. |
 | GET | `/api/admin/stores/:id` | Get one store |
-| PATCH | `/api/admin/stores/:id` | Update store (name, nameAr, nameEn, cover, logo, deliveryTime, deliveryFee, minimumOrder, isOpen, openingHours, address, phone, category, etc.). **isPremium** only by SuperAdmin/Admin. |
+| PATCH | `/api/admin/stores/:id` | Update store (name, nameAr, nameEn, cover, logo, deliveryTime, deliveryFee, minimumOrder, isOpen, openingHours, address, phone, category, closingTime, storeCategories, etc.). **isPremium** only by SuperAdmin/Admin. **storeCategories** is an array of `{ id, nameEn, nameAr, name }`. |
 | DELETE | `/api/admin/stores/:id` | Delete store (Admin and SuperAdmin only). Removes store and its products. |
 
 ---
@@ -2487,7 +2507,8 @@ For issues or questions, please contact: `contact@arheb.app`
 ### Adjusted / Updated APIs
 
 - **Stores (public)**  
-  - All store responses now include **`closingTime`** (string or `null`).  
+  - All store responses now include **`closingTime`** (string or `null`), **`openingTime`** (string or `null`), and **`storeCategories`** (array of `{ id, nameEn, nameAr, name }`).  
+  - **`openingTime`** is derived from `openingHours.open` when present.  
   - **`arhebFee`** is never exposed in public APIs.
 
 - **Admin Stores**  
