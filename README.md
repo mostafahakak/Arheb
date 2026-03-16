@@ -313,7 +313,7 @@ const response = await fetch('https://arheb-backend.onrender.com/api/auth/user',
 
 ### Get Products (Paginated)
 
-Retrieves products with pagination support (20 products per page).
+Retrieves products with pagination support (20 products per page). Each product includes **`discount`** (number or string, e.g. `10` or `"10%"`, or `null` when no discount) and **`originalPrice`** (price before discount; falls back to `price` when not set) so the client can render offers correctly.
 
 **Endpoint:** `GET /api/products?page=1`
 
@@ -336,6 +336,8 @@ Retrieves products with pagination support (20 products per page).
         "nameEn": "Single Meal",
         "image": "https://example.com/products/meal1.jpg",
         "price": 4.5,
+        "originalPrice": 5.0,
+        "discount": "10",
         "store": {
           "id": "1",
           "name": "كريسبي تشيكن"
@@ -402,6 +404,8 @@ Retrieves detailed information about a specific product.
       "id": "1",
       "name": "وجبة فردية",
       "price": 4.5,
+      "originalPrice": 5.0,
+      "discount": "10",
       "store": {
         "id": "1",
         "name": "كريسبي تشيكن"
@@ -423,6 +427,46 @@ Retrieves detailed information about a specific product.
   "message": "Product not found"
 }
 ```
+
+---
+
+### Get Offers (Discounted Products)
+
+Retrieves all products that currently have a discount applied. This is useful for rendering an **Offers** section in the client app.
+
+**Endpoint:** `GET /api/offers`
+
+**Authentication:** Not required
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "message": "Offers (discounted products) retrieved successfully",
+  "data": {
+    "offers": [
+      {
+        "id": "1",
+        "name": "وجبة فردية",
+        "price": 4.5,
+        "originalPrice": 5.0,
+        "discount": "10",
+        "image": "https://example.com/products/meal1.jpg",
+        "store": {
+          "id": "1",
+          "name": "كريسبي تشيكن"
+        }
+      }
+    ],
+    "count": 1
+  },
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+**Note:**
+- Only products with a non-empty `discount` (number > 0 or string like `"10%"`) are returned.
+- Each product in `offers` has `price`, `originalPrice`, and `discount` so the client can compute and display the offer.
 
 ---
 
@@ -850,7 +894,7 @@ console.log(data.data.products); // Products matching "pizza"
 
 ## Home
 
-Retrieves home page data including banners, categories (from categories API), popular stores, and offers. When the user is authenticated, the response may include **activeOrder** (orderID and status) if they have an order in an active status.
+Retrieves home page data including banners, categories (from categories API), popular stores, and offers. When the user is authenticated, the response may include **activeOrder** (orderID and status) if they have an order in an active status. The response also includes **`discountedProducts`**: a list of products that currently have a discount (same shape as in [Get Products](#get-products-paginated)).
 
 **Endpoint:** `GET /api/home`
 
@@ -864,7 +908,16 @@ Retrieves home page data including banners, categories (from categories API), po
     "banners": [...],
     "categories": [...],
     "mostPopularStores": [...],
-    "offers": [...]
+    "offers": [...],
+    "discountedProducts": [
+      {
+        "id": "1",
+        "name": "وجبة فردية",
+        "price": 4.5,
+        "originalPrice": 5.0,
+        "discount": "10"
+      }
+    ]
   }
 }
 ```
@@ -877,7 +930,8 @@ Retrieves home page data including banners, categories (from categories API), po
     "banners": [...],
     "categories": [...],
     "mostPopularStores": [...],
-    "offers": [...]
+    "offers": [...],
+    "discountedProducts": [...]
   },
   "activeOrder": {
     "orderID": 42,
@@ -1986,12 +2040,20 @@ Order list and order detail responses include **`driverId`** and **`driverName`*
     "totalOrders": 42,
     "totalRevenue": 1250.50,
     "byStatus": { "Waiting confirmation": 5, "Confirmed": 10, "Delivered": 27 },
+    "openStoresCount": 12,
+    "closedStoresCount": 3,
     "recentOrders": [
       { "id": 1, "totalAmount": 25.5, "status": "Delivered", "createdAt": "...", "storeId": "1" }
     ]
   }
 }
 ```
+
+**Notes:**
+- `openStoresCount` and `closedStoresCount` are returned **only for Admin and SuperAdmin** (not for Store Admin).  
+- To list open/closed stores, use the Admin Stores API with the `isOpen` query:
+  - `GET /api/admin/stores?isOpen=true` – open stores only
+  - `GET /api/admin/stores?isOpen=false` – closed stores only
 
 ---
 
