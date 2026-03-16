@@ -3,6 +3,25 @@ const path = require('path');
 const jwt = require('jsonwebtoken');
 const { getJsonPath } = require('../config/jsonPaths');
 
+function loadDiscountedProducts() {
+  try {
+    const filePath = getJsonPath('products_listing_response.json');
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const data = JSON.parse(raw);
+    const products = (data?.data?.products ?? []).filter((p) => p.isAvailable !== false);
+    const hasDiscount = (p) => {
+      const d = p.discount;
+      if (d == null || d === '') return false;
+      if (typeof d === 'number') return d > 0;
+      const n = parseFloat(String(d).replace(/%/g, ''), 10);
+      return !Number.isNaN(n) && n > 0;
+    };
+    return products.filter(hasDiscount);
+  } catch (e) {
+    return [];
+  }
+}
+
 const loadHomeResponse = () => {
   try {
     const filePath = getJsonPath('home_response.json');
@@ -34,6 +53,7 @@ const EMPTY_HOME_PAYLOAD = {
     categories: [],
     mostPopularStores: [],
     offers: [],
+    discountedProducts: [],
   },
 };
 
@@ -292,6 +312,16 @@ module.exports = function attachHomeRoutes(app, db, JWT_SECRET) {
     const categories = loadCategoriesResponse();
     if (response.data && categories) {
       response.data = { ...response.data, categories };
+    }
+
+    // Discounted products (offers): products that have a discount (ensure discount/originalPrice for client)
+    const discountedProducts = loadDiscountedProducts().map((p) => ({
+      ...p,
+      discount: p.discount ?? null,
+      originalPrice: p.originalPrice ?? p.price ?? null,
+    }));
+    if (response.data) {
+      response.data = { ...response.data, discountedProducts };
     }
 
     // If user is authenticated, add activeOrder (orderID, status) only when they have an order in active status

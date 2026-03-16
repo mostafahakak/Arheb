@@ -288,6 +288,7 @@ module.exports = function attachStoresRoutes(app, db) {
 
     const products = productsResponse?.data?.products ?? [];
     const storeProducts = products.filter(p => p.store?.id === storeId && p.isAvailable !== false);
+    const toClientProduct = (p) => ({ ...p, discount: p.discount ?? null, originalPrice: p.originalPrice ?? p.price ?? null });
 
     return res.status(200).json({
       success: true,
@@ -304,7 +305,7 @@ module.exports = function attachStoresRoutes(app, db) {
           openingTime: store.openingHours?.open ?? store.openingTime ?? null,
           storeCategories: Array.isArray(store.storeCategories) ? store.storeCategories : [],
         },
-        products: storeProducts,
+        products: storeProducts.map(toClientProduct),
         count: storeProducts.length
       },
       timestamp: new Date().toISOString()
@@ -401,6 +402,7 @@ module.exports = function attachStoresRoutes(app, db) {
         return sub.some(s => s === subCategoryQuery || s.includes(subCategoryQuery) || subCategoryQuery.includes(s));
       });
     }
+    const toClientProduct = (p) => ({ ...p, discount: p.discount ?? null, originalPrice: p.originalPrice ?? p.price ?? null });
 
     return res.status(200).json({
       success: true,
@@ -422,7 +424,7 @@ module.exports = function attachStoresRoutes(app, db) {
         },
         categoryName: categoryName,
         subCategory: subCategoryQuery || null,
-        products: filteredProducts,
+        products: filteredProducts.map(toClientProduct),
         count: filteredProducts.length
       },
       timestamp: new Date().toISOString()

@@ -12,8 +12,43 @@ const loadProductsFromPath = (filePath) => {
   }
 };
 
+function hasDiscount(p) {
+  const d = p.discount;
+  if (d == null || d === '') return false;
+  if (typeof d === 'number') return d > 0;
+  const n = parseFloat(String(d).replace(/%/g, ''), 10);
+  return !Number.isNaN(n) && n > 0;
+}
+
+// Ensure client always receives discount and originalPrice on each product
+function toClientProduct(p) {
+  if (!p) return p;
+  return {
+    ...p,
+    discount: p.discount ?? null,
+    originalPrice: p.originalPrice ?? p.price ?? null,
+  };
+}
+
 // Load from file on each request so admin add/edit/delete is visible immediately (same pattern as stores).
 module.exports = function attachProductsRoutes(app, db) {
+  // Offers: all products that have a discount (for client "offers" section, like store categories)
+  app.get('/api/offers', (req, res) => {
+    const productsResponsePath = getJsonPath('products_listing_response.json');
+    const productsResponse = loadProductsFromPath(productsResponsePath);
+    if (!productsResponse) {
+      return res.status(500).json({ success: false, message: 'Products payload is unavailable' });
+    }
+    const allProducts = (productsResponse?.data?.products ?? []).filter((p) => p.isAvailable !== false);
+    const offers = allProducts.filter(hasDiscount).map(toClientProduct);
+    return res.status(200).json({
+      success: true,
+      message: 'Offers (discounted products) retrieved successfully',
+      data: { offers, count: offers.length },
+      timestamp: new Date().toISOString(),
+    });
+  });
+
   app.get('/api/products', (req, res) => {
     const productsResponsePath = getJsonPath('products_listing_response.json');
     const productsResponse = loadProductsFromPath(productsResponsePath);
@@ -63,7 +98,7 @@ module.exports = function attachProductsRoutes(app, db) {
     }
 
     // Get products for current page
-    const paginatedProducts = allProducts.slice(startIndex, endIndex);
+    const paginatedProducts = allProducts.slice(startIndex, endIndex).map(toClientProduct);
     const hasMore = endIndex < totalProducts;
     const totalPages = Math.ceil(totalProducts / itemsPerPage);
 
@@ -132,8 +167,8 @@ module.exports = function attachProductsRoutes(app, db) {
       success: true,
       message: 'Product details retrieved successfully',
       data: {
-        product,
-        relatedProducts: related
+        product: toClientProduct(product),
+        relatedProducts: related.map(toClientProduct),
       },
       timestamp: new Date().toISOString()
     });

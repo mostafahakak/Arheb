@@ -324,6 +324,12 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
   app.get('/api/admin/stores', auth, (req, res) => {
     const stores = loadStores();
     let list = req.admin.role === ROLES.STORE_ADMIN ? stores.filter((s) => s.id === req.admin.storeId) : stores;
+    // Admin/SuperAdmin only: filter by isOpen (query param isOpen=true | isOpen=false)
+    const isOpenParam = req.query.isOpen;
+    if ((req.admin.role === ROLES.ADMIN || req.admin.role === ROLES.SUPERADMIN) && (isOpenParam === 'true' || isOpenParam === 'false')) {
+      const open = isOpenParam === 'true';
+      list = list.filter((s) => s.isOpen === open);
+    }
     if (req.admin.role !== ROLES.SUPERADMIN) {
       list = list.map((s) => { const { arhebFee, ...rest } = s; return rest; });
     }
@@ -1316,7 +1322,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     }
   });
 
-  // ——— Dashboard sales ———
+  // ——— Dashboard sales (and for Admin/SuperAdmin: open/closed store counts) ———
   app.get('/api/admin/dashboard/sales', auth, (req, res) => {
     let orders;
     if (req.admin.role === ROLES.STORE_ADMIN) {
@@ -1334,15 +1340,19 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
       .slice(0, 10)
       .map((o) => ({ id: o.id, totalAmount: o.totalAmount, status: o.status, createdAt: o.createdAt, storeId: o.storeId }));
-    return res.status(200).json({
-      success: true,
-      data: {
-        totalOrders: orders.length,
-        totalRevenue,
-        byStatus,
-        recentOrders: recent,
-      },
-    });
+    const data = {
+      totalOrders: orders.length,
+      totalRevenue,
+      byStatus,
+      recentOrders: recent,
+    };
+    // Admin and SuperAdmin only: open/closed store counts (exclude paused/blocked from "all" but count by isOpen)
+    if (req.admin.role === ROLES.ADMIN || req.admin.role === ROLES.SUPERADMIN) {
+      const stores = loadStores();
+      data.openStoresCount = stores.filter((s) => s.isOpen === true).length;
+      data.closedStoresCount = stores.filter((s) => s.isOpen !== true).length;
+    }
+    return res.status(200).json({ success: true, data });
   });
 
   // ——— Arheb Box requests (admin can list, update status, assign driver) ———
