@@ -141,6 +141,19 @@ function savePopup(data) {
 module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
   seedAdmins(db);
 
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS store_pause_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        storeId TEXT NOT NULL,
+        action TEXT NOT NULL CHECK(action IN ('paused', 'unpaused')),
+        createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+  } catch (e) {
+    // ignore
+  }
+
   const findAdminByEmail = db.prepare('SELECT * FROM admins WHERE email = ?');
   const findAdminById = db.prepare('SELECT * FROM admins WHERE id = ?');
   const findAllAdmins = db.prepare('SELECT id, email, role, storeId, name, createdAt FROM admins ORDER BY id');
@@ -336,6 +349,118 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     return res.status(200).json({ success: true, data: { stores: list } });
   });
 
+  // ——— Pause history: store admin sees their store (default today); Admin/SuperAdmin all stores or filter by storeIds + date range ———
+  app.get('/api/admin/stores/pause-history', auth, (req, res) => {
+    const today = new Date().toISOString().slice(0, 10);
+    let dateFrom = (req.query.dateFrom || today).toString().trim();
+    let dateTo = (req.query.dateTo || today).toString().trim();
+    if (!dateFrom) dateFrom = today;
+    if (!dateTo) dateTo = today;
+    const rangeStart = dateFrom + ' 00:00:00';
+    const rangeEnd = dateTo + ' 23:59:59';
+    const storesList = loadStores();
+    const storeById = Object.fromEntries(storesList.map((s) => [s.id, s]));
+
+    let storeIds = [];
+    if (req.admin.role === ROLES.STORE_ADMIN) {
+      storeIds = req.admin.storeId ? [String(req.admin.storeId)] : [];
+    } else {
+      const raw = req.query.storeIds || req.query.storeId;
+      if (raw) {
+        storeIds = (Array.isArray(raw) ? raw : String(raw).split(',')).map((s) => String(s).trim()).filter(Boolean);
+      } else {
+        storeIds = storesList.map((s) => String(s.id));
+      }
+    }
+
+    if (storeIds.length === 0) {
+      return res.status(200).json({
+        success: true,
+        data: { dateFrom, dateTo, stores: [], totalDurationMinutes: 0 },
+      });
+    }
+
+    const placeholders = storeIds.map(() => '?').join(',');
+    const getEventsInRange = db.prepare(
+      `SELECT * FROM store_pause_events WHERE storeId IN (${placeholders}) AND createdAt >= ? AND createdAt <= ? ORDER BY storeId, createdAt`
+    );
+    const getLastBefore = db.prepare(
+      'SELECT * FROM store_pause_events WHERE storeId = ? AND createdAt < ? ORDER BY createdAt DESC LIMIT 1'
+    );
+
+    const allEventsInRange = getEventsInRange.all(...storeIds, rangeStart, rangeEnd);
+    const eventsByStore = {};
+    for (const e of allEventsInRange) {
+      const sid = String(e.storeId);
+      if (!eventsByStore[sid]) eventsByStore[sid] = [];
+      eventsByStore[sid].push(e);
+    }
+
+    function buildSessionsForStore(storeId, events, prevEvent) {
+      const sessions = [];
+      let totalMinutes = 0;
+      let openPausedAt = null;
+      if (prevEvent && prevEvent.action === 'paused') {
+        openPausedAt = rangeStart;
+      }
+      for (const ev of events) {
+        if (ev.action === 'paused') {
+          if (openPausedAt) {
+            const start = new Date(openPausedAt).getTime();
+            const end = new Date(ev.createdAt).getTime();
+            const durationMinutes = Math.round((end - start) / 60000);
+            sessions.push({ pausedAt: openPausedAt, unpausedAt: ev.createdAt, durationMinutes });
+            totalMinutes += durationMinutes;
+          }
+          openPausedAt = ev.createdAt;
+        } else {
+          if (openPausedAt) {
+            const start = new Date(openPausedAt).getTime();
+            const end = new Date(ev.createdAt).getTime();
+            const durationMinutes = Math.round((end - start) / 60000);
+            sessions.push({ pausedAt: openPausedAt, unpausedAt: ev.createdAt, durationMinutes });
+            totalMinutes += durationMinutes;
+          }
+          openPausedAt = null;
+        }
+      }
+      if (openPausedAt) {
+        const endMs = Math.min(new Date(rangeEnd).getTime(), Date.now());
+        const startMs = new Date(openPausedAt).getTime();
+        const durationMinutes = Math.round((endMs - startMs) / 60000);
+        sessions.push({ pausedAt: openPausedAt, unpausedAt: null, durationMinutes });
+        totalMinutes += durationMinutes;
+      }
+      return { sessions, totalMinutes };
+    }
+
+    const storesResult = [];
+    let grandTotalMinutes = 0;
+    for (const storeId of storeIds) {
+      const events = eventsByStore[storeId] || [];
+      const prevRow = getLastBefore.get(storeId, rangeStart);
+      const { sessions, totalMinutes } = buildSessionsForStore(storeId, events, prevRow || null);
+      const store = storeById[storeId];
+      storesResult.push({
+        storeId,
+        storeName: store ? (store.nameEn || store.name || store.nameAr) : storeId,
+        sessions,
+        totalDurationMinutes: totalMinutes,
+      });
+      grandTotalMinutes += totalMinutes;
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        dateFrom,
+        dateTo,
+        stores: storesResult,
+        totalDurationMinutes: grandTotalMinutes,
+      },
+    });
+  });
+
   app.post('/api/admin/stores', auth, requireAdminOrSuper, (req, res) => {
     const body = req.body || {};
     const stores = loadStores();
@@ -454,6 +579,11 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
         return res.status(403).json({ success: false, message: 'Store is blocked' });
       }
       stores[idx].paused = Boolean(body.paused);
+      try {
+        db.prepare('INSERT INTO store_pause_events (storeId, action) VALUES (?, ?)').run(req.params.id, body.paused ? 'paused' : 'unpaused');
+      } catch (e) {
+        // table may not exist in old deployments; ignore
+      }
     }
     if (body.blocked !== undefined) {
       if (req.admin.role !== ROLES.SUPERADMIN && req.admin.role !== ROLES.ADMIN) {
@@ -688,7 +818,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     return res.status(201).json({ success: true, data: { product: newProduct } });
   });
 
-  const EXCEL_HEADERS = ['nameEn', 'nameAr', 'name', 'price', 'originalPrice', 'discount', 'unit', 'category', 'categoryAr', 'categoryEn', 'description', 'stock', 'isAvailable'];
+  const EXCEL_HEADERS = ['id', 'nameEn', 'nameAr', 'name', 'price', 'originalPrice', 'discount', 'unit', 'category', 'categoryAr', 'categoryEn', 'description', 'stock', 'isAvailable'];
 
   app.post('/api/admin/stores/:storeId/products/import', auth, requireStoreAccess((req) => req.params.storeId), upload.single('file'), (req, res) => {
     const storeId = req.params.storeId;
@@ -712,9 +842,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const headerRow = rows[0].map((h) => (h != null ? String(h).trim() : ''));
     const colIndex = (key) => headerRow.findIndex((h) => h.toLowerCase() === key.toLowerCase() || h === key);
     const products = loadProducts();
+    const storeProductIds = new Set(
+      products.filter((p) => String(p.store?.id) === String(storeId)).map((p) => String(p.id))
+    );
     const isStoreAdmin = req.admin.role === ROLES.STORE_ADMIN;
     let created = 0;
+    let skipped = 0;
     let errors = [];
+    const seenIdInFile = new Set();
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
       if (!Array.isArray(row)) continue;
@@ -724,6 +859,17 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
         const v = row[idx];
         return v != null ? String(v).trim() : '';
       };
+      const rowId = get('id');
+      if (rowId) {
+        if (storeProductIds.has(rowId)) {
+          skipped++;
+          continue;
+        }
+        if (seenIdInFile.has(rowId)) {
+          skipped++;
+          continue;
+        }
+      }
       const nameEn = get('nameEn') || get('name');
       if (!nameEn) continue;
       const body = {
@@ -750,6 +896,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
           saveProducts(products);
         }
         created++;
+        if (rowId) seenIdInFile.add(rowId);
       } catch (e) {
         errors.push(`Row ${i + 1}: ${e.message || 'Failed'}`);
       }
@@ -757,7 +904,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     return res.status(200).json({
       success: true,
       message: isStoreAdmin ? `${created} product(s) submitted for approval` : `${created} product(s) imported`,
-      data: { created, errors: errors.length ? errors : undefined },
+      data: { created, skipped, errors: errors.length ? errors : undefined },
     });
   });
 
@@ -768,6 +915,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const rows = [EXCEL_HEADERS];
     storeProducts.forEach((p) => {
       rows.push([
+        p.id ?? '',
         p.nameEn ?? '',
         p.nameAr ?? '',
         p.name ?? '',
@@ -961,6 +1109,15 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (req.admin.role === ROLES.STORE_ADMIN) {
       conditions.push('(storeId = ? OR storeId IS NULL)');
       params.push(req.admin.storeId);
+    } else if (req.admin.role === ROLES.ADMIN || req.admin.role === ROLES.SUPERADMIN) {
+      const storeIdsRaw = req.query.storeIds || req.query.storeId;
+      if (storeIdsRaw) {
+        const ids = (Array.isArray(storeIdsRaw) ? storeIdsRaw : String(storeIdsRaw).split(',')).map((s) => String(s).trim()).filter(Boolean);
+        if (ids.length > 0) {
+          conditions.push('(storeId IN (' + ids.map(() => '?').join(',') + '))');
+          params.push(...ids);
+        }
+      }
     }
     const wherePrefix = conditions.length ? ' WHERE ' + conditions.join(' AND ') + ' AND ' : ' WHERE ';
     const activeSql = 'SELECT COUNT(*) AS n FROM orders' + wherePrefix + "(status IS NULL OR status NOT IN ('Delivered', 'Cancelled'))";
@@ -974,13 +1131,22 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
 
   // ——— Orders (sorted newest first; filter by date range, status, store, name, orderType) ———
   app.get('/api/admin/orders', auth, (req, res) => {
-    const { dateFrom, dateTo, status, storeId, storeName, name, orderType } = req.query;
+    const { dateFrom, dateTo, status, storeId, storeIds, storeName, name, orderType } = req.query;
     const conditions = [];
     const params = [];
 
     if (req.admin.role === ROLES.STORE_ADMIN) {
       conditions.push('(storeId = ? OR storeId IS NULL)');
       params.push(req.admin.storeId);
+    } else if (req.admin.role === ROLES.ADMIN || req.admin.role === ROLES.SUPERADMIN) {
+      const storeIdsRaw = storeIds || storeId;
+      if (storeIdsRaw) {
+        const ids = (Array.isArray(storeIdsRaw) ? storeIdsRaw : String(storeIdsRaw).split(',')).map((s) => String(s).trim()).filter(Boolean);
+        if (ids.length > 0) {
+          conditions.push('(storeId IN (' + ids.map(() => '?').join(',') + '))');
+          params.push(...ids);
+        }
+      }
     }
     if (dateFrom) {
       conditions.push("date(createdAt) >= date(?)");
@@ -1002,10 +1168,6 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (status && String(status).trim()) {
       conditions.push('status = ?');
       params.push(String(status).trim());
-    }
-    if (storeId && String(storeId).trim()) {
-      conditions.push('storeId = ?');
-      params.push(String(storeId).trim());
     }
     if (name && String(name).trim()) {
       const term = '%' + String(name).trim() + '%';
@@ -1086,6 +1248,34 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const items = findOrderItems.all(orderId);
     // Notify customer of order status change via FCM
     fcm.sendToUserByPhone(db, order.phoneNumber, 'Order status updated', `Order #${orderId} is now: ${status.trim()}`, null, { orderId: String(orderId), status: status.trim(), type: 'order_status' }).catch(() => {});
+    return res.status(200).json({
+      success: true,
+      data: {
+        order: {
+          ...updated,
+          items: items.map((i) => ({ id: i.productId, name: i.productName, price: i.price, quantity: i.quantity })),
+        },
+      },
+    });
+  });
+
+  // ——— Reject order (cancel): Store Admin can reject when status is Waiting confirmation; order is set to Cancelled ———
+  app.post('/api/admin/orders/:orderId/reject', auth, (req, res) => {
+    const orderId = parseInt(req.params.orderId, 10);
+    if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
+    const order = findOrderById.get(orderId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (req.admin.role === ROLES.STORE_ADMIN && (order.storeId == null || String(order.storeId) !== String(req.admin.storeId))) {
+      return res.status(403).json({ success: false, message: 'Access denied to this order' });
+    }
+    const statusLower = (order.status || '').toLowerCase();
+    if (!statusLower.includes('waiting') && !statusLower.includes('confirmation')) {
+      return res.status(400).json({ success: false, message: 'Order can only be rejected when status is Waiting confirmation or Waiting cliq confirmation' });
+    }
+    db.prepare('UPDATE orders SET status = ? WHERE id = ?').run('Cancelled', orderId);
+    const updated = findOrderById.get(orderId);
+    const items = findOrderItems.all(orderId);
+    fcm.sendToUserByPhone(db, order.phoneNumber, 'Order cancelled', `Order #${orderId} has been cancelled by the store.`, null, { orderId: String(orderId), status: 'Cancelled', type: 'order_status' }).catch(() => {});
     return res.status(200).json({
       success: true,
       data: {
@@ -1301,6 +1491,23 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     return res.status(200).json({ success: true, message: 'Order deleted' });
   });
 
+  // ——— Notifications table (history of broadcast notifications) ———
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        body TEXT,
+        imageUrl TEXT,
+        successCount INTEGER,
+        failureCount INTEGER,
+        createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+  } catch (e) {
+    if (!e.message || !e.message.includes('no such table')) throw e;
+  }
+
   // ——— Send broadcast notification to all registered app users (Admin / SuperAdmin) ———
   app.post('/api/admin/notifications/broadcast', auth, requireAdminOrSuper, async (req, res) => {
     const { title, body, imageUrl } = req.body || {};
@@ -1311,14 +1518,39 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const image = typeof imageUrl === 'string' && imageUrl.trim() ? imageUrl.trim() : null;
     try {
       const result = await fcm.sendToAllUsers(db, title.trim(), bodyStr, image, { type: 'broadcast' });
+      const successCount = result.successCount ?? 0;
+      const failureCount = result.failureCount ?? 0;
+      try {
+        db.prepare(
+          'INSERT INTO notifications (title, body, imageUrl, successCount, failureCount) VALUES (?, ?, ?, ?, ?)'
+        ).run(title.trim(), bodyStr || null, image, successCount, failureCount);
+      } catch (insertErr) {
+        if (!insertErr.message || !insertErr.message.includes('no such table')) console.error('Notifications insert:', insertErr);
+      }
       return res.status(200).json({
         success: true,
         message: 'Broadcast notification sent',
-        data: { successCount: result.successCount, failureCount: result.failureCount },
+        data: { successCount, failureCount },
       });
     } catch (e) {
       console.error('Broadcast notification error:', e);
       return res.status(500).json({ success: false, message: 'Failed to send broadcast notification' });
+    }
+  });
+
+  // ——— List all notifications (Admin / SuperAdmin) ———
+  app.get('/api/admin/notifications', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      const rows = db.prepare(
+        'SELECT id, title, body, imageUrl, successCount, failureCount, createdAt FROM notifications ORDER BY createdAt DESC, id DESC'
+      ).all();
+      return res.status(200).json({ success: true, data: { notifications: rows } });
+    } catch (e) {
+      if (e.message && e.message.includes('no such table')) {
+        return res.status(200).json({ success: true, data: { notifications: [] } });
+      }
+      console.error('Notifications list error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to list notifications' });
     }
   });
 

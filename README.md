@@ -2487,6 +2487,7 @@ This interactive interface allows you to:
 - ✅ Test real-time order tracking (WebSocket) with map visualization
 - ✅ Validate promo codes
 - ✅ **Driver API**: Send OTP, Login (token stored), Home, Stats, Orders list/detail, Accept order, Complete order. **Admin**: List/Add/Block/Remove drivers.
+- ✅ **Admin**: Order counts (optional storeIds), Reject order (cancel when Waiting confirmation), Pause history (date range + optional storeIds), List notifications (broadcast history).
 - ✅ Test contact endpoints (admin)
 
 ---
@@ -2563,8 +2564,12 @@ For issues or questions, please contact: `contact@arheb.app`
 | GET | `/api/driver/requests` | Driver | Returns pending delivery requests for the authenticated driver. Each request includes full order payload (store name/address/mapsUrl, client address, total, delivery fee, item count, etc.). Driver accepts via existing `POST /api/driver/orders/accept`. |
 | GET | `/api/admin/info` | Admin / SuperAdmin | Returns app-level contact info and Cliq number for the platform: `{ email, phone, cliqNumber }`. Used by the admin dashboard `App info` page. |
 | PATCH | `/api/admin/info` | Admin / SuperAdmin | Updates app contact info and Cliq number. Body: any subset of `{ email, phone, cliqNumber }`. Missing fields are left unchanged. |
-| POST | `/api/admin/stores/:storeId/products/import` | Admin / SuperAdmin / Store Admin (per-store) | Imports products for a store from an Excel file. Expects `multipart/form-data` with field `file` (`.xlsx`/`.xls`). Store Admin rows go to the pending products queue; Admin/SuperAdmin rows are imported directly. |
-| GET | `/api/admin/stores/:storeId/products/export` | Admin / SuperAdmin / Store Admin (per-store) | Exports all products for the given store as an Excel file. Columns include `nameEn`, `nameAr`, `price`, `discount`, `unit`, `category`, `description`, `stock`, `isAvailable`. |
+| POST | `/api/admin/stores/:storeId/products/import` | Admin / SuperAdmin / Store Admin (per-store) | Imports products for a store from an Excel file. Expects `multipart/form-data` with field `file` (`.xlsx`/`.xls`). Store Admin rows go to the pending products queue; Admin/SuperAdmin rows are imported directly. Rows with an `id` column that already exists for the store are **skipped** (no duplicate). Export includes `id` column. |
+| GET | `/api/admin/stores/:storeId/products/export` | Admin / SuperAdmin / Store Admin (per-store) | Exports all products for the given store as an Excel file. Columns include `id`, `nameEn`, `nameAr`, `price`, `discount`, `unit`, `category`, `description`, `stock`, `isAvailable`. |
+| POST | `/api/admin/orders/:orderId/reject` | Admin (Store Admin: own store only) | Reject (cancel) an order when status is **Waiting confirmation** or **Waiting cliq confirmation**. Sets status to `Cancelled` and sends FCM to the customer. |
+| GET | `/api/admin/stores/pause-history` | Admin | Returns store pause history: sessions (pausedAt, unpausedAt, durationMinutes) and total duration. Query: `dateFrom`, `dateTo` (default today), optional `storeIds` (comma-separated). Store Admin sees only their store. |
+| GET | `/api/admin/notifications` | Admin / SuperAdmin | Returns list of sent broadcast notifications (id, title, body, imageUrl, successCount, failureCount, createdAt) for the dashboard history. |
+| POST | `/api/admin/notifications/broadcast` | Admin / SuperAdmin | Sends FCM to all users. Body: `{ title, body, imageUrl? }`. Each broadcast is **saved** to the `Notifications` table for later retrieval via GET `/api/admin/notifications`. |
 
 ### Adjusted / Updated APIs
 
@@ -2580,7 +2585,8 @@ For issues or questions, please contact: `contact@arheb.app`
   - **Clone** store: Copies `closingTime` and `arhebFee` from source; body may override `closingTime`.
 
 - **Admin Orders**  
-  - **GET** `/api/admin/orders`: Supports filter by **`status`** (exact value: e.g. `Waiting confirmation`, `Preparing`, `On the way`, `Delivered`, `Cancelled`) in addition to existing `orderType`, `dateFrom`, `dateTo`, `storeId`, `storeName`, `name`.
+  - **GET** `/api/admin/orders`: Supports filter by **`status`** (exact value: e.g. `Waiting confirmation`, `Preparing`, `On the way`, `Delivered`, `Cancelled`) in addition to existing `orderType`, `dateFrom`, `dateTo`, `storeName`, `name`. **Admin/SuperAdmin** can filter by **`storeIds`** (comma-separated) to limit to one or more stores; Store Admin sees only their store.  
+  - **GET** `/api/admin/orders/counts`: **Admin/SuperAdmin** can pass optional **`storeIds`** (comma-separated) to get active/delivered/cancelled counts for selected stores only. Returns `{ active, delivered, cancelled, complete }`.
 
 - **Driver order detail**  
   - **GET** `/api/driver/orders/:orderId` (and all driver order payloads): Response now includes **`storeName`**, **`storeAddress`**, **`storeMapsUrl`**, **`clientMapsUrl`** (Google Maps link for delivery address), **`numberOfItems`**, in addition to existing `totalPrice`, `deliveryFee`, `address`, and products.
@@ -2637,7 +2643,7 @@ For issues or questions, please contact: `contact@arheb.app`
 
 - **Stores: Pause & Block**  
   - Stores can be **paused** (hidden from users; admins see status “Paused”) or **blocked** (hidden from users; only Admin/SuperAdmin can unblock; Store Admin cannot edit or add/remove products).  
-  - Public store APIs exclude paused and blocked stores. **PATCH** `/api/admin/stores/:id` accepts **`paused`** (any admin for their store) and **`blocked`** (Admin/SuperAdmin only).
+  - Public store APIs exclude paused and blocked stores. **PATCH** `/api/admin/stores/:id` accepts **`paused`** (any admin for their store) and **`blocked`** (Admin/SuperAdmin only). Each pause/unpause is recorded in **`store_pause_events`**; **GET** `/api/admin/stores/pause-history` returns sessions and total paused duration for a date range (optional store filter for Admin/SuperAdmin).
 
 - **Products: Related products**  
   - **GET** `/api/products/:id` response includes **`relatedProducts`** (array of up to 8 same-store products by name similarity). Documented in [Get Product by ID](#get-product-by-id).

@@ -1054,6 +1054,53 @@
           </div>
 
           <div class="card">
+            <h3>Order Counts <span class="badge admin">Auth</span></h3>
+            <p style="font-size: 0.8rem; color: #718096; margin-bottom: 0.5rem;">GET /api/admin/orders/counts. Optional: storeIds (comma-separated) for Admin/SuperAdmin.</p>
+            <div class="form-group">
+              <label for="adminOrderCountsStoreIds">Store IDs (optional, comma-separated)</label>
+              <input id="adminOrderCountsStoreIds" type="text" placeholder="1,2,3" />
+            </div>
+            <button id="adminOrderCountsBtn" class="secondary">Get Order Counts</button>
+            <div id="adminOrderCountsOutput" class="output" style="display: none;"></div>
+          </div>
+          <div class="card">
+            <h3>Reject Order (Cancel) <span class="badge admin">Store Admin / Admin</span></h3>
+            <p style="font-size: 0.8rem; color: #718096; margin-bottom: 0.5rem;">POST /api/admin/orders/:orderId/reject. Only when order status is Waiting confirmation or Waiting cliq confirmation.</p>
+            <div class="form-group">
+              <label for="adminRejectOrderId">Order ID</label>
+              <input id="adminRejectOrderId" type="number" placeholder="1" />
+            </div>
+            <button id="adminRejectOrderBtn" class="danger">Reject Order</button>
+            <div id="adminRejectOrderOutput" class="output" style="display: none;"></div>
+          </div>
+          <div class="card">
+            <h3>Pause History <span class="badge admin">Auth</span></h3>
+            <p style="font-size: 0.8rem; color: #718096; margin-bottom: 0.5rem;">GET /api/admin/stores/pause-history. Store Admin: their store only. Admin/SuperAdmin: optional storeIds, dateFrom, dateTo.</p>
+            <div class="row form-group">
+              <div class="form-group">
+                <label for="adminPauseHistoryFrom">Date From</label>
+                <input id="adminPauseHistoryFrom" type="date" />
+              </div>
+              <div class="form-group">
+                <label for="adminPauseHistoryTo">Date To</label>
+                <input id="adminPauseHistoryTo" type="date" />
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="adminPauseHistoryStoreIds">Store IDs (optional, comma-separated)</label>
+              <input id="adminPauseHistoryStoreIds" type="text" placeholder="1,2" />
+            </div>
+            <button id="adminPauseHistoryBtn" class="secondary">Get Pause History</button>
+            <div id="adminPauseHistoryOutput" class="output" style="display: none;"></div>
+          </div>
+          <div class="card">
+            <h3>List Notifications (Broadcast History) <span class="badge admin">Admin / SuperAdmin</span></h3>
+            <p style="font-size: 0.8rem; color: #718096; margin-bottom: 0.5rem;">GET /api/admin/notifications. Returns past broadcast notifications with date, title, body, imageUrl, successCount, failureCount.</p>
+            <button id="adminListNotificationsBtn" class="secondary">List Notifications</button>
+            <div id="adminListNotificationsOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
             <h3>Admin App Info (/api/admin/info)</h3>
             <p style="font-size: 0.8rem; color: #718096; margin-bottom: 0.5rem;">View and update app-level contact email, phone, and Cliq number used by the app.</p>
             <div class="row form-group">
@@ -2172,6 +2219,64 @@
           showOutput('adminDeleteDriverOutput', data);
         } catch (e) {
           showOutput('adminDeleteDriverOutput', { error: e.message });
+        }
+      });
+
+      // ——— Order counts, Reject order, Pause history, Notifications ———
+      document.getElementById('adminOrderCountsBtn').addEventListener('click', async () => {
+        if (!lastAdminToken) { showOutput('adminOrderCountsOutput', { error: 'Admin login first' }); return; }
+        try {
+          const storeIds = document.getElementById('adminOrderCountsStoreIds').value.trim();
+          const url = `${getBackendBase()}/api/admin/orders/counts` + (storeIds ? `?storeIds=${encodeURIComponent(storeIds)}` : '');
+          const res = await fetch(url, { headers: { 'Authorization': lastAdminToken } });
+          const data = await res.json();
+          showOutput('adminOrderCountsOutput', data);
+        } catch (e) {
+          showOutput('adminOrderCountsOutput', { error: e.message });
+        }
+      });
+      document.getElementById('adminRejectOrderBtn').addEventListener('click', async () => {
+        if (!lastAdminToken) { showOutput('adminRejectOrderOutput', { error: 'Admin login first' }); return; }
+        const orderId = document.getElementById('adminRejectOrderId').value.trim();
+        if (!orderId) { showOutput('adminRejectOrderOutput', { error: 'Order ID required' }); return; }
+        try {
+          const res = await fetch(`${getBackendBase()}/api/admin/orders/${orderId}/reject`, {
+            method: 'POST',
+            headers: { 'Authorization': lastAdminToken },
+          });
+          const data = await res.json();
+          showOutput('adminRejectOrderOutput', data);
+        } catch (e) {
+          showOutput('adminRejectOrderOutput', { error: e.message });
+        }
+      });
+      document.getElementById('adminPauseHistoryBtn').addEventListener('click', async () => {
+        if (!lastAdminToken) { showOutput('adminPauseHistoryOutput', { error: 'Admin login first' }); return; }
+        try {
+          const dateFrom = document.getElementById('adminPauseHistoryFrom').value || new Date().toISOString().slice(0, 10);
+          const dateTo = document.getElementById('adminPauseHistoryTo').value || new Date().toISOString().slice(0, 10);
+          const storeIds = document.getElementById('adminPauseHistoryStoreIds').value.trim();
+          const params = new URLSearchParams({ dateFrom, dateTo });
+          if (storeIds) params.set('storeIds', storeIds);
+          const res = await fetch(`${getBackendBase()}/api/admin/stores/pause-history?${params}`, {
+            headers: { 'Authorization': lastAdminToken },
+          });
+          const data = await res.json();
+          showOutput('adminPauseHistoryOutput', data);
+        } catch (e) {
+          showOutput('adminPauseHistoryOutput', { error: e.message });
+        }
+      });
+      document.getElementById('adminListNotificationsBtn').addEventListener('click', async () => {
+        if (!lastAdminToken) { showOutput('adminListNotificationsOutput', { error: 'Admin login first' }); return; }
+        try {
+          const res = await fetch(`${getBackendBase()}/api/admin/notifications`, {
+            headers: { 'Authorization': lastAdminToken },
+          });
+          const data = await res.json();
+          showOutput('adminListNotificationsOutput', data);
+        } catch (e) {
+          showOutput('adminListNotificationsOutput', { error: e.message });
         }
       });
 
