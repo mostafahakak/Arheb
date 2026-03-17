@@ -109,6 +109,35 @@ function saveStores(stores) {
   }
 }
 
+/** Current time in Jordan (Asia/Amman) as minutes since midnight (0-1439). */
+function getJordanMinutesNow() {
+  const s = new Date().toLocaleTimeString('en-GB', { timeZone: 'Asia/Amman', hour12: false });
+  const [h, m] = (s.split(':').map(Number));
+  return (h || 0) * 60 + (m || 0);
+}
+
+/** Parse "HH:MM" or "HH:mm" to minutes since midnight. Returns 0 if invalid. */
+function parseTimeToMinutes(str) {
+  if (!str || typeof str !== 'string') return 0;
+  const parts = str.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!parts) return 0;
+  const h = parseInt(parts[1], 10);
+  const m = parseInt(parts[2], 10);
+  if (h < 0 || h > 23 || m < 0 || m > 59) return 0;
+  return h * 60 + m;
+}
+
+/** True if current Jordan time is within store opening hours (openingHours.open / .close or closingTime). */
+function isWithinOpeningHours(store) {
+  const openStr = (store.openingHours && store.openingHours.open) || '09:00';
+  const closeStr = (store.openingHours && store.openingHours.close) || store.closingTime || '23:00';
+  const openMin = parseTimeToMinutes(openStr);
+  const closeMin = parseTimeToMinutes(closeStr);
+  const now = getJordanMinutesNow();
+  if (closeMin > openMin) return now >= openMin && now < closeMin;
+  return now >= openMin || now < closeMin;
+}
+
 function saveCategories(categories) {
   try {
     const raw = fs.readFileSync(categoriesResponsePath, 'utf-8');
@@ -337,11 +366,20 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
   app.get('/api/admin/stores', auth, (req, res) => {
     const stores = loadStores();
     let list = req.admin.role === ROLES.STORE_ADMIN ? stores.filter((s) => s.id === req.admin.storeId) : stores;
-    // Admin/SuperAdmin only: filter by isOpen (query param isOpen=true | isOpen=false)
     const isOpenParam = req.query.isOpen;
-    if ((req.admin.role === ROLES.ADMIN || req.admin.role === ROLES.SUPERADMIN) && (isOpenParam === 'true' || isOpenParam === 'false')) {
-      const open = isOpenParam === 'true';
-      list = list.filter((s) => s.isOpen === open);
+    const pausedParam = req.query.paused;
+    if (req.admin.role === ROLES.ADMIN || req.admin.role === ROLES.SUPERADMIN) {
+      if (pausedParam === 'true') {
+        list = list.filter((s) => s.paused === true);
+      } else if (isOpenParam === 'true' || isOpenParam === 'false') {
+        const wantOpen = isOpenParam === 'true';
+        list = list.filter((s) => {
+          if (s.paused === true || s.blocked === true) return false;
+          const withinHours = isWithinOpeningHours(s);
+          const effectivelyOpen = s.isOpen !== false && withinHours;
+          return wantOpen ? effectivelyOpen : !effectivelyOpen;
+        });
+      }
     }
     if (req.admin.role !== ROLES.SUPERADMIN) {
       list = list.map((s) => { const { arhebFee, ...rest } = s; return rest; });
@@ -1129,9 +1167,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     return res.status(200).json({ success: true, data: { active, delivered, cancelled, complete: delivered + cancelled } });
   });
 
-  // ——— Orders (sorted newest first; filter by date range, status, store, name, orderType) ———
+  // ——— Orders (sorted newest first; filter by date range, status, store, name, orderType, paymentType) ———
   app.get('/api/admin/orders', auth, (req, res) => {
-    const { dateFrom, dateTo, status, storeId, storeIds, storeName, name, orderType } = req.query;
+    const { dateFrom, dateTo, status, storeId, storeIds, storeName, name, orderType, paymentType } = req.query;
     const conditions = [];
     const params = [];
 
@@ -1168,6 +1206,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (status && String(status).trim()) {
       conditions.push('status = ?');
       params.push(String(status).trim());
+    }
+    if (paymentType && String(paymentType).trim()) {
+      conditions.push('paymentType = ?');
+      params.push(String(paymentType).trim());
     }
     if (name && String(name).trim()) {
       const term = '%' + String(name).trim() + '%';
@@ -1578,11 +1620,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       byStatus,
       recentOrders: recent,
     };
-    // Admin and SuperAdmin only: open/closed store counts (exclude paused/blocked from "all" but count by isOpen)
+    // Admin and SuperAdmin only: open/closed/paused store counts. Jordan time + opening hours: open = within hours + admin open + unpaused; closed = admin closed or outside hours (not paused); paused = separate count.
     if (req.admin.role === ROLES.ADMIN || req.admin.role === ROLES.SUPERADMIN) {
       const stores = loadStores();
-      data.openStoresCount = stores.filter((s) => s.isOpen === true).length;
-      data.closedStoresCount = stores.filter((s) => s.isOpen !== true).length;
+      data.pausedStoresCount = stores.filter((s) => s.paused === true).length;
+      const notPausedOrBlocked = (s) => s.paused !== true && s.blocked !== true;
+      data.openStoresCount = stores.filter((s) => notPausedOrBlocked(s) && s.isOpen !== false && isWithinOpeningHours(s)).length;
+      data.closedStoresCount = stores.filter((s) => notPausedOrBlocked(s) && (s.isOpen === false || !isWithinOpeningHours(s))).length;
     }
     return res.status(200).json({ success: true, data });
   });

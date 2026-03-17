@@ -14,6 +14,69 @@
 
 ---
 
+## Backend setup (local)
+
+- **Requirements**: Node.js 20.x, npm, SQLite (bundled with `better-sqlite3`), Firebase project (for OTP + FCM).
+- **Install**:
+  - `npm install`
+- **Environment**: create `.env` in the project root (same level as `src/`), for example:
+
+```env
+PORT=4000
+NODE_ENV=development
+ARHEB_JSON_DIR=./Arheb API JSON
+
+FIREBASE_PROJECT_ID=...
+FIREBASE_CLIENT_EMAIL=...
+FIREBASE_PRIVATE_KEY=...
+
+JWT_SECRET=change-me
+SUPERADMIN_EMAIL=admin@arheb.app
+SUPERADMIN_PASSWORD=strong-password-here
+```
+
+- **Run locally**:
+  - Development: `npm run dev`
+  - Production build: `npm run build && npm start`
+
+The API will be available on `http://localhost:4000` (or the port you configure).
+
+---
+
+## GitHub & deployment workflow
+
+This project is already a Node.js backend that can be pushed to GitHub and deployed on any Node host (Render, Railway, VPS, etc.).
+
+1. **Initialize / check git**
+   - Inside the project folder:
+     - `git status` (ensure there are no untracked secrets like `.env`).
+2. **Ignore local-only files**
+   - `.env` is already listed in `.gitignore` (do not commit it).
+3. **Commit backend changes**
+   - Example:
+
+```bash
+git add .
+git commit -m "Document backend setup and deployment"
+```
+
+4. **Create GitHub repo and push**
+   - On GitHub, create a new empty repository (without README).
+   - Then run:
+
+```bash
+git remote add origin https://github.com/<your-username>/<your-repo>.git
+git push -u origin main
+```
+
+5. **Deploy from GitHub (example: Render)**
+   - On Render (or your host), create a **Web Service** from the GitHub repo.
+   - Set the **build command** to `npm install` (or `npm ci`) and the **start command** to `npm start`.
+   - Configure environment variables in the provider dashboard (same values as your local `.env` but **never commit `.env`**).
+   - If using a persistent disk for JSON data, set `ARHEB_JSON_DIR` to the mount path (see the deployment notes below).
+
+---
+
 ## Admin Dashboard
 
 A separate **Admin Dashboard** (React + Next.js) is in the `dashboard/` folder. It supports:
@@ -1945,9 +2008,21 @@ All admin endpoints require **Admin JWT** authentication. Send the token in the 
 
 ### Admin Stores
 
+Store state is derived from **admin flags + Jordan opening hours**:
+
+- A store is **paused** when `paused === true` (never counted as open/closed).
+- A store is **open** when:
+  - not blocked (`blocked !== true`),
+  - not paused (`paused !== true`),
+  - admin did not force close (`isOpen !== false`),
+  - and current time in **Jordan timezone (Asia/Amman)** is within `openingHours.open` → `openingHours.close` (or `closingTime`).
+- A store is **closed** when:
+  - not paused/blocked, and
+  - either `isOpen === false` (explicit admin close) **or** current Jordan time is outside its opening hours.
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/admin/stores` | List stores (Store Admin sees only their store) |
+| GET | `/api/admin/stores` | List stores (Store Admin sees only their store). Admin/SuperAdmin query params: `isOpen=true` (only effectively open stores), `isOpen=false` (only effectively closed stores), `paused=true` (only paused stores). |
 | POST | `/api/admin/stores` | Create store (Admin and SuperAdmin only). Body: name, nameEn, nameAr, cover, logo, phone, address, addressEn, deliveryFee, minimumOrder, etc. |
 | GET | `/api/admin/stores/:id` | Get one store |
 | PATCH | `/api/admin/stores/:id` | Update store (name, nameAr, nameEn, cover, logo, deliveryTime, deliveryFee, minimumOrder, isOpen, openingHours, address, phone, category, closingTime, storeCategories, etc.). **isPremium** only by SuperAdmin/Admin. **storeCategories** is an array of `{ id, nameEn, nameAr, name }`. |
@@ -2019,7 +2094,7 @@ Order list and order detail responses include **`driverId`** and **`driverName`*
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/admin/orders/counts` | Returns `{ active, complete }`: active = orders not Delivered/Cancelled; complete = Delivered or Cancelled. Store Admin: only their store. |
-| GET | `/api/admin/orders` | List orders (Store Admin: only their store). Each order includes driverId, driverName when assigned. Query: `dateFrom`, `dateTo`, `status`, `orderType` (`active` \| `complete`), `storeId`, `storeName`, `name` (customer name/phone). Sorted by `createdAt DESC, id DESC`. |
+| GET | `/api/admin/orders` | List orders (Store Admin: only their store). Each order includes driverId, driverName when assigned. Query: `dateFrom`, `dateTo`, `status`, `orderType` (`active` \| `complete`), `storeId`, `storeIds`, `storeName`, `name` (customer name/phone), `paymentType` (`cash`, `Cliq`, `card`, etc.). Sorted by `createdAt DESC, id DESC`. |
 | GET | `/api/admin/orders/:orderId` | Get one order with full details (items, address, notes, paymentType, storeName, driverId, driverName, etc.). Store Admin: only their store. |
 | PATCH | `/api/admin/orders/:orderId/status` | Update order status. Body: `{ "status": "Confirmed" }`. |
 | DELETE | `/api/admin/orders/:orderId` | Delete order (Admin and SuperAdmin only). Removes order and its items. |
@@ -2042,6 +2117,7 @@ Order list and order detail responses include **`driverId`** and **`driverName`*
     "byStatus": { "Waiting confirmation": 5, "Confirmed": 10, "Delivered": 27 },
     "openStoresCount": 12,
     "closedStoresCount": 3,
+    "pausedStoresCount": 4,
     "recentOrders": [
       { "id": 1, "totalAmount": 25.5, "status": "Delivered", "createdAt": "...", "storeId": "1" }
     ]
@@ -2050,10 +2126,14 @@ Order list and order detail responses include **`driverId`** and **`driverName`*
 ```
 
 **Notes:**
-- `openStoresCount` and `closedStoresCount` are returned **only for Admin and SuperAdmin** (not for Store Admin).  
-- To list open/closed stores, use the Admin Stores API with the `isOpen` query:
-  - `GET /api/admin/stores?isOpen=true` – open stores only
-  - `GET /api/admin/stores?isOpen=false` – closed stores only
+- `openStoresCount`, `closedStoresCount`, and `pausedStoresCount` are returned **only for Admin and SuperAdmin** (not for Store Admin).  
+- Open/closed are computed using **Jordan time (Asia/Amman)** and each store’s `openingHours` / `closingTime`:
+  - Open = within hours, not blocked, not paused, and `isOpen !== false`.
+  - Closed = not paused/blocked and either `isOpen === false` or outside hours.
+- To list open/closed/paused stores, use the Admin Stores API:
+  - `GET /api/admin/stores?isOpen=true` – effectively open stores only.
+  - `GET /api/admin/stores?isOpen=false` – effectively closed stores only.
+  - `GET /api/admin/stores?paused=true` – paused stores only.
 
 ---
 
