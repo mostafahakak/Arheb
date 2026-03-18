@@ -1635,20 +1635,36 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
   app.get('/api/admin/arheb-box', auth, (req, res) => {
     try {
       const rows = db.prepare(
-        'SELECT id, phoneNumber, userName, pickup, dropoff, notes, status, driverId, driverName, createdAt FROM arheb_box_requests ORDER BY createdAt DESC, id DESC'
+        'SELECT id, phoneNumber, userName, pickup, dropoff, notes, status, driverId, driverName, receiverPhone, receiverName, createdAt FROM arheb_box_requests ORDER BY createdAt DESC, id DESC'
       ).all();
-      const requests = rows.map((r) => ({
-        id: r.id,
-        phoneNumber: r.phoneNumber,
-        userName: r.userName,
-        pickup: (() => { try { return JSON.parse(r.pickup); } catch (e) { return {}; } })(),
-        dropoff: (() => { try { return JSON.parse(r.dropoff); } catch (e) { return {}; } })(),
-        notes: r.notes,
-        status: r.status,
-        driverId: r.driverId ?? null,
-        driverName: r.driverName ?? null,
-        createdAt: r.createdAt,
-      }));
+      const buildMapsUrl = (loc) => {
+        if (!loc) return null;
+        if (typeof loc.latitude === 'number' && typeof loc.longitude === 'number') {
+          return `https://www.google.com/maps?q=${loc.latitude},${loc.longitude}`;
+        }
+        if (loc.address) {
+          return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc.address)}`;
+        }
+        return null;
+      };
+      const requests = rows.map((r) => {
+        const pickupObj = (() => { try { return JSON.parse(r.pickup); } catch (e) { return {}; } })();
+        const dropoffObj = (() => { try { return JSON.parse(r.dropoff); } catch (e) { return {}; } })();
+        return {
+          id: r.id,
+          senderPhone: r.phoneNumber,
+          senderName: r.userName,
+          receiverPhone: r.receiverPhone || null,
+          receiverName: r.receiverName || null,
+          pickup: { ...pickupObj, mapsUrl: buildMapsUrl(pickupObj) },
+          dropoff: { ...dropoffObj, mapsUrl: buildMapsUrl(dropoffObj) },
+          notes: r.notes,
+          status: r.status,
+          driverId: r.driverId ?? null,
+          driverName: r.driverName ?? null,
+          createdAt: r.createdAt,
+        };
+      });
       return res.status(200).json({ success: true, data: { requests } });
     } catch (e) {
       if (e.message && e.message.includes('no such table')) {
@@ -1677,13 +1693,27 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       if (!rowBefore.fcmToken) {
         fcm.sendToUserByPhone(db, rowBefore.phoneNumber, 'Arheb Box update', `Your request #${id} is now: ${status.trim()}`, null, { type: 'arheb_box_status', requestId: String(id), status: status.trim() }).catch(() => {});
       }
-      const row = db.prepare('SELECT id, phoneNumber, userName, pickup, dropoff, notes, status, driverId, driverName, createdAt FROM arheb_box_requests WHERE id = ?').get(id);
+      const row = db.prepare('SELECT id, phoneNumber, userName, pickup, dropoff, notes, status, driverId, driverName, receiverPhone, receiverName, createdAt FROM arheb_box_requests WHERE id = ?').get(id);
+      const pickupObj = (() => { try { return JSON.parse(row.pickup); } catch (e) { return {}; } })();
+      const dropoffObj = (() => { try { return JSON.parse(row.dropoff); } catch (e) { return {}; } })();
+      const buildMapsUrl = (loc) => {
+        if (!loc) return null;
+        if (typeof loc.latitude === 'number' && typeof loc.longitude === 'number') {
+          return `https://www.google.com/maps?q=${loc.latitude},${loc.longitude}`;
+        }
+        if (loc.address) {
+          return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc.address)}`;
+        }
+        return null;
+      };
       const request = {
         id: row.id,
-        phoneNumber: row.phoneNumber,
-        userName: row.userName,
-        pickup: (() => { try { return JSON.parse(row.pickup); } catch (e) { return {}; } })(),
-        dropoff: (() => { try { return JSON.parse(row.dropoff); } catch (e) { return {}; } })(),
+        senderPhone: row.phoneNumber,
+        senderName: row.userName,
+        receiverPhone: row.receiverPhone || null,
+        receiverName: row.receiverName || null,
+        pickup: { ...pickupObj, mapsUrl: buildMapsUrl(pickupObj) },
+        dropoff: { ...dropoffObj, mapsUrl: buildMapsUrl(dropoffObj) },
         notes: row.notes,
         status: row.status,
         driverId: row.driverId ?? null,

@@ -74,6 +74,8 @@ function orderToDriverApi(order, items = [], driverRow = null, store = null) {
     status: mapOrderStatus(order.status),
     orderDate: order.createdAt || null,
     notes: order.notes || null,
+    customerName: order.name || null,
+    customerPhone: order.phoneNumber || null,
     driver,
     driver_latitude: driver ? driverRow.latitude : null,
     driver_longitude: driver ? driverRow.longitude : null,
@@ -495,22 +497,38 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     const driverId = req.driver.id;
     let rows = [];
     try {
-      rows = db.prepare('SELECT id, phoneNumber, userName, pickup, dropoff, notes, status, driverId, driverName, createdAt FROM arheb_box_requests WHERE driverId = ? ORDER BY createdAt DESC').all(driverId);
+      rows = db.prepare('SELECT id, phoneNumber, userName, pickup, dropoff, notes, status, driverId, driverName, receiverPhone, receiverName, createdAt FROM arheb_box_requests WHERE driverId = ? ORDER BY createdAt DESC').all(driverId);
     } catch (e) {
       if (!e.message || !e.message.includes('no such table')) throw e;
     }
-    const requests = rows.map((r) => ({
-      id: r.id,
-      phoneNumber: r.phoneNumber,
-      userName: r.userName,
-      pickup: (() => { try { return JSON.parse(r.pickup); } catch (e) { return {}; } })(),
-      dropoff: (() => { try { return JSON.parse(r.dropoff); } catch (e) { return {}; } })(),
-      notes: r.notes,
-      status: r.status,
-      driverId: r.driverId,
-      driverName: r.driverName,
-      createdAt: r.createdAt,
-    }));
+    const buildMapsUrl = (loc) => {
+      if (!loc) return null;
+      if (typeof loc.latitude === 'number' && typeof loc.longitude === 'number') {
+        return `https://www.google.com/maps?q=${loc.latitude},${loc.longitude}`;
+      }
+      if (loc.address) {
+        return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc.address)}`;
+      }
+      return null;
+    };
+    const requests = rows.map((r) => {
+      const pickupObj = (() => { try { return JSON.parse(r.pickup); } catch (e) { return {}; } })();
+      const dropoffObj = (() => { try { return JSON.parse(r.dropoff); } catch (e) { return {}; } })();
+      return {
+        id: r.id,
+        senderPhone: r.phoneNumber,
+        senderName: r.userName,
+        receiverPhone: r.receiverPhone || null,
+        receiverName: r.receiverName || null,
+        pickup: { ...pickupObj, mapsUrl: buildMapsUrl(pickupObj) },
+        dropoff: { ...dropoffObj, mapsUrl: buildMapsUrl(dropoffObj) },
+        notes: r.notes,
+        status: r.status,
+        driverId: r.driverId,
+        driverName: r.driverName,
+        createdAt: r.createdAt,
+      };
+    });
     return res.status(200).json({ success: true, data: { requests } });
   });
 
@@ -520,7 +538,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     const driverId = req.driver.id;
     let row;
     try {
-      row = db.prepare('SELECT id, phoneNumber, userName, pickup, dropoff, notes, status, fcmToken FROM arheb_box_requests WHERE id = ?').get(requestId);
+      row = db.prepare('SELECT id, phoneNumber, userName, pickup, dropoff, notes, status, fcmToken, receiverPhone, receiverName, driverId, driverName, createdAt FROM arheb_box_requests WHERE id = ?').get(requestId);
     } catch (e) {
       if (e.message && e.message.includes('no such table')) return res.status(404).json({ success: false, message: 'Request not found' });
       throw e;
@@ -532,15 +550,17 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     db.prepare('UPDATE arheb_box_requests SET status = ? WHERE id = ?').run('in_progress', requestId);
     fcm.sendToToken(row.fcmToken, 'Arheb Box accepted', `A driver has accepted your request #${requestId}.`, null, { type: 'arheb_box_status', requestId: String(requestId), status: 'in_progress' }).catch(() => {});
     if (!row.fcmToken) fcm.sendToUserByPhone(db, row.phoneNumber, 'Arheb Box accepted', `A driver has accepted your request #${requestId}.`, null, { type: 'arheb_box_status', requestId: String(requestId), status: 'in_progress' }).catch(() => {});
-    const updated = db.prepare('SELECT id, phoneNumber, userName, pickup, dropoff, notes, status, driverId, driverName, createdAt FROM arheb_box_requests WHERE id = ?').get(requestId);
+    const updated = db.prepare('SELECT id, phoneNumber, userName, pickup, dropoff, notes, status, driverId, driverName, receiverPhone, receiverName, createdAt FROM arheb_box_requests WHERE id = ?').get(requestId);
     return res.status(200).json({
       success: true,
       message: 'Arheb Box request accepted',
       data: {
         request: {
           id: updated.id,
-          phoneNumber: updated.phoneNumber,
-          userName: updated.userName,
+          senderPhone: updated.phoneNumber,
+          senderName: updated.userName,
+          receiverPhone: updated.receiverPhone || null,
+          receiverName: updated.receiverName || null,
           pickup: (() => { try { return JSON.parse(updated.pickup); } catch (e) { return {}; } })(),
           dropoff: (() => { try { return JSON.parse(updated.dropoff); } catch (e) { return {}; } })(),
           notes: updated.notes,

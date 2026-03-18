@@ -1792,11 +1792,11 @@ console.log(data.data.popup);
 
 ## Arheb Box
 
-Arheb box requests are stored in the database (table `arheb_box_requests`) with id, date/time, username, phone number, status, pickup, dropoff, and notes. Admins can view and update status in the **dashboard** (Arheb Box page).
+Arheb box requests are stored in the database (table `arheb_box_requests`) with id, date/time, **sender** (user) name/phone, **receiver** name/phone, pickup, dropoff, status, and notes. Admins can view and update status in the **dashboard** (Arheb Box page), and assigned drivers see full sender/receiver and location details in the Driver app.
 
 ### Submit Arheb Box Request
 
-Submits an Arheb box request with pickup location, dropoff location, and notes. Stored in DB with user's phone number and name; first status is `pending`.
+Submits an Arheb box request with pickup location, dropoff location, **sender** and **receiver** details, and notes. Stored in DB with the authenticated user's phone number and name as the **sender**; first status is `pending`.
 
 **Endpoint:** `POST /api/arheb-box`
 
@@ -1815,6 +1815,8 @@ Submits an Arheb box request with pickup location, dropoff location, and notes. 
     "longitude": 35.9106,
     "address": "عمان، الأردن"
   },
+  "receiverPhone": "0791111111",
+  "receiverName": "Receiver Name",
   "notes": "يرجى التوصيل قبل الساعة 5 مساءً"
 }
 ```
@@ -1822,6 +1824,8 @@ Submits an Arheb box request with pickup location, dropoff location, and notes. 
 **Required:**
 - `pickup` (object) - `latitude` (number), `longitude` (number); `address` (string) optional
 - `dropoff` (object) - `latitude` (number), `longitude` (number); `address` (string) optional
+- `receiverPhone` (string) – receiver mobile number (driver will see it)
+- `receiverName` (string) – receiver name (driver will see it)
 - `notes` (string) - optional
 
 **Success Response (200):**
@@ -1831,9 +1835,27 @@ Submits an Arheb box request with pickup location, dropoff location, and notes. 
   "message": "Arheb box request received successfully",
   "data": {
     "request": {
-      "pickup": { "latitude": 29.532, "longitude": 35.0063, "address": "العقبة، الأردن" },
-      "dropoff": { "latitude": 31.9539, "longitude": 35.9106, "address": "عمان، الأردن" },
-      "notes": "يرجى التوصيل قبل الساعة 5 مساءً"
+      "id": 1,
+      "senderPhone": "+962790000000",
+      "senderName": "Sender Name",
+      "receiverPhone": "0791111111",
+      "receiverName": "Receiver Name",
+      "pickup": {
+        "latitude": 29.532,
+        "longitude": 35.0063,
+        "address": "العقبة، الأردن",
+        "mapsUrl": "https://www.google.com/maps?q=29.532,35.0063"
+      },
+      "dropoff": {
+        "latitude": 31.9539,
+        "longitude": 35.9106,
+        "address": "عمان، الأردن",
+        "mapsUrl": "https://www.google.com/maps?q=31.9539,35.9106"
+      },
+      "notes": "يرجى التوصيل قبل الساعة 5 مساءً",
+      "status": "pending",
+      "fcmToken": true,
+      "createdAt": "2024-01-15T10:30:00Z"
     }
   },
   "timestamp": "2024-01-15T10:30:00Z"
@@ -2734,11 +2756,11 @@ For issues or questions, please contact: `contact@arheb.app`
   - **GET** `/api/orders/:orderId/tracking` – response now includes **`data.status`** (current order status) in addition to location and driver connected.
 
 - **Arheb Box: FCM & drivers**  
-  - **POST** `/api/arheb-box` accepts optional **`fcmToken`**; stored on the request and used for status notifications.  
+  - **POST** `/api/arheb-box` accepts optional **`fcmToken`**; stored on the request and used for status notifications, and **requires `receiverPhone` + `receiverName`** so drivers can contact the receiver.  
   - **PATCH** `/api/admin/arheb-box/:id` (status) – sends FCM to the user on status change.  
   - **POST** `/api/admin/arheb-box/:id/assign-driver` – body `{ driverId }`; sets request to **assigned** and sends FCM to the driver.  
-  - **GET** `/api/driver/arheb-box` – list Arheb Box requests assigned to the driver.  
-  - **POST** `/api/driver/arheb-box/:id/accept` – driver accepts; status → **in_progress**, FCM sent to user.
+  - **GET** `/api/driver/arheb-box` – list Arheb Box requests assigned to the driver, including **sender/receiver names & phones** and pickup/dropoff with `mapsUrl`.  
+  - **POST** `/api/driver/arheb-box/:id/accept` – driver accepts; status → **in_progress**, FCM sent to user. Response includes full sender/receiver and location info.
 
 ---
 
