@@ -22,6 +22,7 @@ const { syncCategoriesToDb } = require('../categories');
 const { getJsonPath } = require('../config/jsonPaths');
 const fcm = require('../fcm');
 const { getActiveFromListWithDistance } = require('../driverPresence');
+const enrichArhebBoxRow = require('../arhebBox').enrichArhebBoxRow;
 
 const storesResponsePath = getJsonPath('stores_listing_response.json');
 const productsResponsePath = getJsonPath('products_listing_response.json');
@@ -1634,37 +1635,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
   // ——— Arheb Box requests (admin can list, update status, assign driver) ———
   app.get('/api/admin/arheb-box', auth, (req, res) => {
     try {
-      const rows = db.prepare(
-        'SELECT id, phoneNumber, userName, pickup, dropoff, notes, status, driverId, driverName, receiverPhone, receiverName, createdAt FROM arheb_box_requests ORDER BY createdAt DESC, id DESC'
-      ).all();
-      const buildMapsUrl = (loc) => {
-        if (!loc) return null;
-        if (typeof loc.latitude === 'number' && typeof loc.longitude === 'number') {
-          return `https://www.google.com/maps?q=${loc.latitude},${loc.longitude}`;
-        }
-        if (loc.address) {
-          return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc.address)}`;
-        }
-        return null;
-      };
-      const requests = rows.map((r) => {
-        const pickupObj = (() => { try { return JSON.parse(r.pickup); } catch (e) { return {}; } })();
-        const dropoffObj = (() => { try { return JSON.parse(r.dropoff); } catch (e) { return {}; } })();
-        return {
-          id: r.id,
-          senderPhone: r.phoneNumber,
-          senderName: r.userName,
-          receiverPhone: r.receiverPhone || null,
-          receiverName: r.receiverName || null,
-          pickup: { ...pickupObj, mapsUrl: buildMapsUrl(pickupObj) },
-          dropoff: { ...dropoffObj, mapsUrl: buildMapsUrl(dropoffObj) },
-          notes: r.notes,
-          status: r.status,
-          driverId: r.driverId ?? null,
-          driverName: r.driverName ?? null,
-          createdAt: r.createdAt,
-        };
-      });
+      const rows = db.prepare('SELECT * FROM arheb_box_requests ORDER BY createdAt DESC, id DESC').all();
+      const requests = rows.map((r) => enrichArhebBoxRow(r, db));
       return res.status(200).json({ success: true, data: { requests } });
     } catch (e) {
       if (e.message && e.message.includes('no such table')) {
@@ -1693,33 +1665,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       if (!rowBefore.fcmToken) {
         fcm.sendToUserByPhone(db, rowBefore.phoneNumber, 'Arheb Box update', `Your request #${id} is now: ${status.trim()}`, null, { type: 'arheb_box_status', requestId: String(id), status: status.trim() }).catch(() => {});
       }
-      const row = db.prepare('SELECT id, phoneNumber, userName, pickup, dropoff, notes, status, driverId, driverName, receiverPhone, receiverName, createdAt FROM arheb_box_requests WHERE id = ?').get(id);
-      const pickupObj = (() => { try { return JSON.parse(row.pickup); } catch (e) { return {}; } })();
-      const dropoffObj = (() => { try { return JSON.parse(row.dropoff); } catch (e) { return {}; } })();
-      const buildMapsUrl = (loc) => {
-        if (!loc) return null;
-        if (typeof loc.latitude === 'number' && typeof loc.longitude === 'number') {
-          return `https://www.google.com/maps?q=${loc.latitude},${loc.longitude}`;
-        }
-        if (loc.address) {
-          return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc.address)}`;
-        }
-        return null;
-      };
-      const request = {
-        id: row.id,
-        senderPhone: row.phoneNumber,
-        senderName: row.userName,
-        receiverPhone: row.receiverPhone || null,
-        receiverName: row.receiverName || null,
-        pickup: { ...pickupObj, mapsUrl: buildMapsUrl(pickupObj) },
-        dropoff: { ...dropoffObj, mapsUrl: buildMapsUrl(dropoffObj) },
-        notes: row.notes,
-        status: row.status,
-        driverId: row.driverId ?? null,
-        driverName: row.driverName ?? null,
-        createdAt: row.createdAt,
-      };
+      const row = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(id);
+      const request = enrichArhebBoxRow(row, db);
       return res.status(200).json({ success: true, data: { request } });
     } catch (e) {
       console.error('Arheb box update error:', e);
@@ -1740,23 +1687,12 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       if (!driver) return res.status(404).json({ success: false, message: 'Driver not found or blocked' });
       db.prepare('UPDATE arheb_box_requests SET driverId = ?, driverName = ?, status = ? WHERE id = ?').run(driverIdNum, driver.name, 'assigned', id);
       fcm.sendToDriver(db, driverIdNum, 'New Arheb Box delivery', `Request #${id} has been assigned to you. Open the app to accept.`, { type: 'arheb_box_assigned', requestId: String(id) }).catch(() => {});
-      const updated = db.prepare('SELECT id, phoneNumber, userName, pickup, dropoff, notes, status, driverId, driverName, createdAt FROM arheb_box_requests WHERE id = ?').get(id);
+      const updated = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(id);
       return res.status(200).json({
         success: true,
         message: 'Driver assigned. They will be notified.',
         data: {
-          request: {
-            id: updated.id,
-            phoneNumber: updated.phoneNumber,
-            userName: updated.userName,
-            pickup: (() => { try { return JSON.parse(updated.pickup); } catch (e) { return {}; } })(),
-            dropoff: (() => { try { return JSON.parse(updated.dropoff); } catch (e) { return {}; } })(),
-            notes: updated.notes,
-            status: updated.status,
-            driverId: updated.driverId,
-            driverName: updated.driverName,
-            createdAt: updated.createdAt,
-          },
+          request: enrichArhebBoxRow(updated, db),
         },
       });
     } catch (e) {

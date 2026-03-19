@@ -245,6 +245,18 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
       }
       const findOrderItems = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
       const items = findOrderItems.all(orderId);
+      let driverPhone = null;
+      if (order.driverId != null) {
+        try {
+          const dr = db.prepare('SELECT mobile FROM drivers WHERE id = ?').get(order.driverId);
+          driverPhone = dr?.mobile ?? null;
+        } catch (e) { /* ignore */ }
+      }
+      const serviceFee = order.serviceFee != null ? Number(order.serviceFee) : 0.65;
+      const feesTax =
+        order.feesTax != null
+          ? Number(order.feesTax)
+          : Math.round(((0.16 * ((Number(order.deliveryFee) || 0) + (Number(serviceFee) || 0))) + Number.EPSILON) * 100) / 100;
       return res.status(200).json({
         success: true,
         message: 'Order retrieved successfully',
@@ -259,11 +271,32 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
             addressLat: order.addressLat,
             discount: order.discount,
             deliveryFee: order.deliveryFee,
+            serviceFee,
+            feesTax,
+            weightKg: order.weightKg != null ? Number(order.weightKg) : 0,
             totalAmount: order.totalAmount,
+            orderSummary: {
+              currency: 'JOD',
+              orderValue: Math.round(((Number(order.totalAmount) || 0) + Number.EPSILON) * 100) / 100,
+              deliveryFee: Math.round(((Number(order.deliveryFee) || 0) + Number.EPSILON) * 100) / 100,
+              serviceFee: Math.round(((Number(serviceFee) || 0) + Number.EPSILON) * 100) / 100,
+              feesTaxRate: 0.16,
+              feesTax: Math.round(((Number(feesTax) || 0) + Number.EPSILON) * 100) / 100,
+              total: Math.round((((Number(order.totalAmount) || 0) + (Number(order.deliveryFee) || 0) + (Number(serviceFee) || 0) + (Number(feesTax) || 0)) + Number.EPSILON) * 100) / 100,
+            },
+            invoice: {
+              currency: 'JOD',
+              deliveryFee: Math.round(((Number(order.deliveryFee) || 0) + Number.EPSILON) * 100) / 100,
+              serviceFee: Math.round(((Number(serviceFee) || 0) + Number.EPSILON) * 100) / 100,
+              feesTaxRate: 0.16,
+              feesTax: Math.round(((Number(feesTax) || 0) + Number.EPSILON) * 100) / 100,
+              total: Math.round((((Number(order.deliveryFee) || 0) + (Number(serviceFee) || 0) + (Number(feesTax) || 0)) + Number.EPSILON) * 100) / 100,
+            },
             status: order.status,
             storeId: order.storeId ?? null,
             driverId: order.driverId ?? null,
             driverName: order.driverName ?? null,
+            driverPhone,
             paymentType: order.paymentType,
             promoCode: order.promoCode || null,
             orderRating: order.orderRating || 0,
@@ -310,10 +343,17 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
 
       const order = findOrderById.get(orderId);
       const tracking = activeTrackings.get(orderId);
-      
+      let driverPhone = null;
+      if (order && order.driverId != null) {
+        try {
+          const dr = db.prepare('SELECT mobile FROM drivers WHERE id = ?').get(order.driverId);
+          driverPhone = dr?.mobile ?? null;
+        } catch (e) { /* ignore */ }
+      }
       const baseData = {
         orderId,
         status: order ? order.status : null,
+        driverPhone,
         isTracking: !!(tracking && tracking.lastLocation),
         location: (tracking && tracking.lastLocation) ? {
           longitude: tracking.lastLocation.longitude,

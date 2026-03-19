@@ -190,6 +190,7 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
   - [Driver Order Detail](#driver-order-detail)
   - [Driver Accept Order](#driver-accept-order)
   - [Driver Complete Order](#driver-complete-order)
+  - [Driver Complete Arheb Box](#driver-complete-arheb-box-delivery)
 - [Error Handling](#error-handling)
 - [Testing](#testing)
 
@@ -1236,6 +1237,8 @@ Retrieves **all** orders for the authenticated user. Every status is included (e
 
 Each order includes `status`, `storeId`, `driverId`, `driverName` (when assigned), and `items`.
 
+The same response also includes **`arhebBoxRequests`**: all **Arheb Box** requests created by this user (same shape as `GET /api/arheb-box/:id` — pickup/dropoff with `mapsUrl`, `amount`, `paymentMethod`, `whoPays`, `driverPhone` when assigned, etc.), plus **`arhebBoxCount`**.
+
 **Success Response (200):**
 ```json
 {
@@ -1254,7 +1257,9 @@ Each order includes `status`, `storeId`, `driverId`, `driverName` (when assigned
         "createdAt": "2024-01-15T10:30:00Z"
       }
     ],
-    "count": 5
+    "count": 5,
+    "arhebBoxRequests": [],
+    "arhebBoxCount": 0
   },
   "timestamp": "2024-01-15T10:30:00Z"
 }
@@ -1792,94 +1797,53 @@ console.log(data.data.popup);
 
 ## Arheb Box
 
-Arheb box requests are stored in the database (table `arheb_box_requests`) with id, date/time, **sender** (user) name/phone, **receiver** name/phone, pickup, dropoff, status, and notes. Admins can view and update status in the **dashboard** (Arheb Box page), and assigned drivers see full sender/receiver and location details in the Driver app.
+Requests are stored in `arheb_box_requests` with **sender/receiver** contacts, pickup & dropoff (lat/lng + address + `mapsUrl`), **payment** (`paymentMethod`, `whoPays`: `sender` | `receiver`), **trip amount** (`amount` in JOD), **distance** and **minimum price** (`distanceKm`, `minAmountJod`). Pricing: **1 JOD per km**, **minimum 2 JOD** (e.g. 3 km → at least 3 JOD; 0.5 km → at least 2 JOD). The client must call **quote** first, then send an `amount` ≥ `minAmountJod`. After a driver is assigned, **customer** `GET /api/arheb-box/:id` and list/detail responses include **`driverPhone`**.
+
+### Arheb Box quote (distance & minimum amount)
+
+**Endpoint:** `POST /api/arheb-box/quote`  
+**Authentication:** Not required
+
+**Body:** same `pickup` / `dropoff` shape as submit (each with `latitude`, `longitude`).
+
+**Response:** `{ distanceKm, minAmountJod, currency: "JOD" }`
+
+### Get Arheb Box request by ID (customer)
+
+**Endpoint:** `GET /api/arheb-box/:id`  
+**Authentication:** Required (owner only – same phone as sender)
+
+Returns full request including **`driverPhone`** when a driver is assigned.
 
 ### Submit Arheb Box Request
 
-Submits an Arheb box request with pickup location, dropoff location, **sender** and **receiver** details, and notes. Stored in DB with the authenticated user's phone number and name as the **sender**; first status is `pending`.
-
-**Endpoint:** `POST /api/arheb-box`
-
+**Endpoint:** `POST /api/arheb-box`  
 **Authentication:** Required (Bearer token)
 
-**Request Body:**
+**Request Body (required fields):**
 ```json
 {
-  "pickup": {
-    "latitude": 29.5320,
-    "longitude": 35.0063,
-    "address": "العقبة، الأردن"
-  },
-  "dropoff": {
-    "latitude": 31.9539,
-    "longitude": 35.9106,
-    "address": "عمان، الأردن"
-  },
+  "pickup": { "latitude": 29.532, "longitude": 35.0063, "address": "العقبة" },
+  "dropoff": { "latitude": 31.9539, "longitude": 35.9106, "address": "عمان" },
   "receiverPhone": "0791111111",
   "receiverName": "Receiver Name",
-  "notes": "يرجى التوصيل قبل الساعة 5 مساءً"
+  "paymentMethod": "cash",
+  "whoPays": "sender",
+  "amount": 5,
+  "notes": "optional",
+  "fcmToken": "optional"
 }
 ```
 
-**Required:**
-- `pickup` (object) - `latitude` (number), `longitude` (number); `address` (string) optional
-- `dropoff` (object) - `latitude` (number), `longitude` (number); `address` (string) optional
-- `receiverPhone` (string) – receiver mobile number (driver will see it)
-- `receiverName` (string) – receiver name (driver will see it)
-- `notes` (string) - optional
+- **`paymentMethod`**: e.g. `cash`, `Cliq`, `card`  
+- **`whoPays`**: `"sender"` or `"receiver"`  
+- **`amount`**: number (JOD); must be **≥** `minAmountJod` from `POST /api/arheb-box/quote` for the same pickup/dropoff (otherwise `400` with `data.minAmountJod` and `data.distanceKm`).
 
-**Success Response (200):**
-```json
-{
-  "success": true,
-  "message": "Arheb box request received successfully",
-  "data": {
-    "request": {
-      "id": 1,
-      "senderPhone": "+962790000000",
-      "senderName": "Sender Name",
-      "receiverPhone": "0791111111",
-      "receiverName": "Receiver Name",
-      "pickup": {
-        "latitude": 29.532,
-        "longitude": 35.0063,
-        "address": "العقبة، الأردن",
-        "mapsUrl": "https://www.google.com/maps?q=29.532,35.0063"
-      },
-      "dropoff": {
-        "latitude": 31.9539,
-        "longitude": 35.9106,
-        "address": "عمان، الأردن",
-        "mapsUrl": "https://www.google.com/maps?q=31.9539,35.9106"
-      },
-      "notes": "يرجى التوصيل قبل الساعة 5 مساءً",
-      "status": "pending",
-      "fcmToken": true,
-      "createdAt": "2024-01-15T10:30:00Z"
-    }
-  },
-  "timestamp": "2024-01-15T10:30:00Z"
-}
-```
+**Success response** includes `paymentMethod`, `whoPays`, `amount`, `distanceKm`, `minAmountJod`, pickup/dropoff with `mapsUrl`, sender/receiver phones and names.
 
-**Example:**
-```javascript
-const response = await fetch('https://arheb-backend.onrender.com/api/arheb-box', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-    'Authorization': 'Bearer your-jwt-token-here'
-  },
-  body: JSON.stringify({
-    pickup: { latitude: 29.532, longitude: 35.0063, address: 'العقبة، الأردن' },
-    dropoff: { latitude: 31.9539, longitude: 35.9106, address: 'عمان، الأردن' },
-    notes: 'يرجى التوصيل قبل الساعة 5 مساءً'
-  })
-});
-const data = await response.json();
-```
+**Admin (dashboard):** `GET /api/admin/arheb-box`, `PATCH /api/admin/arheb-box/:id`, `POST /api/admin/arheb-box/:id/assign-driver`. Admin/driver responses include pricing fields and **`driverPhone`** when applicable.
 
-**Admin (dashboard):** Admins see all Arheb box requests in the dashboard under **Arheb Box**. They can update status (e.g. pending → confirmed → in_progress → delivered). Admin API: `GET /api/admin/arheb-box` (list), `PATCH /api/admin/arheb-box/:id` (body: `{ "status": "confirmed" }`).
+**Driver:** `GET /api/driver/arheb-box` includes **`amount`**, **`paymentMethod`**, **`whoPays`**, **`distanceKm`**, **`minAmountJod`**, sender/receiver phones, and maps links.
 
 ---
 
@@ -2277,7 +2241,7 @@ Authenticates a driver by mobile and OTP code. Returns driver profile and JWT fo
 
 ### Driver Home
 
-Returns the driver's home dashboard: profile, stats (today/total earnings and orders), current order (one actively delivering), available orders (unassigned), and in-progress orders (assigned to this driver, delivering).
+Returns the driver's home dashboard: profile, stats (today/total earnings and orders), current order (one actively delivering), **available store orders** (unassigned `Preparing`), **Arheb Box jobs awaiting pickup** (`arhebBoxAvailable`: assigned to this driver, status `assigned` — accept then complete via Arheb Box APIs), and in-progress store orders.
 
 **Endpoint:** `GET /api/driver/home`
 
@@ -2325,10 +2289,13 @@ Returns the driver's home dashboard: profile, stats (today/total earnings and or
         "driver_longitude": null
       }
     ],
+    "arhebBoxAvailable": [],
     "inProgressOrders": []
   }
 }
 ```
+
+`arhebBoxAvailable` is an array of enriched Arheb Box requests (same shape as driver Arheb Box list) for deliveries admin-assigned to this driver that still need **accept** → **complete**.
 
 ---
 
@@ -2367,7 +2334,7 @@ Returns earnings and order stats for the driver (optionally filtered by period).
 
 ### Driver Orders List
 
-Returns a paginated list of orders for the driver. Filter: `all` (orders assigned to driver), `available` (unassigned orders), or `mine` / `in_progress` (assigned, not yet delivered).
+Returns a paginated list of orders for the driver. Filter: `all` (orders assigned to driver), `available` (unassigned **store** orders in `Preparing`), or `mine` / `in_progress` (assigned, not yet delivered). When **`filter=available`**, the response also includes **`arhebBoxAvailable`** and **`arhebBoxAvailableCount`**: Arheb Box requests assigned to this driver with status **`assigned`** (mirror of home).
 
 **Endpoint:** `GET /api/driver/orders?filter=all&page=1&perPage=20`
 
@@ -2493,40 +2460,57 @@ Assigns an order to the authenticated driver and sets its status to "On the way"
 
 ### Driver Complete Order
 
-Marks an order as delivered. Order must be assigned to the authenticated driver.
+Marks a **store order** as **Delivered**. The **Bearer token** identifies the driver; the server checks that this driver is assigned to the order. Order status must be **On the way** (after accept). Idempotent: if already **Delivered**, returns success with the same message variant.
 
-**Endpoint:** `POST /api/driver/orders/complete`
+**Endpoints (choose one):**
 
-**Authentication:** Required (Driver Bearer token)
+| Method | Path | Body |
+|--------|------|------|
+| POST | `/api/driver/orders/:orderId/complete` | _(none)_ — `orderId` in URL |
+| POST | `/api/driver/orders/complete` | `{ "orderId": 20 }` |
 
-**Request Body:**
-```json
-{
-  "orderId": "1",
-  "driverId": "1",
-  "completedAt": "2024-01-15T14:30:00Z"
-}
-```
+**Authentication:** Required (**Driver** `Authorization: Bearer <token>`)
 
-`driverId` and `completedAt` are optional; driver is taken from token.
+**Request Body** (only for `/complete`): `orderId` (number or string). Optional `driverId` must match the token user or request is `403`.
 
 **Success Response (200):**
 ```json
 {
   "success": true,
-  "message": "Order completed successfully",
+  "message": "Order marked as delivered successfully",
   "data": {
     "order": {
       "id": "20",
       "orderNumber": "ORD-0020",
       "status": "delivered",
-      "driver": { "id": "1", "name": "Ahmed Driver", ... }
+      "driver": { "id": "1", "name": "Ahmed Driver" }
     }
   }
 }
 ```
 
-**Error Responses:** `403` – Order not assigned to you, `404` – Order not found
+**Error Responses:** `400` – Missing `orderId` or order not **On the way** yet; `403` – Token driver ≠ assigned driver; `404` – Order not found
+
+---
+
+### Driver Complete Arheb Box (delivery)
+
+Marks an **Arheb Box** request **delivered** from the driver app. **Bearer** must be the driver **assigned** to the request; status must be **`in_progress`** (after **POST** `/api/driver/arheb-box/:id/accept`). Sends FCM to the customer.
+
+**Endpoint:** `POST /api/driver/arheb-box/:id/complete`
+
+**Authentication:** Required (Driver Bearer token)
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "message": "Arheb Box marked as delivered successfully",
+  "data": { "request": { "id": 1, "status": "delivered", "...": "..." } }
+}
+```
+
+**Error Responses:** `400` – Not in `in_progress`; `403` – Request not assigned to this driver; `404` – Request not found. Already **delivered** → `200` with message that it was already complete.
 
 ---
 
@@ -2541,7 +2525,9 @@ Marks an order as delivered. Order must be assigned to the authenticated driver.
 | GET | `/api/driver/orders` | Yes | List orders (filter, page, perPage) |
 | GET | `/api/driver/orders/:orderId` | Yes | Order detail |
 | POST | `/api/driver/orders/accept` | Yes | Accept order (assign to driver) |
-| POST | `/api/driver/orders/complete` | Yes | Mark order delivered |
+| POST | `/api/driver/orders/:orderId/complete` | Yes | Mark store order delivered (Bearer verifies driver) |
+| POST | `/api/driver/orders/complete` | Yes | Same; body `{ orderId }` |
+| POST | `/api/driver/arheb-box/:id/complete` | Yes | Mark Arheb Box delivered (after accept) |
 
 **Note:** Drivers are created only via Admin API (SuperAdmin/Admin). Blocked drivers receive `403 Account is blocked` on login and on all authenticated driver endpoints.
 
@@ -2715,9 +2701,10 @@ For issues or questions, please contact: `contact@arheb.app`
 
 - **Driver Orders (visibility)**  
   - **GET** `/api/driver/home`:  
-    - `availableOrders` now includes only **unassigned orders with status `Preparing`**.  
+    - `availableOrders`: unassigned store orders with status **`Preparing`**.  
+    - **`arhebBoxAvailable`**: Arheb Box requests assigned to this driver, status **`assigned`** (driver must accept then complete delivery).  
   - **GET** `/api/driver/orders?filter=available`:  
-    - Returns only unassigned orders where `status = 'Preparing'`. Other filters (`mine`, `in_progress`, `all`) continue to show orders assigned to the authenticated driver.
+    - Same store orders as above, plus **`arhebBoxAvailable`** / **`arhebBoxAvailableCount`** for assigned Arheb Box jobs.
 
 - **Admin Orders (Cliq review + tracking UI)**  
   - **GET** `/api/admin/orders` and **GET** `/api/admin/orders/:orderId`:  
@@ -2751,7 +2738,7 @@ For issues or questions, please contact: `contact@arheb.app`
   - **GET** `/api/products/:id` response includes **`relatedProducts`** (array of up to 8 same-store products by name similarity). Documented in [Get Product by ID](#get-product-by-id).
 
 - **Customer orders & tracking**  
-  - **GET** `/api/checkout` returns **all** orders for the user, including status **Preparing**; each order includes **`storeId`**, **`driverId`**, **`driverName`**.  
+  - **GET** `/api/checkout` returns **all** store orders for the user plus **`arhebBoxRequests`** (same user’s Arheb Box deliveries) and **`arhebBoxCount`**; each store order includes **`storeId`**, **`driverId`**, **`driverName`**.  
   - **GET** `/api/orders/:orderId` (customer auth) – returns order with **live status** and items for tracking by order ID.  
   - **GET** `/api/orders/:orderId/tracking` – response now includes **`data.status`** (current order status) in addition to location and driver connected.
 
@@ -2760,7 +2747,9 @@ For issues or questions, please contact: `contact@arheb.app`
   - **PATCH** `/api/admin/arheb-box/:id` (status) – sends FCM to the user on status change.  
   - **POST** `/api/admin/arheb-box/:id/assign-driver` – body `{ driverId }`; sets request to **assigned** and sends FCM to the driver.  
   - **GET** `/api/driver/arheb-box` – list Arheb Box requests assigned to the driver, including **sender/receiver names & phones** and pickup/dropoff with `mapsUrl`.  
-  - **POST** `/api/driver/arheb-box/:id/accept` – driver accepts; status → **in_progress**, FCM sent to user. Response includes full sender/receiver and location info.
+  - **POST** `/api/driver/arheb-box/:id/accept` – driver accepts; status → **in_progress**, FCM sent to user.  
+  - **POST** `/api/driver/arheb-box/:id/complete` – Bearer + request id; only assigned driver; **in_progress** → **delivered**, FCM to sender.  
+  - **POST** `/api/driver/orders/:orderId/complete` or **POST** `/api/driver/orders/complete` with `{ orderId }` – store order **On the way** → **Delivered** (Bearer verifies driver).
 
 ---
 

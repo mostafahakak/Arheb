@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 const fs = require('fs');
 const { getJsonPath } = require('../config/jsonPaths');
 const fcm = require('../fcm');
+const enrichArhebBoxRow = require('../arhebBox').enrichArhebBoxRow;
 
 function emitOrderStatus(orderId, status) {
   try {
@@ -76,6 +77,7 @@ function orderToDriverApi(order, items = [], driverRow = null, store = null) {
     notes: order.notes || null,
     customerName: order.name || null,
     customerPhone: order.phoneNumber || null,
+    driverPhone: driverRow?.mobile ?? null,
     driver,
     driver_latitude: driver ? driverRow.latitude : null,
     driver_longitude: driver ? driverRow.longitude : null,
@@ -254,6 +256,16 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
       .prepare("SELECT * FROM orders WHERE driverId IS NULL AND status = 'Preparing' ORDER BY id DESC LIMIT 50")
       .all();
 
+    let arhebBoxAvailable = [];
+    try {
+      const boxRows = db
+        .prepare("SELECT * FROM arheb_box_requests WHERE driverId = ? AND LOWER(status) = 'assigned' ORDER BY createdAt DESC LIMIT 20")
+        .all(driverId);
+      arhebBoxAvailable = boxRows.map((r) => enrichArhebBoxRow(r, db));
+    } catch (e) {
+      if (!e.message || !e.message.includes('no such table')) throw e;
+    }
+
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
     const todayStr = todayStart.toISOString().slice(0, 10);
@@ -298,6 +310,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
         stats,
         currentOrder: currentOrder ? buildOrder(currentOrder) : null,
         availableOrders: availableOrders.slice(0, 20).map(buildOrder),
+        arhebBoxAvailable,
         inProgressOrders: inProgressOrders.map(buildOrder),
       },
     });
@@ -380,10 +393,29 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
       return orderToDriverApi(o, items, findDriverByIdRun(o.driverId), store);
     });
 
+    let arhebBoxAvailable = [];
+    if (filter === 'available') {
+      try {
+        const boxRows = db
+          .prepare("SELECT * FROM arheb_box_requests WHERE driverId = ? AND LOWER(status) = 'assigned' ORDER BY createdAt DESC LIMIT 50")
+          .all(driverId);
+        arhebBoxAvailable = boxRows.map((r) => enrichArhebBoxRow(r, db));
+      } catch (e) {
+        if (!e.message || !e.message.includes('no such table')) throw e;
+      }
+    }
+
     return res.status(200).json({
       success: true,
       message: 'Orders loaded successfully',
-      data: { filter, page, perPage, total, orders: list },
+      data: {
+        filter,
+        page,
+        perPage,
+        total,
+        orders: list,
+        ...(filter === 'available' ? { arhebBoxAvailable, arhebBoxAvailableCount: arhebBoxAvailable.length } : {}),
+      },
     });
   });
 
@@ -467,16 +499,36 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     });
   });
 
-  // POST /api/driver/orders/complete
-  app.post('/api/driver/orders/complete', driverAuth, (req, res) => {
-    const { orderId: bodyOrderId, driverId: bodyDriverId } = req.body || {};
-    const orderId = parseInt(bodyOrderId || req.body?.orderId, 10);
-    const driverId = bodyDriverId != null ? parseInt(bodyDriverId, 10) : req.driver.id;
-    if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'orderId is required' });
-    if (driverId !== req.driver.id) return res.status(403).json({ success: false, message: 'You can only complete your own orders' });
+  function completeStoreOrderAsDriver(req, orderId, driverId, res) {
+    if (isNaN(orderId)) {
+      return res.status(400).json({ success: false, message: 'orderId is required' });
+    }
+    if (driverId !== req.driver.id) {
+      return res.status(403).json({ success: false, message: 'You can only complete your own orders' });
+    }
     const order = findOrderById.get(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (order.driverId !== driverId) return res.status(403).json({ success: false, message: 'Order not assigned to you' });
+    if (order.driverId !== driverId) {
+      return res.status(403).json({ success: false, message: 'Order not assigned to you. Verify Bearer token and orderId.' });
+    }
+    const st = (order.status || '').trim();
+    if (st === 'Delivered') {
+      const items = findOrderItems.all(orderId);
+      const driverRow = findDriverById.get(driverId);
+      const storesList = loadStores();
+      const store = order.storeId ? storesList.find((s) => s.id === order.storeId) : null;
+      return res.status(200).json({
+        success: true,
+        message: 'Order was already delivered',
+        data: { order: orderToDriverApi(order, items, driverRow, store) },
+      });
+    }
+    if (st !== 'On the way') {
+      return res.status(400).json({
+        success: false,
+        message: 'Order must be On the way before marking delivered. Accept the order first.',
+      });
+    }
     updateOrderStatus.run('Delivered', orderId);
     emitOrderStatus(orderId, 'Delivered');
     fcm.sendToUserByPhone(db, order.phoneNumber, 'Order delivered', `Order #${orderId} has been delivered. Thank you!`, null, { orderId: String(orderId), status: 'Delivered', type: 'order_status' }).catch(() => {});
@@ -487,9 +539,23 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     const store = updated.storeId ? storesList.find((s) => s.id === updated.storeId) : null;
     return res.status(200).json({
       success: true,
-      message: 'Order completed successfully',
+      message: 'Order marked as delivered successfully',
       data: { order: orderToDriverApi(updated, items, driverRow, store) },
     });
+  }
+
+  // POST /api/driver/orders/:orderId/complete — Bearer token identifies driver; orderId in URL
+  app.post('/api/driver/orders/:orderId/complete', driverAuth, (req, res) => {
+    const orderId = parseInt(req.params.orderId, 10);
+    return completeStoreOrderAsDriver(req, orderId, req.driver.id, res);
+  });
+
+  // POST /api/driver/orders/complete — body: { orderId } + Bearer
+  app.post('/api/driver/orders/complete', driverAuth, (req, res) => {
+    const { orderId: bodyOrderId, driverId: bodyDriverId } = req.body || {};
+    const orderId = parseInt(bodyOrderId || req.body?.orderId, 10);
+    const driverId = bodyDriverId != null ? parseInt(bodyDriverId, 10) : req.driver.id;
+    return completeStoreOrderAsDriver(req, orderId, driverId, res);
   });
 
   // ——— Arheb Box (driver list assigned requests and accept) ———
@@ -497,38 +563,11 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     const driverId = req.driver.id;
     let rows = [];
     try {
-      rows = db.prepare('SELECT id, phoneNumber, userName, pickup, dropoff, notes, status, driverId, driverName, receiverPhone, receiverName, createdAt FROM arheb_box_requests WHERE driverId = ? ORDER BY createdAt DESC').all(driverId);
+      rows = db.prepare('SELECT * FROM arheb_box_requests WHERE driverId = ? ORDER BY createdAt DESC').all(driverId);
     } catch (e) {
       if (!e.message || !e.message.includes('no such table')) throw e;
     }
-    const buildMapsUrl = (loc) => {
-      if (!loc) return null;
-      if (typeof loc.latitude === 'number' && typeof loc.longitude === 'number') {
-        return `https://www.google.com/maps?q=${loc.latitude},${loc.longitude}`;
-      }
-      if (loc.address) {
-        return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc.address)}`;
-      }
-      return null;
-    };
-    const requests = rows.map((r) => {
-      const pickupObj = (() => { try { return JSON.parse(r.pickup); } catch (e) { return {}; } })();
-      const dropoffObj = (() => { try { return JSON.parse(r.dropoff); } catch (e) { return {}; } })();
-      return {
-        id: r.id,
-        senderPhone: r.phoneNumber,
-        senderName: r.userName,
-        receiverPhone: r.receiverPhone || null,
-        receiverName: r.receiverName || null,
-        pickup: { ...pickupObj, mapsUrl: buildMapsUrl(pickupObj) },
-        dropoff: { ...dropoffObj, mapsUrl: buildMapsUrl(dropoffObj) },
-        notes: r.notes,
-        status: r.status,
-        driverId: r.driverId,
-        driverName: r.driverName,
-        createdAt: r.createdAt,
-      };
-    });
+    const requests = rows.map((r) => enrichArhebBoxRow(r, db));
     return res.status(200).json({ success: true, data: { requests } });
   });
 
@@ -538,7 +577,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     const driverId = req.driver.id;
     let row;
     try {
-      row = db.prepare('SELECT id, phoneNumber, userName, pickup, dropoff, notes, status, fcmToken, receiverPhone, receiverName, driverId, driverName, createdAt FROM arheb_box_requests WHERE id = ?').get(requestId);
+      row = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
     } catch (e) {
       if (e.message && e.message.includes('no such table')) return res.status(404).json({ success: false, message: 'Request not found' });
       throw e;
@@ -550,26 +589,60 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     db.prepare('UPDATE arheb_box_requests SET status = ? WHERE id = ?').run('in_progress', requestId);
     fcm.sendToToken(row.fcmToken, 'Arheb Box accepted', `A driver has accepted your request #${requestId}.`, null, { type: 'arheb_box_status', requestId: String(requestId), status: 'in_progress' }).catch(() => {});
     if (!row.fcmToken) fcm.sendToUserByPhone(db, row.phoneNumber, 'Arheb Box accepted', `A driver has accepted your request #${requestId}.`, null, { type: 'arheb_box_status', requestId: String(requestId), status: 'in_progress' }).catch(() => {});
-    const updated = db.prepare('SELECT id, phoneNumber, userName, pickup, dropoff, notes, status, driverId, driverName, receiverPhone, receiverName, createdAt FROM arheb_box_requests WHERE id = ?').get(requestId);
+    const updated = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
     return res.status(200).json({
       success: true,
       message: 'Arheb Box request accepted',
       data: {
-        request: {
-          id: updated.id,
-          senderPhone: updated.phoneNumber,
-          senderName: updated.userName,
-          receiverPhone: updated.receiverPhone || null,
-          receiverName: updated.receiverName || null,
-          pickup: (() => { try { return JSON.parse(updated.pickup); } catch (e) { return {}; } })(),
-          dropoff: (() => { try { return JSON.parse(updated.dropoff); } catch (e) { return {}; } })(),
-          notes: updated.notes,
-          status: updated.status,
-          driverId: updated.driverId,
-          driverName: updated.driverName,
-          createdAt: updated.createdAt,
-        },
+        request: enrichArhebBoxRow(updated, db),
       },
+    });
+  });
+
+  // POST /api/driver/arheb-box/:id/complete — Bearer + request id; only assigned driver, status in_progress → delivered
+  app.post('/api/driver/arheb-box/:id/complete', driverAuth, (req, res) => {
+    const requestId = parseInt(req.params.id, 10);
+    const driverId = req.driver.id;
+    if (isNaN(requestId)) return res.status(400).json({ success: false, message: 'Invalid request id' });
+    let row;
+    try {
+      row = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
+    } catch (e) {
+      if (e.message && e.message.includes('no such table')) return res.status(404).json({ success: false, message: 'Request not found' });
+      throw e;
+    }
+    if (!row) return res.status(404).json({ success: false, message: 'Arheb Box request not found' });
+    if (row.driverId !== driverId) {
+      return res.status(403).json({
+        success: false,
+        message: 'This request is not assigned to you. Verify Bearer token and request id.',
+      });
+    }
+    const statusLower = (row.status || '').toLowerCase();
+    if (statusLower === 'delivered') {
+      const updated = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
+      return res.status(200).json({
+        success: true,
+        message: 'Arheb Box delivery was already marked complete',
+        data: { request: enrichArhebBoxRow(updated, db) },
+      });
+    }
+    if (statusLower !== 'in_progress') {
+      return res.status(400).json({
+        success: false,
+        message: 'Arheb Box request must be in progress (accept the assignment first) before completing.',
+      });
+    }
+    db.prepare('UPDATE arheb_box_requests SET status = ? WHERE id = ?').run('delivered', requestId);
+    fcm.sendToToken(row.fcmToken, 'Arheb Box delivered', `Your request #${requestId} has been delivered.`, null, { type: 'arheb_box_status', requestId: String(requestId), status: 'delivered' }).catch(() => {});
+    if (!row.fcmToken) {
+      fcm.sendToUserByPhone(db, row.phoneNumber, 'Arheb Box delivered', `Your request #${requestId} has been delivered.`, null, { type: 'arheb_box_status', requestId: String(requestId), status: 'delivered' }).catch(() => {});
+    }
+    const updated = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
+    return res.status(200).json({
+      success: true,
+      message: 'Arheb Box marked as delivered successfully',
+      data: { request: enrichArhebBoxRow(updated, db) },
     });
   });
 };

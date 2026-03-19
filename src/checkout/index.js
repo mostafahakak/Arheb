@@ -1,8 +1,60 @@
 const fs = require('fs');
 const path = require('path');
+const enrichArhebBoxRow = require('../arhebBox').enrichArhebBoxRow;
 
 module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   const { getJsonPath } = require('../config/jsonPaths');
+  const SERVICE_FEE_JOD = 0.65;
+  const FEES_TAX_RATE = 0.16;
+
+  function round3(n) {
+    return Math.round((Number(n) + Number.EPSILON) * 1000) / 1000;
+  }
+
+  function round2(n) {
+    return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+  }
+
+  function safeNumber(v, fallback = 0) {
+    const n = typeof v === 'number' ? v : Number(v);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  // Store orders: min 1 JOD + 0.10 JOD/kg, capped at max 3 JOD
+  function calcStoreDeliveryFeeJod(weightKg) {
+    const w = Math.max(0, safeNumber(weightKg, 0));
+    const fee = 1 + 0.1 * w;
+    return round2(Math.min(3, fee));
+  }
+
+  function calcFeesTaxJod(deliveryFeeJod, serviceFeeJod) {
+    return round2(FEES_TAX_RATE * (safeNumber(deliveryFeeJod, 0) + safeNumber(serviceFeeJod, 0)));
+  }
+
+  function buildOrderSummary(orderValueJod, deliveryFeeJod, serviceFeeJod) {
+    const taxJod = calcFeesTaxJod(deliveryFeeJod, serviceFeeJod);
+    return {
+      currency: 'JOD',
+      orderValue: round2(safeNumber(orderValueJod, 0)),
+      deliveryFee: round2(safeNumber(deliveryFeeJod, 0)),
+      serviceFee: round2(safeNumber(serviceFeeJod, 0)),
+      feesTaxRate: FEES_TAX_RATE,
+      feesTax: taxJod,
+      total: round2(safeNumber(orderValueJod, 0) + safeNumber(deliveryFeeJod, 0) + safeNumber(serviceFeeJod, 0) + taxJod),
+    };
+  }
+
+  function buildInvoice(deliveryFeeJod, serviceFeeJod) {
+    const taxJod = calcFeesTaxJod(deliveryFeeJod, serviceFeeJod);
+    return {
+      currency: 'JOD',
+      deliveryFee: round2(safeNumber(deliveryFeeJod, 0)),
+      serviceFee: round2(safeNumber(serviceFeeJod, 0)),
+      feesTaxRate: FEES_TAX_RATE,
+      feesTax: taxJod,
+      total: round2(safeNumber(deliveryFeeJod, 0) + safeNumber(serviceFeeJod, 0) + taxJod),
+    };
+  }
   // Helper function to get storeId from first product if not provided
   const getStoreIdFromProduct = (productId) => {
     try {
@@ -39,6 +91,9 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       addressLat REAL,
       discount REAL DEFAULT 0,
       deliveryFee REAL DEFAULT 0,
+      serviceFee REAL DEFAULT 0.65,
+      feesTax REAL DEFAULT 0,
+      weightKg REAL DEFAULT 0,
       totalAmount REAL NOT NULL,
       status TEXT DEFAULT 'Waiting confirmation',
       paymentType TEXT NOT NULL,
@@ -70,6 +125,9 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   } catch (e) {
     // Column already exists
   }
+  try { db.exec(`ALTER TABLE orders ADD COLUMN serviceFee REAL DEFAULT 0.65`); } catch (e) { /* exists */ }
+  try { db.exec(`ALTER TABLE orders ADD COLUMN feesTax REAL DEFAULT 0`); } catch (e) { /* exists */ }
+  try { db.exec(`ALTER TABLE orders ADD COLUMN weightKg REAL DEFAULT 0`); } catch (e) { /* exists */ }
   try {
     db.exec(`ALTER TABLE orders ADD COLUMN promoCode TEXT`);
   } catch (e) {
@@ -126,7 +184,8 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         nearby,
         notes,
         paymentVerificationImage,
-        fcmToken
+        fcmToken,
+        weightKg
       } = req.body;
 
       // Validation
@@ -227,12 +286,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         }
       }
 
-      if (deliveryFee === undefined || deliveryFee === null || typeof deliveryFee !== 'number' || isNaN(deliveryFee)) {
-        return res.status(400).json({
-          success: false,
-          message: 'deliveryFee is required and must be a valid number'
-        });
-      }
+      // deliveryFee is computed on server (weight-based). We accept client deliveryFee for backward compatibility but ignore it.
 
       if (typeof totalAmount !== 'number' || isNaN(totalAmount)) {
         return res.status(400).json({
@@ -272,6 +326,9 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
             addressLat,
             discount,
             deliveryFee,
+            serviceFee,
+            feesTax,
+            weightKg,
             totalAmount,
             status,
             paymentType,
@@ -290,6 +347,9 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
             @addressLat,
             @discount,
             @deliveryFee,
+            @serviceFee,
+            @feesTax,
+            @weightKg,
             @totalAmount,
             @status,
             @paymentType,
@@ -311,6 +371,9 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
           addressLat: orderData.addressLat || null,
           discount: orderData.discount || 0,
           deliveryFee: orderData.deliveryFee || 0,
+          serviceFee: orderData.serviceFee != null ? orderData.serviceFee : SERVICE_FEE_JOD,
+          feesTax: orderData.feesTax || 0,
+          weightKg: orderData.weightKg || 0,
           totalAmount: orderData.totalAmount,
           status: orderData.status,
           paymentType: orderData.paymentType,
@@ -357,6 +420,11 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       const initialStatus =
         lowerPaymentType === 'cliq' ? 'Waiting cliq confirmation' : 'Waiting confirmation';
 
+      const weightKgNum = Math.max(0, safeNumber(weightKg, 0));
+      const computedDeliveryFee = calcStoreDeliveryFeeJod(weightKgNum);
+      const computedServiceFee = SERVICE_FEE_JOD;
+      const computedFeesTax = calcFeesTaxJod(computedDeliveryFee, computedServiceFee);
+
       const orderId = createOrder({
         userId,
         phoneNumber,
@@ -365,7 +433,10 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         addressLong: addressLong || null,
         addressLat: addressLat || null,
         discount: finalDiscount,
-        deliveryFee: deliveryFee || 0,
+        deliveryFee: computedDeliveryFee,
+        serviceFee: computedServiceFee,
+        feesTax: computedFeesTax,
+        weightKg: round3(weightKgNum),
         totalAmount,
         status: initialStatus,
         paymentType: normalizedPaymentType,
@@ -395,7 +466,12 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
             addressLat: order.addressLat,
             discount: order.discount,
             deliveryFee: order.deliveryFee,
+            serviceFee: order.serviceFee != null ? order.serviceFee : SERVICE_FEE_JOD,
+            feesTax: order.feesTax != null ? order.feesTax : calcFeesTaxJod(order.deliveryFee, order.serviceFee ?? SERVICE_FEE_JOD),
+            weightKg: order.weightKg != null ? order.weightKg : round3(weightKgNum),
             totalAmount: order.totalAmount,
+            orderSummary: buildOrderSummary(order.totalAmount, order.deliveryFee, order.serviceFee ?? SERVICE_FEE_JOD),
+            invoice: buildInvoice(order.deliveryFee, order.serviceFee ?? SERVICE_FEE_JOD),
             status: order.status,
             paymentType: order.paymentType,
             promoCode: order.promoCode || null,
@@ -431,6 +507,8 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       // All orders for this user, including every status (Waiting confirmation, Preparing, On the way, Delivered, Cancelled, etc.)
       const ordersWithItems = orders.map(order => {
         const items = findOrderItems.all(order.id);
+        const serviceFee = order.serviceFee != null ? Number(order.serviceFee) : SERVICE_FEE_JOD;
+        const feesTax = order.feesTax != null ? Number(order.feesTax) : calcFeesTaxJod(order.deliveryFee, serviceFee);
         return {
           id: order.id,
           userId: order.userId,
@@ -441,7 +519,12 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
           addressLat: order.addressLat,
           discount: order.discount,
           deliveryFee: order.deliveryFee,
+          serviceFee,
+          feesTax,
+          weightKg: order.weightKg != null ? Number(order.weightKg) : 0,
           totalAmount: order.totalAmount,
+          orderSummary: buildOrderSummary(order.totalAmount, order.deliveryFee, serviceFee),
+          invoice: buildInvoice(order.deliveryFee, serviceFee),
           status: order.status,
           storeId: order.storeId ?? null,
           driverId: order.driverId ?? null,
@@ -462,12 +545,24 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         };
       });
 
+      let arhebBoxRequests = [];
+      try {
+        const boxRows = db
+          .prepare('SELECT * FROM arheb_box_requests WHERE phoneNumber = ? ORDER BY createdAt DESC, id DESC')
+          .all(userId);
+        arhebBoxRequests = boxRows.map((r) => enrichArhebBoxRow(r, db));
+      } catch (e) {
+        if (!e.message || !e.message.includes('no such table')) throw e;
+      }
+
       return res.status(200).json({
         success: true,
         message: 'Orders retrieved successfully',
         data: {
           orders: ordersWithItems,
-          count: ordersWithItems.length
+          count: ordersWithItems.length,
+          arhebBoxRequests,
+          arhebBoxCount: arhebBoxRequests.length,
         },
         timestamp: new Date().toISOString()
       });
@@ -513,6 +608,8 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       // Fetch order items
       const findOrderItems = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
       const items = findOrderItems.all(orderId);
+      const serviceFee = order.serviceFee != null ? Number(order.serviceFee) : SERVICE_FEE_JOD;
+      const feesTax = order.feesTax != null ? Number(order.feesTax) : calcFeesTaxJod(order.deliveryFee, serviceFee);
 
       return res.status(200).json({
         success: true,
@@ -528,7 +625,12 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
             addressLat: order.addressLat,
             discount: order.discount,
             deliveryFee: order.deliveryFee,
+            serviceFee,
+            feesTax,
+            weightKg: order.weightKg != null ? Number(order.weightKg) : 0,
             totalAmount: order.totalAmount,
+            orderSummary: buildOrderSummary(order.totalAmount, order.deliveryFee, serviceFee),
+            invoice: buildInvoice(order.deliveryFee, serviceFee),
             status: order.status,
             storeId: order.storeId ?? null,
             driverId: order.driverId ?? null,
@@ -628,6 +730,8 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       // Fetch order items
       const findOrderItems = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
       const items = findOrderItems.all(orderId);
+      const serviceFee = updatedOrder.serviceFee != null ? Number(updatedOrder.serviceFee) : SERVICE_FEE_JOD;
+      const feesTax = updatedOrder.feesTax != null ? Number(updatedOrder.feesTax) : calcFeesTaxJod(updatedOrder.deliveryFee, serviceFee);
 
       return res.status(200).json({
         success: true,
@@ -643,7 +747,12 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
             addressLat: updatedOrder.addressLat,
             discount: updatedOrder.discount,
             deliveryFee: updatedOrder.deliveryFee,
+            serviceFee,
+            feesTax,
+            weightKg: updatedOrder.weightKg != null ? Number(updatedOrder.weightKg) : 0,
             totalAmount: updatedOrder.totalAmount,
+            orderSummary: buildOrderSummary(updatedOrder.totalAmount, updatedOrder.deliveryFee, serviceFee),
+            invoice: buildInvoice(updatedOrder.deliveryFee, serviceFee),
             status: updatedOrder.status,
             paymentType: updatedOrder.paymentType,
             promoCode: updatedOrder.promoCode || null,
