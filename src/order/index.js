@@ -25,7 +25,7 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
   function verifyOrderOwnership(orderId, userId) {
     const order = findOrderById.get(orderId);
     if (!order) return false;
-    return order.userId === userId || order.phoneNumber === userId;
+    return order.userId === userId;
   }
 
   // WebSocket connection middleware for authentication
@@ -232,7 +232,7 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
   app.get('/api/orders/:orderId', authenticateRequest, (req, res) => {
     try {
       const orderId = parseInt(req.params.orderId);
-      const userId = req.user.phoneNumber;
+      const userId = req.user.userId || req.user.phoneNumber;
       if (isNaN(orderId)) {
         return res.status(400).json({ success: false, message: 'Invalid order ID' });
       }
@@ -240,7 +240,7 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
       if (!order) {
         return res.status(404).json({ success: false, message: 'Order not found' });
       }
-      if (order.userId !== userId && order.phoneNumber !== userId) {
+      if (order.userId !== userId) {
         return res.status(403).json({ success: false, message: 'Access denied' });
       }
       const findOrderItems = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
@@ -324,7 +324,7 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
   app.get('/api/orders/:orderId/tracking', authenticateRequest, (req, res) => {
     try {
       const orderId = parseInt(req.params.orderId);
-      const userId = req.user.phoneNumber;
+      const userId = req.user.userId || req.user.phoneNumber;
 
       if (isNaN(orderId)) {
         return res.status(400).json({

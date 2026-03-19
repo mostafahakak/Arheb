@@ -119,6 +119,8 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
       rating REAL DEFAULT 5,
       isVerified INTEGER DEFAULT 0,
       isBlocked INTEGER DEFAULT 0,
+      deleted INTEGER DEFAULT 0,
+      deletedAt TEXT,
       createdAt TEXT DEFAULT CURRENT_TIMESTAMP
     )
   `);
@@ -142,6 +144,8 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
   } catch (e) {
     // column exists
   }
+  try { db.exec(`ALTER TABLE drivers ADD COLUMN deleted INTEGER DEFAULT 0`); } catch (e) { /* exists */ }
+  try { db.exec(`ALTER TABLE drivers ADD COLUMN deletedAt TEXT`); } catch (e) { /* exists */ }
 
   const findDriverById = db.prepare('SELECT * FROM drivers WHERE id = ?');
   const findDriverByMobile = db.prepare('SELECT * FROM drivers WHERE mobile = ?');
@@ -172,6 +176,9 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
       }
       const driver = findDriverById.get(payload.driverId);
       if (!driver) {
+        return res.status(401).json({ success: false, message: 'Driver not found' });
+      }
+      if (driver.deleted) {
         return res.status(401).json({ success: false, message: 'Driver not found' });
       }
       if (driver.isBlocked) {
@@ -209,7 +216,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
       return res.status(400).json({ success: false, message: 'mobile and otpCode are required' });
     }
     const driver = findDriverByMobile.get(String(mobile).trim());
-    if (!driver) {
+    if (!driver || driver.deleted) {
       return res.status(401).json({ success: false, message: 'Driver not found. Contact admin to be added.' });
     }
     if (driver.isBlocked) {
@@ -326,6 +333,16 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
       message: 'FCM token updated',
       data: { updated: true },
     });
+  });
+
+  // DELETE /api/driver/account — soft delete driver account (Bearer token)
+  app.delete('/api/driver/account', driverAuth, (req, res) => {
+    try {
+      db.prepare(`UPDATE drivers SET deleted = 1, deletedAt = CURRENT_TIMESTAMP, fcmToken = NULL WHERE id = ?`).run(req.driver.id);
+      return res.status(200).json({ success: true, message: 'Account deleted (soft)' });
+    } catch (e) {
+      return res.status(500).json({ success: false, message: 'Internal server error' });
+    }
   });
 
   // GET /api/driver/stats

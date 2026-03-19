@@ -151,7 +151,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
 
   const findUserByPhone = db.prepare('SELECT * FROM users WHERE phoneNumber = ?');
   const findOrderById = db.prepare('SELECT * FROM orders WHERE id = ?');
-  const findOrdersByUserId = db.prepare('SELECT * FROM orders WHERE userId = ? OR phoneNumber = ? ORDER BY createdAt DESC');
+  const findOrdersByUserId = db.prepare('SELECT * FROM orders WHERE userId = ? ORDER BY createdAt DESC');
   
   // Promo code queries
   const findPromoCodeByName = db.prepare('SELECT * FROM promo_codes WHERE name = ?');
@@ -167,7 +167,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   // Create order
   app.post('/api/checkout', authenticateRequest, (req, res) => {
     try {
-      const userId = req.user.phoneNumber; // Use phoneNumber as userId
+      const userId = req.user.userId || req.user.phoneNumber;
       const {
         items,
         name,
@@ -496,10 +496,10 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   // Get all orders for the authenticated user
   app.get('/api/checkout', authenticateRequest, (req, res) => {
     try {
-      const userId = req.user.phoneNumber;
+      const userId = req.user.userId || req.user.phoneNumber;
 
       // Fetch all orders for this user
-      const orders = findOrdersByUserId.all(userId, userId);
+      const orders = findOrdersByUserId.all(userId);
 
       // Fetch items for each order
       const findOrderItems = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
