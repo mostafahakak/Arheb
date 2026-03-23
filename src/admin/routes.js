@@ -23,6 +23,8 @@ const { getJsonPath } = require('../config/jsonPaths');
 const fcm = require('../fcm');
 const { getActiveFromListWithDistance } = require('../driverPresence');
 const enrichArhebBoxRow = require('../arhebBox').enrichArhebBoxRow;
+const { mapOrderItemsRows, formatAddOnsSummary } = require('../utils/orderItemApi');
+const { sanitizeAddOnGroups } = require('../utils/productAddOns');
 
 const storesResponsePath = getJsonPath('stores_listing_response.json');
 const productsResponsePath = getJsonPath('products_listing_response.json');
@@ -813,6 +815,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
         numberOfReviews: store.numberOfReviews,
         isFavorite: store.isFavorite,
       },
+      addOnGroups: sanitizeAddOnGroups(body.addOnGroups),
     };
   }
 
@@ -1100,14 +1103,91 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       'subCategory', 'subCategoryAr', 'subCategoryEn',
       'description', 'descriptionAr', 'descriptionEn', 'stock', 'isAvailable',
       'ingredients', 'ingredientsAr', 'ingredientsEn', 'allergens', 'allergensAr', 'allergensEn',
-      'nutritionalInfo', 'preparationTime',
+      'nutritionalInfo', 'preparationTime', 'addOnGroups',
     ];
     const body = req.body || {};
     for (const key of allowed) {
-      if (body[key] !== undefined) products[idx][key] = body[key];
+      if (body[key] !== undefined) {
+        if (key === 'addOnGroups') {
+          products[idx][key] = sanitizeAddOnGroups(body[key]);
+        } else {
+          products[idx][key] = body[key];
+        }
+      }
     }
     saveProducts(products);
     return res.status(200).json({ success: true, data: { product: products[idx] } });
+  });
+
+  // Bulk apply same discount (%) to multiple products — same field as single-product discount
+  app.post('/api/admin/stores/:storeId/products/bulk-discount', auth, requireStoreAccess((req) => req.params.storeId), (req, res) => {
+    const { storeId } = req.params;
+    const stores = loadStores();
+    const store = stores.find((s) => s.id === storeId);
+    if (store && store.blocked === true && req.admin.role === ROLES.STORE_ADMIN) {
+      return res.status(403).json({ success: false, message: 'Store is blocked. Only Admin or SuperAdmin can edit products.' });
+    }
+    const { productIds, discount } = req.body || {};
+    if (!Array.isArray(productIds) || productIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'productIds array is required' });
+    }
+    let disc = discount;
+    if (disc === undefined || disc === null || disc === '') {
+      return res.status(400).json({ success: false, message: 'discount is required (number or string e.g. 10 or 10%)' });
+    }
+    if (typeof disc === 'number' && (isNaN(disc) || disc < 0 || disc > 100)) {
+      return res.status(400).json({ success: false, message: 'discount must be between 0 and 100' });
+    }
+    if (typeof disc === 'string') {
+      const n = parseFloat(String(disc).replace('%', '').trim());
+      if (isNaN(n) || n < 0 || n > 100) {
+        return res.status(400).json({ success: false, message: 'Invalid discount value' });
+      }
+      disc = n;
+    }
+    const products = loadProducts();
+    const idSet = new Set(productIds.map((id) => String(id)));
+    let updated = 0;
+    for (let i = 0; i < products.length; i++) {
+      const p = products[i];
+      if (String(p.store?.id) !== String(storeId)) continue;
+      if (!idSet.has(String(p.id))) continue;
+      products[i] = { ...p, discount: disc };
+      updated += 1;
+    }
+    if (updated === 0) {
+      return res.status(404).json({ success: false, message: 'No matching products in this store' });
+    }
+    saveProducts(products);
+    return res.status(200).json({ success: true, data: { updated, discount: disc } });
+  });
+
+  app.post('/api/admin/stores/:storeId/products/bulk-remove-discount', auth, requireStoreAccess((req) => req.params.storeId), (req, res) => {
+    const { storeId } = req.params;
+    const stores = loadStores();
+    const store = stores.find((s) => s.id === storeId);
+    if (store && store.blocked === true && req.admin.role === ROLES.STORE_ADMIN) {
+      return res.status(403).json({ success: false, message: 'Store is blocked. Only Admin or SuperAdmin can edit products.' });
+    }
+    const { productIds } = req.body || {};
+    if (!Array.isArray(productIds) || productIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'productIds array is required' });
+    }
+    const products = loadProducts();
+    const idSet = new Set(productIds.map((id) => String(id)));
+    let updated = 0;
+    for (let i = 0; i < products.length; i++) {
+      const p = products[i];
+      if (String(p.store?.id) !== String(storeId)) continue;
+      if (!idSet.has(String(p.id))) continue;
+      products[i] = { ...p, discount: null };
+      updated += 1;
+    }
+    if (updated === 0) {
+      return res.status(404).json({ success: false, message: 'No matching products in this store' });
+    }
+    saveProducts(products);
+    return res.status(200).json({ success: true, data: { updated } });
   });
 
   app.delete('/api/admin/stores/:storeId/products/:productId', auth, requireStoreAccess((req) => req.params.storeId), (req, res) => {
@@ -1169,7 +1249,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
   });
 
   // ——— Orders (sorted newest first; filter by date range, status, store, name, orderType, paymentType) ———
-  app.get('/api/admin/orders', auth, (req, res) => {
+  function listAdminOrdersWithDetails(req) {
     const { dateFrom, dateTo, status, storeId, storeIds, storeName, name, orderType, paymentType } = req.query;
     const conditions = [];
     const params = [];
@@ -1236,17 +1316,54 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const storesList = loadStores();
     const storeById = Object.fromEntries(storesList.map((s) => [s.id, s]));
 
-    const withItems = orders.map((order) => {
+    return orders.map((order) => {
       const items = findOrderItems.all(order.id);
       const store = order.storeId ? storeById[order.storeId] : null;
       return {
         ...order,
         storeName: store ? (store.nameEn || store.name || store.nameAr) : (order.storeId || '-'),
-        items: items.map((i) => ({ id: i.productId, name: i.productName, price: i.price, quantity: i.quantity })),
+        items: mapOrderItemsRows(items),
       };
     });
+  }
 
+  app.get('/api/admin/orders', auth, (req, res) => {
+    const withItems = listAdminOrdersWithDetails(req);
     return res.status(200).json({ success: true, data: { orders: withItems } });
+  });
+
+  app.get('/api/admin/orders/export', auth, (req, res) => {
+    try {
+      const withItems = listAdminOrdersWithDetails(req);
+      const rows = withItems.map((o) => ({
+        id: o.id,
+        createdAt: o.createdAt,
+        status: o.status,
+        storeName: o.storeName,
+        name: o.name,
+        phoneNumber: o.phoneNumber,
+        totalAmount: o.totalAmount,
+        deliveryFee: o.deliveryFee ?? '',
+        paymentType: o.paymentType,
+        driverName: o.driverName || '',
+        itemsSummary: (o.items || [])
+          .map((i) => {
+            const add = i.selectedAddOns ? formatAddOnsSummary(i.selectedAddOns) : '';
+            return `${i.name} x${i.quantity}` + (add ? ` [${add}]` : '');
+          })
+          .join('; '),
+      }));
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.json_to_sheet(rows);
+      XLSX.utils.book_append_sheet(wb, ws, 'Orders');
+      const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', 'attachment; filename="orders-export.xlsx"');
+      return res.send(buf);
+    } catch (e) {
+      console.error(e);
+      return res.status(500).json({ success: false, message: 'Export failed' });
+    }
   });
 
   // ——— Get single order (full details for admin) ———
@@ -1268,7 +1385,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
         order: {
           ...order,
           storeName,
-          items: items.map((i) => ({ id: i.productId, name: i.productName, price: i.price, quantity: i.quantity })),
+          items: mapOrderItemsRows(items),
         },
       },
     });
@@ -1296,7 +1413,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       data: {
         order: {
           ...updated,
-          items: items.map((i) => ({ id: i.productId, name: i.productName, price: i.price, quantity: i.quantity })),
+          items: mapOrderItemsRows(items),
         },
       },
     });
@@ -1324,7 +1441,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       data: {
         order: {
           ...updated,
-          items: items.map((i) => ({ id: i.productId, name: i.productName, price: i.price, quantity: i.quantity })),
+          items: mapOrderItemsRows(items),
         },
       },
     });

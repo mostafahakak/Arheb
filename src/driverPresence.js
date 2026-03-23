@@ -135,6 +135,14 @@ module.exports = function attachDriverPresence(io, db, JWT_SECRET) {
         cur.longitude = lon;
         cur.lastSeen = new Date().toISOString();
       }
+      try {
+        const { broadcastDriverPresenceLocation } = require('./order');
+        if (typeof broadcastDriverPresenceLocation === 'function') {
+          broadcastDriverPresenceLocation(io, db, driverId, lat, lon);
+        }
+      } catch (e) {
+        /* ignore */
+      }
       socket.emit('location_ack', { success: true });
     });
 

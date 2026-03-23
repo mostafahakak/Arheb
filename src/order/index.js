@@ -1,10 +1,45 @@
 const jwt = require('jsonwebtoken');
 const { verifyAdminToken } = require('../admin/auth');
 const { setOrderTrackingIo, emitOrderEvent } = require('./trackingEmitter');
+const { mapOrderItemsRows } = require('../utils/orderItemApi');
 
 // Store active order tracking sessions
 // Format: { orderId: { driverSocket, customerSocket, adminSockets: [], lastLocation } }
 const activeTrackings = new Map();
+
+/**
+ * When a driver sends location on /driver-presence (not the order socket), push updates to all
+ * active "On the way" orders for that driver so customer/admin maps stay live.
+ */
+function broadcastDriverPresenceLocation(io, db, driverId, latitude, longitude) {
+  if (typeof latitude !== 'number' || typeof longitude !== 'number' || isNaN(latitude) || isNaN(longitude)) return;
+  let rows;
+  try {
+    rows = db.prepare("SELECT id FROM orders WHERE driverId = ? AND status = 'On the way'").all(driverId);
+  } catch (e) {
+    return;
+  }
+  const ts = new Date().toISOString();
+  for (const row of rows) {
+    const orderId = row.id;
+    if (!activeTrackings.has(orderId)) {
+      activeTrackings.set(orderId, {
+        customerSocket: null,
+        driverSocket: null,
+        adminSockets: [],
+        lastLocation: null,
+      });
+    }
+    const t = activeTrackings.get(orderId);
+    t.lastLocation = { longitude, latitude, timestamp: ts };
+    io.to(`order:${orderId}`).emit('location_update', {
+      orderId,
+      longitude,
+      latitude,
+      timestamp: ts,
+    });
+  }
+}
 
 // Uses the same db and orders table as checkout (creates orders) and admin (lists/updates orders).
 module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateRequest, JWT_SECRET) {
@@ -67,9 +102,9 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
       }
       socket.role = 'driver';
     } else {
-      // Check customer ownership
-      const userId = user.phoneNumber;
-      if (order.userId === userId || order.phoneNumber === userId) {
+      // Check customer ownership (JWT may include userId for new accounts; phoneNumber always present)
+      const userId = user.userId || user.phoneNumber;
+      if (order.userId === userId || order.phoneNumber === user.phoneNumber) {
         socket.role = 'customer';
       } else {
         return next(new Error('Unauthorized: You are not authorized to track this order'));
@@ -82,9 +117,9 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
   // WebSocket connection handler
   io.on('connection', (socket) => {
     const { orderId, user, role } = socket;
-    const userId = user.phoneNumber || user.adminId || user.driverId;
+    const logId = role === 'customer' ? (user.userId || user.phoneNumber) : user.driverId || user.phoneNumber || user.adminId;
 
-    console.log(`WebSocket connection: Order ${orderId}, Role ${role}, User ${userId}`);
+    console.log(`WebSocket connection: Order ${orderId}, Role ${role}, User ${logId}`);
 
     const order = findOrderById.get(orderId);
     if (!order) {
@@ -304,12 +339,7 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
             notes: order.notes,
             paymentVerificationImage: order.paymentVerificationImage || null,
             createdAt: order.createdAt,
-            items: items.map((item) => ({
-              id: item.productId,
-              name: item.productName,
-              price: item.price,
-              quantity: item.quantity,
-            })),
+            items: mapOrderItemsRows(items),
           },
         },
         timestamp: new Date().toISOString(),
@@ -391,3 +421,4 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
 
 module.exports.emitOrderEvent = emitOrderEvent;
 module.exports.getOrderTrackingState = (orderId) => activeTrackings.get(orderId);
+module.exports.broadcastDriverPresenceLocation = broadcastDriverPresenceLocation;

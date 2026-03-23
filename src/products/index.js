@@ -20,13 +20,15 @@ function hasDiscount(p) {
   return !Number.isNaN(n) && n > 0;
 }
 
-// Ensure client always receives discount and originalPrice on each product
+// Ensure client always receives discount and originalPrice; strip cart-only selectedAddOns from catalog payloads
 function toClientProduct(p) {
   if (!p) return p;
+  const { selectedAddOns: _omitSelected, ...rest } = p;
   return {
-    ...p,
+    ...rest,
     discount: p.discount ?? null,
     originalPrice: p.originalPrice ?? p.price ?? null,
+    addOnGroups: Array.isArray(p.addOnGroups) ? p.addOnGroups : [],
   };
 }
 

@@ -1,6 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 const enrichArhebBoxRow = require('../arhebBox').enrichArhebBoxRow;
+const { mapOrderItemsRows } = require('../utils/orderItemApi');
+const { validateSelectedAddOnsAgainstProduct } = require('../utils/productAddOns');
 
 module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   const { getJsonPath } = require('../config/jsonPaths');
@@ -57,18 +59,22 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   }
   // Helper function to get storeId from first product if not provided
   const getStoreIdFromProduct = (productId) => {
+    const p = findProductById(productId);
+    return p?.store?.id || null;
+  };
+
+  function findProductById(productId) {
     try {
       const productsResponsePath = getJsonPath('products_listing_response.json');
       const raw = fs.readFileSync(productsResponsePath, 'utf-8');
       const productsResponse = JSON.parse(raw);
       const products = productsResponse?.data?.products ?? [];
-      const product = products.find(p => p.id === productId);
-      return product?.store?.id || null;
+      return products.find((p) => String(p.id) === String(productId)) || null;
     } catch (error) {
-      console.error('Failed to get storeId from product:', error);
+      console.error('Failed to load product:', error);
       return null;
     }
-  };
+  }
   // Create promo_codes table
   db.exec(`
     CREATE TABLE IF NOT EXISTS promo_codes (
@@ -148,6 +154,11 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   } catch (e) {
     // Column already exists
   }
+  try {
+    db.exec(`ALTER TABLE order_items ADD COLUMN selectedAddOns TEXT`);
+  } catch (e) {
+    // Column already exists
+  }
 
   const findUserByPhone = db.prepare('SELECT * FROM users WHERE phoneNumber = ?');
   const findOrderById = db.prepare('SELECT * FROM orders WHERE id = ?');
@@ -204,6 +215,25 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
             message: 'Each item must have id, name, price, and quantity'
           });
         }
+      }
+
+      // Validate add-ons against product JSON (addOnGroups / selectedAddOns)
+      for (const item of items) {
+        const product = findProductById(item.id);
+        if (!product) {
+          return res.status(400).json({
+            success: false,
+            message: `Product not found: ${item.id}`,
+          });
+        }
+        const v = validateSelectedAddOnsAgainstProduct(product, item.selectedAddOns);
+        if (!v.ok) {
+          return res.status(400).json({
+            success: false,
+            message: v.message || 'Invalid add-ons',
+          });
+        }
+        item._normalizedAddOns = v.normalized;
       }
 
       if (!phoneNumber) {
@@ -394,23 +424,28 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
             productId,
             productName,
             price,
-            quantity
+            quantity,
+            selectedAddOns
           ) VALUES (
             @orderId,
             @productId,
             @productName,
             @price,
-            @quantity
+            @quantity,
+            @selectedAddOns
           )
         `);
 
         for (const item of orderData.items) {
+          const addOnsObj = item._normalizedAddOns || {};
+          const addOnsStr = Object.keys(addOnsObj).length ? JSON.stringify(addOnsObj) : null;
           insertOrderItem.run({
             orderId: orderId,
             productId: item.id,
             productName: item.name,
             price: item.price,
-            quantity: item.quantity
+            quantity: item.quantity,
+            selectedAddOns: addOnsStr,
           });
         }
 
@@ -450,6 +485,8 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
 
       // Fetch the created order
       const order = findOrderById.get(orderId);
+      const findOrderItemsCreated = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
+      const itemsOut = mapOrderItemsRows(findOrderItemsCreated.all(orderId));
 
       return res.status(201).json({
         success: true,
@@ -479,10 +516,10 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
             nearby: order.nearby,
             notes: order.notes,
             createdAt: order.createdAt,
-            items: items
-          }
+            items: itemsOut,
+          },
         },
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       });
     } catch (error) {
       console.error('Checkout error:', error);
@@ -536,12 +573,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
           notes: order.notes,
           paymentVerificationImage: order.paymentVerificationImage || null,
           createdAt: order.createdAt,
-          items: items.map(item => ({
-            id: item.productId,
-            name: item.productName,
-            price: item.price,
-            quantity: item.quantity
-          }))
+          items: mapOrderItemsRows(items),
         };
       });
 
@@ -760,15 +792,10 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
             nearby: updatedOrder.nearby,
             notes: updatedOrder.notes,
             createdAt: updatedOrder.createdAt,
-            items: items.map(item => ({
-              id: item.productId,
-              name: item.productName,
-              price: item.price,
-              quantity: item.quantity
-            }))
-          }
+            items: mapOrderItemsRows(items),
+          },
         },
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       });
     } catch (error) {
       console.error('Rate order error:', error);

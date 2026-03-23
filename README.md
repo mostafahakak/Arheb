@@ -1383,6 +1383,13 @@ Returns the current tracking state and **live order status** so the customer can
 
 The Order Tracking system allows real-time tracking of orders using WebSocket connections. Drivers send location updates every 3 seconds, and customers receive these updates in real-time to track their delivery.
 
+**Two ways drivers can publish location (both update the same live map for customers/admins):**
+
+1. **Order tracking socket (default namespace)** — connect with driver JWT + `orderId`, then emit **`driver_location`** `{ longitude, latitude }`.
+2. **Driver presence only** — connect to **`/driver-presence`** and emit **`location`** `{ latitude, longitude }` (typical when the driver app is online but not joined per-order). The server forwards location to all **On the way** orders assigned to that driver, broadcasting **`location_update`** to the same `order:{orderId}` rooms.
+
+Customer JWTs include **`userId`** (and `phoneNumber`) so WebSocket auth matches `orders.userId` for tracking.
+
 ### Connection
 
 To connect to the order tracking system, you need to establish a WebSocket connection with authentication.

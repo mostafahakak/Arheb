@@ -1,0 +1,70 @@
+{
+  "_readme": "Dummy example only — shape for viewing order details AFTER completion (Delivered). Customer app: GET /api/orders/:orderId. Dashboard uses GET /api/admin/orders/:orderId (see order_details_admin_response.json pattern: same items[] + storeName + full order row).",
+  "success": true,
+  "message": "Order retrieved successfully",
+  "data": {
+    "order": {
+      "id": 1042,
+      "userId": "+962791234567",
+      "phoneNumber": "+962791234567",
+      "name": "Ahmad",
+      "addressName": "Amman, Jabal Amman, Building 12",
+      "addressLong": 35.923,
+      "addressLat": 31.953,
+      "discount": 0,
+      "deliveryFee": 1.5,
+      "serviceFee": 0.65,
+      "feesTax": 0.34,
+      "weightKg": 2.5,
+      "totalAmount": 18.75,
+      "orderSummary": {
+        "currency": "JOD",
+        "orderValue": 18.75,
+        "deliveryFee": 1.5,
+        "serviceFee": 0.65,
+        "feesTaxRate": 0.16,
+        "feesTax": 0.34,
+        "total": 21.24
+      },
+      "invoice": {
+        "currency": "JOD",
+        "deliveryFee": 1.5,
+        "serviceFee": 0.65,
+        "feesTaxRate": 0.16,
+        "feesTax": 0.34,
+        "total": 2.49
+      },
+      "status": "Delivered",
+      "storeId": "3",
+      "driverId": 7,
+      "driverName": "Khaled",
+      "driverPhone": "+962791111111",
+      "paymentType": "cash",
+      "promoCode": null,
+      "orderRating": 5,
+      "nearby": null,
+      "notes": "Ring the bell twice",
+      "paymentVerificationImage": null,
+      "createdAt": "2025-01-30T14:22:00.000Z",
+      "items": [
+        {
+          "id": "61",
+          "name": "Broasted 4-Piece Meal",
+          "price": 3.75,
+          "quantity": 2,
+          "selectedAddOns": {
+            "grp_sauce": "opt_garlic",
+            "grp_extras": "opt_fries"
+          }
+        },
+        {
+          "id": "22",
+          "name": "Classic Burger",
+          "price": 5.5,
+          "quantity": 1
+        }
+      ]
+    }
+  },
+  "timestamp": "2025-01-31T10:00:00.000Z"
+}

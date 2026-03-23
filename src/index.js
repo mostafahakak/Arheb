@@ -157,6 +157,12 @@ db.exec(`
   );
 `);
 
+try {
+  db.exec(`ALTER TABLE order_items ADD COLUMN selectedAddOns TEXT`);
+} catch (e) {
+  /* column exists */
+}
+
 const upsertUser = db.prepare(`
   INSERT INTO users (phoneNumber, userId, firebaseUid, token, deleted, deletedAt)
   VALUES (@phoneNumber, @userId, @firebaseUid, @token, @deleted, @deletedAt)
@@ -276,9 +282,6 @@ app.post('/api/auth/verify-otp', async (req, res) => {
     const verification = await verifyPhoneOtp(sessionInfo, otp);
     const firebasePhone = verification.phoneNumber || phoneNumber;
     const firebaseUid = verification.localId || verification?.userId || null;
-    const token = jwt.sign({ phoneNumber: firebasePhone }, JWT_SECRET, {
-      expiresIn: '7d',
-    });
 
     const existing = findUserByPhone.get(firebasePhone);
     // If the user previously deleted the account, we "re-signup" by issuing a new userId and clearing old profile fields.
@@ -286,6 +289,12 @@ app.post('/api/auth/verify-otp', async (req, res) => {
       existing && existing.deleted
         ? `u_${Date.now()}_${Math.random().toString(16).slice(2)}`
         : (existing?.userId || firebasePhone);
+
+    const token = jwt.sign(
+      { phoneNumber: firebasePhone, userId: newUserId },
+      JWT_SECRET,
+      { expiresIn: '7d' },
+    );
 
     upsertUser.run({
       phoneNumber: firebasePhone,

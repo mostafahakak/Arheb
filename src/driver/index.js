@@ -38,22 +38,23 @@ function orderToDriverApi(order, items = [], driverRow = null, store = null) {
     longitude: driverRow.longitude,
     rating: driverRow.rating ?? 5,
   } : null;
-  const productList = (items || []).map((i) => ({
-    id: i.productId,
-    name: i.productName,
-    image: null,
-    price: i.price,
-    quantity: i.quantity,
-    unit: '',
-    category: null,
-    description: null,
-    discount: null,
-    stock: null,
-    isAvailable: true,
-    preparationTime: null,
-    ingredients: [],
-    allergens: [],
-  }));
+  const { orderItemRowToClient } = require('../utils/orderItemApi');
+  const productList = (items || []).map((i) => {
+    const base = orderItemRowToClient(i);
+    return {
+      ...base,
+      image: null,
+      unit: '',
+      category: null,
+      description: null,
+      discount: null,
+      stock: null,
+      isAvailable: true,
+      preparationTime: null,
+      ingredients: [],
+      allergens: [],
+    };
+  });
   const numberOfItems = productList.reduce((sum, p) => sum + (p.quantity || 0), 0);
   const clientMapsUrl =
     order.addressLat != null && order.addressLong != null
