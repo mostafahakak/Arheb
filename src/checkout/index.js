@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
-const enrichArhebBoxRow = require('../arhebBox').enrichArhebBoxRow;
+const { enrichArhebBoxRow, calcArhebBoxDeliveryFeeJod } = require('../arhebBox');
+const { quoteFromPickupDropoff } = require('../arhebBox/pricing');
 const { mapOrderItemsRows } = require('../utils/orderItemApi');
 const { validateSelectedAddOnsAgainstProduct } = require('../utils/productAddOns');
 
@@ -22,19 +23,13 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
     return Number.isFinite(n) ? n : fallback;
   }
 
-  // Store orders: min 1 JOD + 0.10 JOD/kg, capped at max 3 JOD
-  function calcStoreDeliveryFeeJod(weightKg) {
-    const w = Math.max(0, safeNumber(weightKg, 0));
-    const fee = 1 + 0.1 * w;
-    return round2(Math.min(3, fee));
-  }
-
-  function calcFeesTaxJod(deliveryFeeJod, serviceFeeJod) {
-    return round2(FEES_TAX_RATE * (safeNumber(deliveryFeeJod, 0) + safeNumber(serviceFeeJod, 0)));
+  /** 16% VAT applies to the delivery fee only (not order subtotal, not service fee). */
+  function calcFeesTaxJod(deliveryFeeJod) {
+    return round2(FEES_TAX_RATE * safeNumber(deliveryFeeJod, 0));
   }
 
   function buildOrderSummary(orderValueJod, deliveryFeeJod, serviceFeeJod) {
-    const taxJod = calcFeesTaxJod(deliveryFeeJod, serviceFeeJod);
+    const taxJod = calcFeesTaxJod(deliveryFeeJod);
     return {
       currency: 'JOD',
       orderValue: round2(safeNumber(orderValueJod, 0)),
@@ -47,7 +42,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   }
 
   function buildInvoice(deliveryFeeJod, serviceFeeJod) {
-    const taxJod = calcFeesTaxJod(deliveryFeeJod, serviceFeeJod);
+    const taxJod = calcFeesTaxJod(deliveryFeeJod);
     return {
       currency: 'JOD',
       deliveryFee: round2(safeNumber(deliveryFeeJod, 0)),
@@ -72,6 +67,18 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       return products.find((p) => String(p.id) === String(productId)) || null;
     } catch (error) {
       console.error('Failed to load product:', error);
+      return null;
+    }
+  }
+
+  function loadStoreFromJsonById(storeId) {
+    try {
+      const storesResponsePath = getJsonPath('stores_listing_response.json');
+      const raw = fs.readFileSync(storesResponsePath, 'utf-8');
+      const stores = JSON.parse(raw)?.data?.stores ?? [];
+      return stores.find((s) => String(s.id) === String(storeId)) || null;
+    } catch (error) {
+      console.error('Failed to load store:', error);
       return null;
     }
   }
@@ -174,6 +181,70 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
     SET rate = @newRate, numberOfReviews = @numberOfReviews 
     WHERE id = @storeId
   `);
+
+  /**
+   * Pre-checkout quote: delivery + service + VAT (16% on delivery fee only).
+   * Same delivery formula as Arheb Box (1 + 0.15 JOD/kg). Requires store + pickup/dropoff coordinates.
+   */
+  app.post('/api/checkout/quote-fees', authenticateRequest, (req, res) => {
+    try {
+      const { storeId, storeLocation, deliveryLocation, weightKg } = req.body || {};
+      if (storeId === undefined || storeId === null || String(storeId).trim() === '') {
+        return res.status(400).json({ success: false, message: 'storeId is required' });
+      }
+      if (!storeLocation || typeof storeLocation !== 'object') {
+        return res.status(400).json({
+          success: false,
+          message: 'storeLocation is required (object with latitude and longitude)',
+        });
+      }
+      if (!deliveryLocation || typeof deliveryLocation !== 'object') {
+        return res.status(400).json({
+          success: false,
+          message: 'deliveryLocation is required (object with latitude and longitude)',
+        });
+      }
+      const store = loadStoreFromJsonById(storeId);
+      if (!store) {
+        return res.status(404).json({ success: false, message: 'Store not found' });
+      }
+      const q = quoteFromPickupDropoff(storeLocation, deliveryLocation);
+      if (!q) {
+        return res.status(400).json({
+          success: false,
+          message: 'storeLocation and deliveryLocation must include valid latitude and longitude',
+        });
+      }
+      const weightKgNum = Math.max(0, safeNumber(weightKg, 0));
+      const deliveryFee = calcArhebBoxDeliveryFeeJod(weightKgNum);
+      const serviceFee = SERVICE_FEE_JOD;
+      const feesTax = calcFeesTaxJod(deliveryFee);
+      const invoice = buildInvoice(deliveryFee, serviceFee);
+      return res.status(200).json({
+        success: true,
+        data: {
+          storeId: String(storeId),
+          storeName: store.name ?? null,
+          distanceKm: q.distanceKm,
+          minAmountJod: q.minAmountJod,
+          weightKg: round3(weightKgNum),
+          currency: 'JOD',
+          deliveryFee: invoice.deliveryFee,
+          serviceFee: invoice.serviceFee,
+          feesTaxRate: FEES_TAX_RATE,
+          feesTax,
+          feesTaxNote: '16% VAT on delivery fee only (not on order subtotal or service fee).',
+          invoiceTotal: invoice.total,
+          pricingNote:
+            'Delivery fee matches Arheb Box: 1 JOD + 0.15 JOD/kg (uncapped). distanceKm and minAmountJod describe the route (same haversine rules as POST /api/arheb-box/quote).',
+        },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error('Checkout quote-fees error:', error);
+      return res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  });
 
   // Create order
   app.post('/api/checkout', authenticateRequest, (req, res) => {
@@ -456,9 +527,9 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         lowerPaymentType === 'cliq' ? 'Waiting cliq confirmation' : 'Waiting confirmation';
 
       const weightKgNum = Math.max(0, safeNumber(weightKg, 0));
-      const computedDeliveryFee = calcStoreDeliveryFeeJod(weightKgNum);
+      const computedDeliveryFee = calcArhebBoxDeliveryFeeJod(weightKgNum);
       const computedServiceFee = SERVICE_FEE_JOD;
-      const computedFeesTax = calcFeesTaxJod(computedDeliveryFee, computedServiceFee);
+      const computedFeesTax = calcFeesTaxJod(computedDeliveryFee);
 
       const orderId = createOrder({
         userId,
@@ -504,7 +575,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
             discount: order.discount,
             deliveryFee: order.deliveryFee,
             serviceFee: order.serviceFee != null ? order.serviceFee : SERVICE_FEE_JOD,
-            feesTax: order.feesTax != null ? order.feesTax : calcFeesTaxJod(order.deliveryFee, order.serviceFee ?? SERVICE_FEE_JOD),
+            feesTax: order.feesTax != null ? order.feesTax : calcFeesTaxJod(order.deliveryFee),
             weightKg: order.weightKg != null ? order.weightKg : round3(weightKgNum),
             totalAmount: order.totalAmount,
             orderSummary: buildOrderSummary(order.totalAmount, order.deliveryFee, order.serviceFee ?? SERVICE_FEE_JOD),
@@ -545,7 +616,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       const ordersWithItems = orders.map(order => {
         const items = findOrderItems.all(order.id);
         const serviceFee = order.serviceFee != null ? Number(order.serviceFee) : SERVICE_FEE_JOD;
-        const feesTax = order.feesTax != null ? Number(order.feesTax) : calcFeesTaxJod(order.deliveryFee, serviceFee);
+        const feesTax = order.feesTax != null ? Number(order.feesTax) : calcFeesTaxJod(order.deliveryFee);
         return {
           id: order.id,
           userId: order.userId,
@@ -641,7 +712,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       const findOrderItems = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
       const items = findOrderItems.all(orderId);
       const serviceFee = order.serviceFee != null ? Number(order.serviceFee) : SERVICE_FEE_JOD;
-      const feesTax = order.feesTax != null ? Number(order.feesTax) : calcFeesTaxJod(order.deliveryFee, serviceFee);
+      const feesTax = order.feesTax != null ? Number(order.feesTax) : calcFeesTaxJod(order.deliveryFee);
 
       return res.status(200).json({
         success: true,
@@ -763,7 +834,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       const findOrderItems = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
       const items = findOrderItems.all(orderId);
       const serviceFee = updatedOrder.serviceFee != null ? Number(updatedOrder.serviceFee) : SERVICE_FEE_JOD;
-      const feesTax = updatedOrder.feesTax != null ? Number(updatedOrder.feesTax) : calcFeesTaxJod(updatedOrder.deliveryFee, serviceFee);
+      const feesTax = updatedOrder.feesTax != null ? Number(updatedOrder.feesTax) : calcFeesTaxJod(updatedOrder.deliveryFee);
 
       return res.status(200).json({
         success: true,

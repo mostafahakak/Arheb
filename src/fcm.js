@@ -21,11 +21,21 @@ function getMessaging() {
   try {
     if (!admin.apps.length) {
       const cred = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-      if (cred && typeof cred === 'string') {
+      if (cred && typeof cred === 'string' && cred.trim()) {
         const serviceAccount = JSON.parse(cred);
-        admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+        admin.initializeApp({
+          credential: admin.credential.cert(serviceAccount),
+          projectId: serviceAccount.project_id,
+        });
+      } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+        admin.initializeApp({
+          credential: admin.credential.applicationDefault(),
+        });
       } else {
-        admin.initializeApp(); // uses GOOGLE_APPLICATION_CREDENTIALS
+        console.warn(
+          'fcm: Set FIREBASE_SERVICE_ACCOUNT_JSON (stringified Firebase service account JSON) or GOOGLE_APPLICATION_CREDENTIALS — push notifications disabled'
+        );
+        return null;
       }
     }
     messaging = admin.messaging();

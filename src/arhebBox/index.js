@@ -353,3 +353,4 @@ module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest) {
 };
 
 module.exports.enrichArhebBoxRow = enrichRequestRow;
+module.exports.calcArhebBoxDeliveryFeeJod = calcArhebBoxDeliveryFeeJod;

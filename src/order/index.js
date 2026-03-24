@@ -238,7 +238,7 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
 
     // Handle disconnect
     socket.on('disconnect', () => {
-      console.log(`WebSocket disconnect: Order ${orderId}, Role ${role}, User ${userId}`);
+      console.log(`WebSocket disconnect: Order ${orderId}, Role ${role}, User ${logId}`);
       
       const t = activeTrackings.get(orderId);
       if (t) {

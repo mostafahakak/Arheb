@@ -152,6 +152,7 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
   - [Update Address](#update-address)
   - [Delete Address](#delete-address)
 - [Checkout & Orders](#checkout--orders)
+  - [Quote Checkout Fees](#quote-checkout-fees)
   - [Create Order](#create-order)
   - [Get All Orders](#get-all-orders)
   - [Get Order by ID](#get-order-by-id)
@@ -1137,6 +1138,68 @@ Deletes the address at the given index (0-based). After deletion, the first rema
 ---
 
 ## Checkout & Orders
+
+### Quote Checkout Fees
+
+Call **before** `POST /api/checkout` to preview **delivery fee**, **service fee**, and **VAT** using the same rules as **Arheb Box** for delivery pricing, with **16% VAT on the delivery fee only** (not on the order subtotal and not on the service fee — same as store checkout).
+
+**Endpoint:** `POST /api/checkout/quote-fees`
+
+**Authentication:** Required (Bearer token)
+
+**Request Body:**
+
+| Field | Type | Required | Description |
+|--------|------|----------|-------------|
+| `storeId` | string | Yes | Store id (must exist in `stores_listing_response.json`). |
+| `storeLocation` | object | Yes | Pickup point: **`latitude`** and **`longitude`** (numbers, WGS84). Use the store’s coordinates when placing the order. |
+| `deliveryLocation` | object | Yes | Customer drop-off: **`latitude`** and **`longitude`** (numbers). |
+| `weightKg` | number | No | Cart / shipment weight in kg for delivery pricing (default `0`). Same weight basis as checkout’s server-side delivery fee. |
+
+**Example:**
+
+```json
+{
+  "storeId": "1",
+  "storeLocation": { "latitude": 29.532, "longitude": 35.006 },
+  "deliveryLocation": { "latitude": 29.54, "longitude": 35.01 },
+  "weightKg": 2.5
+}
+```
+
+**Success Response (200):**
+
+```json
+{
+  "success": true,
+  "data": {
+    "storeId": "1",
+    "storeName": "كريسبي تشيكن",
+    "distanceKm": 1.234,
+    "minAmountJod": 2,
+    "weightKg": 2.5,
+    "currency": "JOD",
+    "deliveryFee": 1.38,
+    "serviceFee": 0.65,
+    "feesTaxRate": 0.16,
+    "feesTax": 0.22,
+    "feesTaxNote": "16% VAT on delivery fee only (not on order subtotal or service fee).",
+    "invoiceTotal": 2.25,
+    "pricingNote": "Delivery fee matches Arheb Box: 1 JOD + 0.15 JOD/kg (uncapped). distanceKm and minAmountJod describe the route (same haversine rules as POST /api/arheb-box/quote)."
+  },
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+- **`deliveryFee`**: `1 + 0.15 × weightKg` JOD (rounded to 2 decimals), same as **Arheb Box** / store checkout.
+- **`serviceFee`**: fixed **0.65** JOD.
+- **`feesTax`**: **16% × deliveryFee** only.
+- **`invoiceTotal`**: `deliveryFee + serviceFee + feesTax` (fees-only total; does **not** include cart subtotal).
+- **`distanceKm` / `minAmountJod`**: route metrics (1 JOD/km, minimum 2 JOD — same helper as **POST /api/arheb-box/quote**); informational for the client.
+
+**Error responses:** `400` (missing/invalid body), `404` (unknown `storeId`), `500` (server error).
+
+---
 
 ### Create Order
 
@@ -2654,6 +2717,7 @@ For issues or questions, please contact: `contact@arheb.app`
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
+| POST | `/api/checkout/quote-fees` | User (Bearer) | Pre-checkout quote: `storeId`, `storeLocation` and `deliveryLocation` (lat/long), optional `weightKg`. Returns delivery fee (Arheb Box formula), service fee, 16% VAT on delivery fee only, route `distanceKm` / `minAmountJod`. |
 | GET | `/api/admin/orders/:orderId/available-drivers` | Admin (Store Admin: own store orders only) | Returns non-blocked drivers that do not already have a pending request for this order. Used when assigning a driver to an order. |
 | POST | `/api/admin/orders/:orderId/request-driver` | Admin (Store Admin: own store orders only) | Sends a delivery request to one or more drivers. Body: `{ "driverIds": [1, 2, 3] }`. Allowed only when order status is "Preparing" or "Waiting confirmation" and order has no driver assigned. |
 | GET | `/api/admin/orders/:orderId/tracking` | Admin (Store Admin: own store orders only) | Returns order tracking state for the dashboard: `orderId`, `orderStatus`, `driverId`, `driverName`, `isTracking`, `driverConnected`, `lastLocation` (latitude, longitude, timestamp). Used with Socket.IO for live driver tracking. |
