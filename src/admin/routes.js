@@ -189,6 +189,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
   const findAdminByEmail = db.prepare('SELECT * FROM admins WHERE email = ?');
   const findAdminById = db.prepare('SELECT * FROM admins WHERE id = ?');
   const findAllAdmins = db.prepare('SELECT id, email, role, storeId, name, createdAt FROM admins ORDER BY id');
+  const findUserByPhone = db.prepare('SELECT * FROM users WHERE phoneNumber = ?');
   const findOrderById = db.prepare('SELECT * FROM orders WHERE id = ?');
   const findOrderItems = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
 
@@ -243,6 +244,106 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const rows = findAllAdmins.all();
     const list = isSuper ? rows : rows.filter((r) => r.role !== ROLES.SUPERADMIN);
     return res.status(200).json({ success: true, data: { admins: list } });
+  });
+
+  // ——— App users (SuperAdmin / Admin only): list/search, block/unblock, and user orders ———
+  app.get('/api/admin/users', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      const q = (req.query.q || req.query.search || '').toString().trim();
+      const where = ['deleted = 0'];
+      const params = [];
+      if (q) {
+        const like = `%${q}%`;
+        where.push('(phoneNumber LIKE ? OR name LIKE ?)');
+        params.push(like, like);
+      }
+      const rows = db
+        .prepare(
+          `SELECT phoneNumber, userId, name, addressName, createdAt, deleted, isBlocked
+           FROM users
+           WHERE ${where.join(' AND ')}
+           ORDER BY createdAt DESC`
+        )
+        .all(...params);
+      const users = rows.map((u) => ({
+        phoneNumber: u.phoneNumber,
+        userId: u.userId || u.phoneNumber,
+        name: u.name || '',
+        addressName: u.addressName || '',
+        isBlocked: Boolean(u.isBlocked),
+        createdAt: u.createdAt,
+      }));
+      return res.status(200).json({ success: true, data: { users } });
+    } catch (e) {
+      console.error('Admin users list error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to list users' });
+    }
+  });
+
+  app.patch('/api/admin/users/:phone/block', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      const phone = String(req.params.phone || '').trim();
+      if (!phone) return res.status(400).json({ success: false, message: 'Invalid phone' });
+      const user = findUserByPhone.get(phone);
+      if (!user || user.deleted) return res.status(404).json({ success: false, message: 'User not found' });
+      const blocked = req.body?.isBlocked === true;
+      db.prepare('UPDATE users SET isBlocked = ? WHERE phoneNumber = ?').run(blocked ? 1 : 0, phone);
+      const updated = findUserByPhone.get(phone);
+      return res.status(200).json({
+        success: true,
+        data: {
+          user: {
+            phoneNumber: updated.phoneNumber,
+            userId: updated.userId || updated.phoneNumber,
+            name: updated.name || '',
+            isBlocked: Boolean(updated.isBlocked),
+            createdAt: updated.createdAt,
+          },
+        },
+      });
+    } catch (e) {
+      console.error('Admin user block error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to update user status' });
+    }
+  });
+
+  app.get('/api/admin/users/:phone/orders', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      const phone = String(req.params.phone || '').trim();
+      if (!phone) return res.status(400).json({ success: false, message: 'Invalid phone' });
+      const user = findUserByPhone.get(phone);
+      if (!user || user.deleted) return res.status(404).json({ success: false, message: 'User not found' });
+
+      const orders = db
+        .prepare('SELECT * FROM orders WHERE phoneNumber = ? OR userId = ? ORDER BY createdAt DESC, id DESC')
+        .all(phone, user.userId || phone);
+      const storesList = loadStores();
+      const storeById = Object.fromEntries(storesList.map((s) => [s.id, s]));
+      const ordersOut = orders.map((o) => {
+        const items = findOrderItems.all(o.id);
+        const store = o.storeId ? storeById[o.storeId] : null;
+        return {
+          ...o,
+          storeName: store ? (store.nameEn || store.name || store.nameAr) : (o.storeId || '-'),
+          items: mapOrderItemsRows(items),
+        };
+      });
+      return res.status(200).json({
+        success: true,
+        data: {
+          user: {
+            phoneNumber: user.phoneNumber,
+            userId: user.userId || user.phoneNumber,
+            name: user.name || '',
+            isBlocked: Boolean(user.isBlocked),
+          },
+          orders: ordersOut,
+        },
+      });
+    } catch (e) {
+      console.error('Admin user orders error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to load user orders' });
+    }
   });
 
   app.post('/api/admin/admins', auth, requireAdminOrSuper, (req, res) => {
@@ -1847,6 +1948,60 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       }
       console.error('Admin drivers list error:', e);
       return res.status(500).json({ success: false, message: 'Failed to list drivers' });
+    }
+  });
+
+  // Driver profile/stats from orders table (delivered, active, cancelled)
+  app.get('/api/admin/drivers/:id/profile', auth, requireAdminOrSuper, (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid driver id' });
+    try {
+      const driver = db
+        .prepare('SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, createdAt FROM drivers WHERE id = ?')
+        .get(id);
+      if (!driver) return res.status(404).json({ success: false, message: 'Driver not found' });
+
+      const counts = db
+        .prepare(`
+          SELECT
+            SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END) AS delivered,
+            SUM(CASE WHEN status = 'Cancelled' THEN 1 ELSE 0 END) AS cancelled,
+            SUM(CASE WHEN status IS NULL OR status NOT IN ('Delivered', 'Cancelled') THEN 1 ELSE 0 END) AS active
+          FROM orders
+          WHERE driverId = ?
+        `)
+        .get(id) || {};
+
+      const latestOrders = db
+        .prepare('SELECT id, status, totalAmount, createdAt, storeId FROM orders WHERE driverId = ? ORDER BY createdAt DESC, id DESC LIMIT 20')
+        .all(id);
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          driver: {
+            id: driver.id,
+            name: driver.name,
+            mobile: driver.mobile,
+            email: driver.email,
+            vehicleType: driver.vehicleType,
+            vehicleNumber: driver.vehicleNumber,
+            licenseNumber: driver.licenseNumber,
+            isBlocked: Boolean(driver.isBlocked),
+            createdAt: driver.createdAt,
+          },
+          stats: {
+            delivered: counts.delivered || 0,
+            active: counts.active || 0,
+            cancelled: counts.cancelled || 0,
+            totalAssigned: (counts.delivered || 0) + (counts.active || 0) + (counts.cancelled || 0),
+          },
+          recentOrders: latestOrders,
+        },
+      });
+    } catch (e) {
+      console.error('Admin driver profile error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to load driver profile' });
     }
   });
 

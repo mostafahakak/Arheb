@@ -129,6 +129,7 @@ try {
 }
 try { db.exec(`ALTER TABLE users ADD COLUMN deleted INTEGER DEFAULT 0`); } catch (e) { /* exists */ }
 try { db.exec(`ALTER TABLE users ADD COLUMN deletedAt TEXT`); } catch (e) { /* exists */ }
+try { db.exec(`ALTER TABLE users ADD COLUMN isBlocked INTEGER DEFAULT 0`); } catch (e) { /* exists */ }
 
 // Backfill userId for existing rows (default = phoneNumber)
 try {
@@ -270,6 +271,9 @@ function authenticateRequest(req, res, next) {
     if (!row || row.deleted) {
       return res.status(401).json({ message: 'User does not exist' });
     }
+    if (row.isBlocked) {
+      return res.status(403).json({ message: 'User is blocked' });
+    }
     req.user = { phoneNumber: row.phoneNumber, userId: row.userId || row.phoneNumber };
     next();
   } catch (error) {
@@ -299,6 +303,12 @@ app.post('/api/auth/verify-otp', async (req, res) => {
     const firebaseUid = verification.localId || verification?.userId || null;
 
     const existing = findUserByPhone.get(firebasePhone);
+    if (existing && existing.isBlocked) {
+      return res.status(403).json({
+        success: false,
+        message: 'User is blocked',
+      });
+    }
     // If the user previously deleted the account, we "re-signup" by issuing a new userId and clearing old profile fields.
     const newUserId =
       existing && existing.deleted
