@@ -22,19 +22,14 @@ function getArhebJsonDir() {
   return REPO_JSON_DIR;
 }
 
-const arhebJsonDir = getArhebJsonDir();
-
-if (process.env.ARHEB_JSON_DIR) {
-  console.log('Using persistent JSON dir (no reset on redeploy):', arhebJsonDir);
-}
-
 /** Full path for a filename inside the Arheb JSON directory (e.g. "categories_response.json"). */
 function getJsonPath(filename) {
-  return path.join(arhebJsonDir, filename);
+  return path.join(getArhebJsonDir(), filename);
 }
 
 /** Copy a file from repo JSON dir to persistent dir if it does not exist (first run). */
 function ensureFileFromRepo(filename) {
+  const arhebJsonDir = getArhebJsonDir();
   if (arhebJsonDir === REPO_JSON_DIR) return;
   const dest = getJsonPath(filename);
   if (fs.existsSync(dest)) return;
@@ -50,6 +45,7 @@ function ensureFileFromRepo(filename) {
 
 /** Ensure all known JSON files exist in persistent dir (copy from repo if missing). Call once at startup. */
 function ensurePersistentDirSeeded() {
+  const arhebJsonDir = getArhebJsonDir();
   if (arhebJsonDir === REPO_JSON_DIR) return;
   const files = [
     'categories_response.json',

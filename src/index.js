@@ -25,6 +25,17 @@ const attachDriverRoutes = require('./driver');
 
 dotenv.config();
 
+// Render persistent disk defaults:
+// - If ARHEB_DATA_DIR is not set and /data/arheb exists, use it for SQLite DB.
+// - If ARHEB_JSON_DIR is not set and /data/arheb exists, use it for JSON files too.
+const DEFAULT_RENDER_DATA_DIR = '/data/arheb';
+if (!process.env.ARHEB_DATA_DIR && fs.existsSync(DEFAULT_RENDER_DATA_DIR)) {
+  process.env.ARHEB_DATA_DIR = DEFAULT_RENDER_DATA_DIR;
+}
+if (!process.env.ARHEB_JSON_DIR && fs.existsSync(DEFAULT_RENDER_DATA_DIR)) {
+  process.env.ARHEB_JSON_DIR = DEFAULT_RENDER_DATA_DIR;
+}
+
 const { ensurePersistentDirSeeded } = require('./config/jsonPaths');
 ensurePersistentDirSeeded();
 
@@ -53,7 +64,11 @@ const io = new Server(httpServer, {
   }
 });
 
-const dataDir = path.resolve(__dirname, '..', 'data');
+const dataDir = process.env.ARHEB_DATA_DIR
+  ? (path.isAbsolute(process.env.ARHEB_DATA_DIR)
+      ? process.env.ARHEB_DATA_DIR
+      : path.resolve(process.cwd(), process.env.ARHEB_DATA_DIR))
+  : path.resolve(__dirname, '..', 'data');
 fs.mkdirSync(dataDir, { recursive: true });
 
 const dbPath = path.join(dataDir, 'auth.db');

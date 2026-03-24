@@ -102,9 +102,10 @@ If no SuperAdmin exists, one is created at startup. Run the dashboard with `cd d
 
 To avoid losing categories, stores, and products on every redeploy, use a **persistent directory** for the JSON data files.
 
-1. **Create a persistent disk** (e.g. on Render: Dashboard → your service → Disks → Add Disk, mount path e.g. `/data`).
+1. **Create a persistent disk** (e.g. on Render: Dashboard → your service → Disks → Add Disk, mount path e.g. `/data/arheb`).
 2. **Set the env var** in your service:
-   - `ARHEB_JSON_DIR=/data`
+   - `ARHEB_JSON_DIR=/data/arheb`
+   - `ARHEB_DATA_DIR=/data/arheb` (for SQLite `auth.db`)
    (Use the same path as the disk mount path.)
 3. **Redeploy.** On first run the app copies the repo’s initial JSON files into that directory if they’re missing. After that, all reads and writes use that directory, so **redeploys no longer overwrite your data**.
 
