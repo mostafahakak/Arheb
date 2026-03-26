@@ -291,7 +291,7 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
       const feesTax =
         order.feesTax != null
           ? Number(order.feesTax)
-          : Math.round(((0.16 * ((Number(order.deliveryFee) || 0) + (Number(serviceFee) || 0))) + Number.EPSILON) * 100) / 100;
+          : Math.round(((0.07 * (Number(order.deliveryFee) || 0)) + Number.EPSILON) * 100) / 100;
       return res.status(200).json({
         success: true,
         message: 'Order retrieved successfully',
@@ -315,7 +315,7 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
               orderValue: Math.round(((Number(order.totalAmount) || 0) + Number.EPSILON) * 100) / 100,
               deliveryFee: Math.round(((Number(order.deliveryFee) || 0) + Number.EPSILON) * 100) / 100,
               serviceFee: Math.round(((Number(serviceFee) || 0) + Number.EPSILON) * 100) / 100,
-              feesTaxRate: 0.16,
+              feesTaxRate: 0.07,
               feesTax: Math.round(((Number(feesTax) || 0) + Number.EPSILON) * 100) / 100,
               total: Math.round((((Number(order.totalAmount) || 0) + (Number(order.deliveryFee) || 0) + (Number(serviceFee) || 0) + (Number(feesTax) || 0)) + Number.EPSILON) * 100) / 100,
             },
@@ -323,7 +323,7 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
               currency: 'JOD',
               deliveryFee: Math.round(((Number(order.deliveryFee) || 0) + Number.EPSILON) * 100) / 100,
               serviceFee: Math.round(((Number(serviceFee) || 0) + Number.EPSILON) * 100) / 100,
-              feesTaxRate: 0.16,
+              feesTaxRate: 0.07,
               feesTax: Math.round(((Number(feesTax) || 0) + Number.EPSILON) * 100) / 100,
               total: Math.round((((Number(order.deliveryFee) || 0) + (Number(serviceFee) || 0) + (Number(feesTax) || 0)) + Number.EPSILON) * 100) / 100,
             },

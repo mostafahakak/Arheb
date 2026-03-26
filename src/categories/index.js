@@ -29,6 +29,8 @@ const seedCategoriesTables = (db, categories) => {
       nameAr TEXT,
       nameEn TEXT,
       image TEXT,
+      iconAr TEXT,
+      iconEn TEXT,
       isComingSoon INTEGER DEFAULT 0,
       displayOrder INTEGER
     );
@@ -46,13 +48,15 @@ const seedCategoriesTables = (db, categories) => {
   `);
 
   const insertCategory = db.prepare(`
-    INSERT INTO categories (id, name, nameAr, nameEn, image, isComingSoon, displayOrder)
-    VALUES (@id, @name, @nameAr, @nameEn, @image, @isComingSoon, @displayOrder)
+    INSERT INTO categories (id, name, nameAr, nameEn, image, iconAr, iconEn, isComingSoon, displayOrder)
+    VALUES (@id, @name, @nameAr, @nameEn, @image, @iconAr, @iconEn, @isComingSoon, @displayOrder)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       nameAr = excluded.nameAr,
       nameEn = excluded.nameEn,
       image = excluded.image,
+      iconAr = excluded.iconAr,
+      iconEn = excluded.iconEn,
       isComingSoon = excluded.isComingSoon,
       displayOrder = excluded.displayOrder
   `);
@@ -83,6 +87,8 @@ const seedCategoriesTables = (db, categories) => {
         nameAr: category.nameAr ?? null,
         nameEn: category.nameEn ?? null,
         image: category.image ?? null,
+        iconAr: category.iconAr ?? null,
+        iconEn: category.iconEn ?? null,
         isComingSoon: toInt(category.isComingSoon),
         displayOrder: category.order ?? sortOrder,
       });
@@ -121,6 +127,8 @@ function loadCategoriesFromDb(db) {
         nameAr TEXT,
         nameEn TEXT,
         image TEXT,
+        iconAr TEXT,
+        iconEn TEXT,
         isComingSoon INTEGER DEFAULT 0,
         displayOrder INTEGER
       );
@@ -136,6 +144,9 @@ function loadCategoriesFromDb(db) {
         FOREIGN KEY (categoryId) REFERENCES categories(id) ON DELETE CASCADE
       );
     `);
+    try { db.exec('ALTER TABLE categories ADD COLUMN iconAr TEXT'); } catch (e) { /* exists */ }
+    try { db.exec('ALTER TABLE categories ADD COLUMN iconEn TEXT'); } catch (e) { /* exists */ }
+
     const catRows = db.prepare('SELECT * FROM categories ORDER BY displayOrder ASC, id ASC').all();
     const subRows = db.prepare('SELECT * FROM subcategories ORDER BY displayOrder ASC, id ASC').all();
     if (catRows.length === 0) return null;
@@ -160,6 +171,8 @@ function loadCategoriesFromDb(db) {
       nameAr: c.nameAr,
       nameEn: c.nameEn,
       image: c.image,
+      iconAr: c.iconAr ?? null,
+      iconEn: c.iconEn ?? null,
       isComingSoon: Boolean(c.isComingSoon),
       order: c.displayOrder,
       subCategories: subByCat[c.id] || [],
@@ -317,6 +330,8 @@ function attachCategoriesRoutes(app, db) {
           nameAr: category.nameAr,
           nameEn: category.nameEn,
           image: category.image,
+          iconAr: category.iconAr ?? null,
+          iconEn: category.iconEn ?? null,
           subCategories: category.subCategories || []
         } : null,
         categoryName: categoryName,

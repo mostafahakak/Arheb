@@ -8,7 +8,7 @@ const { validateSelectedAddOnsAgainstProduct } = require('../utils/productAddOns
 module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   const { getJsonPath } = require('../config/jsonPaths');
   const SERVICE_FEE_JOD = 0.65;
-  const FEES_TAX_RATE = 0.16;
+  const FEES_TAX_RATE = 0.07;
 
   function round3(n) {
     return Math.round((Number(n) + Number.EPSILON) * 1000) / 1000;
@@ -82,6 +82,27 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       return null;
     }
   }
+
+  function parseLatLongFromGoogleMapsUrl(url) {
+    if (!url || typeof url !== 'string') return null;
+    const text = url.trim();
+    const patterns = [
+      /[?&]q=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
+      /[?&]query=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
+      /@(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
+    ];
+    for (const re of patterns) {
+      const m = text.match(re);
+      if (m) {
+        const latitude = Number(m[1]);
+        const longitude = Number(m[2]);
+        if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
+          return { latitude, longitude };
+        }
+      }
+    }
+    return null;
+  }
   // Create promo_codes table
   db.exec(`
     CREATE TABLE IF NOT EXISTS promo_codes (
@@ -116,6 +137,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       nearby TEXT,
       notes TEXT,
       paymentVerificationImage TEXT,
+      nearArrivalNotified INTEGER DEFAULT 0,
       createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (phoneNumber) REFERENCES users(phoneNumber)
     );
@@ -162,6 +184,11 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
     // Column already exists
   }
   try {
+    db.exec(`ALTER TABLE orders ADD COLUMN nearArrivalNotified INTEGER DEFAULT 0`);
+  } catch (e) {
+    // Column already exists
+  }
+  try {
     db.exec(`ALTER TABLE order_items ADD COLUMN selectedAddOns TEXT`);
   } catch (e) {
     // Column already exists
@@ -184,19 +211,13 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
 
   /**
    * Pre-checkout quote: delivery + service + VAT (16% on delivery fee only).
-   * Same delivery formula as Arheb Box (1 + 0.15 JOD/kg). Requires store + pickup/dropoff coordinates.
+   * Same delivery formula as Arheb Box (1 + 0.15 JOD/kg). Store location is resolved from storeId/mapsUrl.
    */
   app.post('/api/checkout/quote-fees', authenticateRequest, (req, res) => {
     try {
-      const { storeId, storeLocation, deliveryLocation, weightKg } = req.body || {};
+      const { storeId, deliveryLocation, weightKg } = req.body || {};
       if (storeId === undefined || storeId === null || String(storeId).trim() === '') {
         return res.status(400).json({ success: false, message: 'storeId is required' });
-      }
-      if (!storeLocation || typeof storeLocation !== 'object') {
-        return res.status(400).json({
-          success: false,
-          message: 'storeLocation is required (object with latitude and longitude)',
-        });
       }
       if (!deliveryLocation || typeof deliveryLocation !== 'object') {
         return res.status(400).json({
@@ -208,11 +229,21 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       if (!store) {
         return res.status(404).json({ success: false, message: 'Store not found' });
       }
+      const storeLocation =
+        (store.latitude != null && store.longitude != null)
+          ? { latitude: Number(store.latitude), longitude: Number(store.longitude) }
+          : parseLatLongFromGoogleMapsUrl(store.mapsUrl);
+      if (!storeLocation) {
+        return res.status(400).json({
+          success: false,
+          message: 'Store location is unavailable. Please set store mapsUrl with coordinates.',
+        });
+      }
       const q = quoteFromPickupDropoff(storeLocation, deliveryLocation);
       if (!q) {
         return res.status(400).json({
           success: false,
-          message: 'storeLocation and deliveryLocation must include valid latitude and longitude',
+          message: 'deliveryLocation must include valid latitude and longitude',
         });
       }
       const weightKgNum = Math.max(0, safeNumber(weightKg, 0));
@@ -225,6 +256,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         data: {
           storeId: String(storeId),
           storeName: store.name ?? null,
+          storeLocation,
           distanceKm: q.distanceKm,
           minAmountJod: q.minAmountJod,
           weightKg: round3(weightKgNum),

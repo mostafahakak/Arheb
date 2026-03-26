@@ -21,7 +21,7 @@ const {
 const { syncCategoriesToDb } = require('../categories');
 const { getJsonPath } = require('../config/jsonPaths');
 const fcm = require('../fcm');
-const { getActiveFromListWithDistance } = require('../driverPresence');
+const { getActiveFromListWithDistance, getActiveDriversWithLocation } = require('../driverPresence');
 const enrichArhebBoxRow = require('../arhebBox').enrichArhebBoxRow;
 const { mapOrderItemsRows, formatAddOnsSummary } = require('../utils/orderItemApi');
 const { sanitizeAddOnGroups } = require('../utils/productAddOns');
@@ -139,6 +139,27 @@ function isWithinOpeningHours(store) {
   const now = getJordanMinutesNow();
   if (closeMin > openMin) return now >= openMin && now < closeMin;
   return now >= openMin || now < closeMin;
+}
+
+function parseLatLongFromGoogleMapsUrl(url) {
+  if (!url || typeof url !== 'string') return null;
+  const text = url.trim();
+  const patterns = [
+    /[?&]q=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
+    /[?&]query=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
+    /@(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
+  ];
+  for (const re of patterns) {
+    const m = text.match(re);
+    if (m) {
+      const latitude = Number(m[1]);
+      const longitude = Number(m[2]);
+      if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
+        return { latitude, longitude };
+      }
+    }
+  }
+  return null;
 }
 
 function saveCategories(categories) {
@@ -1504,11 +1525,70 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (!status || typeof status !== 'string') {
       return res.status(400).json({ success: false, message: 'status is required' });
     }
-    db.prepare('UPDATE orders SET status = ? WHERE id = ?').run(status.trim(), orderId);
-    const updated = findOrderById.get(orderId);
+    const nextStatus = status.trim();
+    if (nextStatus.toLowerCase() === 'on the way') {
+      db.prepare('UPDATE orders SET status = ?, nearArrivalNotified = 0 WHERE id = ?').run(nextStatus, orderId);
+    } else {
+      db.prepare('UPDATE orders SET status = ? WHERE id = ?').run(nextStatus, orderId);
+    }
+    let updated = findOrderById.get(orderId);
     const items = findOrderItems.all(orderId);
     // Notify customer of order status change via FCM
-    fcm.sendToUserByPhone(db, order.phoneNumber, 'Order status updated', `Order #${orderId} is now: ${status.trim()}`, null, { orderId: String(orderId), status: status.trim(), type: 'order_status' }).catch(() => {});
+    fcm.sendToUserByPhone(db, order.phoneNumber, 'Order status updated', `Order #${orderId} is now: ${nextStatus}`, null, { orderId: String(orderId), status: nextStatus, type: 'order_status' }).catch(() => {});
+
+    // Auto-assign nearest active driver when status becomes Preparing and order has no driver yet.
+    let autoAssignedDriverId = null;
+    if (nextStatus.toLowerCase() === 'preparing' && updated.driverId == null) {
+      try {
+        let drivers = [];
+        try {
+          drivers = db.prepare('SELECT id FROM drivers WHERE isBlocked = 0').all();
+        } catch (e) {
+          if (!e.message || !e.message.includes('no such table')) throw e;
+        }
+        const pendingDriverIds = new Set();
+        try {
+          const pending = db.prepare('SELECT driverId FROM driver_requests WHERE orderId = ? AND status = ?').all(orderId, 'pending');
+          pending.forEach((r) => pendingDriverIds.add(r.driverId));
+        } catch (e) {
+          if (!e.message || !e.message.includes('no such table')) throw e;
+        }
+        const candidateIds = drivers.filter((d) => !pendingDriverIds.has(d.id)).map((d) => d.id);
+        const stores = loadStores();
+        const store = updated.storeId ? stores.find((s) => String(s.id) === String(updated.storeId)) : null;
+        const parsed = parseLatLongFromGoogleMapsUrl(store?.mapsUrl);
+        const storeLat =
+          (store && (store.latitude != null || store.lat != null))
+            ? Number(store.latitude ?? store.lat)
+            : parsed?.latitude ?? null;
+        const storeLong =
+          (store && (store.longitude != null || store.long != null))
+            ? Number(store.longitude ?? store.long)
+            : parsed?.longitude ?? null;
+        const withDistance = getActiveFromListWithDistance(candidateIds, storeLat, storeLong);
+        const nearest = withDistance[0];
+        if (nearest) {
+          db.prepare('INSERT OR IGNORE INTO driver_requests (orderId, driverId, status) VALUES (?, ?, ?)').run(orderId, nearest.driverId, 'pending');
+          autoAssignedDriverId = nearest.driverId;
+          fcm.sendToDriver(
+            db,
+            nearest.driverId,
+            'New delivery assigned',
+            `Order #${orderId} from ${store?.nameEn || store?.name || store?.nameAr || 'store'} has been auto-assigned to you.`,
+            {
+              orderId: String(orderId),
+              storeId: String(updated.storeId || ''),
+              storeName: String(store?.nameEn || store?.name || store?.nameAr || ''),
+              storeMapsUrl: String(store?.mapsUrl || ''),
+              type: 'driver_request',
+            }
+          ).catch(() => {});
+        }
+      } catch (e) {
+        console.error('Auto-assign on preparing failed:', e);
+      }
+      updated = findOrderById.get(orderId);
+    }
     return res.status(200).json({
       success: true,
       data: {
@@ -1516,6 +1596,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
           ...updated,
           items: mapOrderItemsRows(items),
         },
+        autoAssignedDriverId,
       },
     });
   });
@@ -1601,8 +1682,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const candidateIds = drivers.filter((d) => !pendingDriverIds.has(d.id)).map((d) => d.id);
     const stores = loadStores();
     const store = order.storeId ? stores.find((s) => String(s.id) === String(order.storeId)) : null;
-    const storeLat = store && (store.latitude != null || store.lat != null) ? (store.latitude ?? store.lat) : null;
-    const storeLong = store && (store.longitude != null || store.long != null) ? (store.longitude ?? store.long) : null;
+    const parsed = parseLatLongFromGoogleMapsUrl(store?.mapsUrl);
+    const storeLat = store && (store.latitude != null || store.lat != null) ? Number(store.latitude ?? store.lat) : (parsed?.latitude ?? null);
+    const storeLong = store && (store.longitude != null || store.long != null) ? Number(store.longitude ?? store.long) : (parsed?.longitude ?? null);
     const withDistance = getActiveFromListWithDistance(candidateIds, storeLat, storeLong);
     const driverById = Object.fromEntries(drivers.map((d) => [d.id, d]));
     const list = withDistance.map((d) => ({
@@ -1684,8 +1766,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const candidateIds = drivers.filter((d) => !pendingDriverIds.has(d.id)).map((d) => d.id);
     const stores = loadStores();
     const store = order.storeId ? stores.find((s) => String(s.id) === String(order.storeId)) : null;
-    const storeLat = store && (store.latitude != null || store.lat != null) ? (store.latitude ?? store.lat) : null;
-    const storeLong = store && (store.longitude != null || store.long != null) ? (store.longitude ?? store.long) : null;
+    const parsed = parseLatLongFromGoogleMapsUrl(store?.mapsUrl);
+    const storeLat = store && (store.latitude != null || store.lat != null) ? Number(store.latitude ?? store.lat) : (parsed?.latitude ?? null);
+    const storeLong = store && (store.longitude != null || store.long != null) ? Number(store.longitude ?? store.long) : (parsed?.longitude ?? null);
     const withDistance = getActiveFromListWithDistance(candidateIds, storeLat, storeLong);
     const nearest = withDistance[0];
     if (!nearest) {
@@ -1697,7 +1780,19 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     }
     const insertRequest = db.prepare('INSERT OR IGNORE INTO driver_requests (orderId, driverId, status) VALUES (?, ?, ?)');
     insertRequest.run(orderId, nearest.driverId, 'pending');
-    fcm.sendToDriver(db, nearest.driverId, 'New delivery assigned', `Order #${orderId} has been auto-assigned to you. Open the app to accept.`, { orderId: String(orderId), type: 'driver_request' }).catch(() => {});
+    fcm.sendToDriver(
+      db,
+      nearest.driverId,
+      'New delivery assigned',
+      `Order #${orderId} from ${store?.nameEn || store?.name || store?.nameAr || 'store'} has been auto-assigned to you. Open the app to accept.`,
+      {
+        orderId: String(orderId),
+        storeId: String(order.storeId || ''),
+        storeName: String(store?.nameEn || store?.name || store?.nameAr || ''),
+        storeMapsUrl: String(store?.mapsUrl || ''),
+        type: 'driver_request',
+      }
+    ).catch(() => {});
     return res.status(200).json({
       success: true,
       message: 'Order auto-assigned to nearest active driver. They will be notified.',
@@ -1739,6 +1834,44 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
         trackFrom: 'driver_accept_until_delivery',
       },
     });
+  });
+
+  // ——— Live active drivers map (Aqaba dashboard) ———
+  app.get('/api/admin/drivers/active-map', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      const active = getActiveDriversWithLocation();
+      let driversMeta = [];
+      try {
+        driversMeta = db.prepare('SELECT id, name, mobile, vehicleType, vehicleNumber FROM drivers WHERE isBlocked = 0').all();
+      } catch (e) {
+        if (!e.message || !e.message.includes('no such table')) throw e;
+      }
+      const metaById = Object.fromEntries(driversMeta.map((d) => [Number(d.id), d]));
+      const drivers = active
+        .filter((d) => d.latitude != null && d.longitude != null)
+        .map((d) => ({
+          id: d.driverId,
+          name: metaById[d.driverId]?.name || null,
+          mobile: metaById[d.driverId]?.mobile || null,
+          vehicleType: metaById[d.driverId]?.vehicleType || null,
+          vehicleNumber: metaById[d.driverId]?.vehicleNumber || null,
+          latitude: d.latitude,
+          longitude: d.longitude,
+          lastSeen: d.lastSeen,
+        }));
+      return res.status(200).json({
+        success: true,
+        data: {
+          city: 'Aqaba',
+          center: { latitude: 29.5321, longitude: 35.0063 },
+          activeDriversCount: drivers.length,
+          drivers,
+        },
+      });
+    } catch (e) {
+      console.error('Active drivers map error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to load active drivers map' });
+    }
   });
 
   // ——— Delete order (Admin and SuperAdmin only; order_items removed by CASCADE) ———
@@ -2126,6 +2259,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       nameAr: body.nameAr ?? body.name ?? '',
       nameEn: body.nameEn ?? body.name ?? '',
       image: body.image ?? null,
+      iconAr: body.iconAr ?? null,
+      iconEn: body.iconEn ?? null,
       isComingSoon: Boolean(body.isComingSoon),
       order: body.order ?? categories.length + 1,
       subCategories: Array.isArray(body.subCategories) ? body.subCategories : [],
@@ -2147,7 +2282,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const idParam = String(req.params.id);
     const idx = categories.findIndex((c) => String(c.id) === idParam);
     if (idx === -1) return res.status(404).json({ success: false, message: 'Category not found' });
-    const allowed = ['name', 'nameAr', 'nameEn', 'image', 'isComingSoon', 'order', 'subCategories'];
+    const allowed = ['name', 'nameAr', 'nameEn', 'image', 'iconAr', 'iconEn', 'isComingSoon', 'order', 'subCategories'];
     const body = req.body || {};
     for (const key of allowed) {
       if (body[key] !== undefined) categories[idx][key] = body[key];

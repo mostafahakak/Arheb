@@ -1141,7 +1141,7 @@ Deletes the address at the given index (0-based). After deletion, the first rema
 
 ### Quote Checkout Fees
 
-Call **before** `POST /api/checkout` to preview **delivery fee**, **service fee**, and **VAT** using the same rules as **Arheb Box** for delivery pricing, with **16% VAT on the delivery fee only** (not on the order subtotal and not on the service fee — same as store checkout).
+Call **before** `POST /api/checkout` to preview **delivery fee**, **service fee**, and **VAT** using the same rules as **Arheb Box** for delivery pricing, with **7% VAT on the delivery fee only** (not on the order subtotal and not on the service fee — same as store checkout).
 
 **Endpoint:** `POST /api/checkout/quote-fees`
 
@@ -1152,7 +1152,7 @@ Call **before** `POST /api/checkout` to preview **delivery fee**, **service fee*
 | Field | Type | Required | Description |
 |--------|------|----------|-------------|
 | `storeId` | string | Yes | Store id (must exist in `stores_listing_response.json`). |
-| `storeLocation` | object | Yes | Pickup point: **`latitude`** and **`longitude`** (numbers, WGS84). Use the store’s coordinates when placing the order. |
+| `storeLocation` | object | No | Optional. If sent, it can be used for client-side display only. Server now resolves store location from `storeId` + store `mapsUrl` / store coordinates. |
 | `deliveryLocation` | object | Yes | Customer drop-off: **`latitude`** and **`longitude`** (numbers). |
 | `weightKg` | number | No | Cart / shipment weight in kg for delivery pricing (default `0`). Same weight basis as checkout’s server-side delivery fee. |
 
@@ -1161,7 +1161,6 @@ Call **before** `POST /api/checkout` to preview **delivery fee**, **service fee*
 ```json
 {
   "storeId": "1",
-  "storeLocation": { "latitude": 29.532, "longitude": 35.006 },
   "deliveryLocation": { "latitude": 29.54, "longitude": 35.01 },
   "weightKg": 2.5
 }
@@ -1175,15 +1174,16 @@ Call **before** `POST /api/checkout` to preview **delivery fee**, **service fee*
   "data": {
     "storeId": "1",
     "storeName": "كريسبي تشيكن",
+    "storeLocation": { "latitude": 29.532, "longitude": 35.006 },
     "distanceKm": 1.234,
     "minAmountJod": 2,
     "weightKg": 2.5,
     "currency": "JOD",
     "deliveryFee": 1.38,
     "serviceFee": 0.65,
-    "feesTaxRate": 0.16,
+    "feesTaxRate": 0.07,
     "feesTax": 0.22,
-    "feesTaxNote": "16% VAT on delivery fee only (not on order subtotal or service fee).",
+    "feesTaxNote": "7% VAT on delivery fee only (not on order subtotal or service fee).",
     "invoiceTotal": 2.25,
     "pricingNote": "Delivery fee matches Arheb Box: 1 JOD + 0.15 JOD/kg (uncapped). distanceKm and minAmountJod describe the route (same haversine rules as POST /api/arheb-box/quote)."
   },
@@ -1193,9 +1193,10 @@ Call **before** `POST /api/checkout` to preview **delivery fee**, **service fee*
 
 - **`deliveryFee`**: `1 + 0.15 × weightKg` JOD (rounded to 2 decimals), same as **Arheb Box** / store checkout.
 - **`serviceFee`**: fixed **0.65** JOD.
-- **`feesTax`**: **16% × deliveryFee** only.
+- **`feesTax`**: **7% × deliveryFee** only.
 - **`invoiceTotal`**: `deliveryFee + serviceFee + feesTax` (fees-only total; does **not** include cart subtotal).
 - **`distanceKm` / `minAmountJod`**: route metrics (1 JOD/km, minimum 2 JOD — same helper as **POST /api/arheb-box/quote**); informational for the client.
+- Store location is resolved server-side from the store record (`storeId`) using store lat/long if present, otherwise parsed from `mapsUrl`.
 
 **Error responses:** `400` (missing/invalid body), `404` (unknown `storeId`), `500` (server error).
 
@@ -2711,13 +2712,14 @@ For issues or questions, please contact: `contact@arheb.app`
 
 ## API Changelog
 
-**Last updated: 2026-01-31**
+**Last updated: 2026-03-26**
 
 ### New APIs
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| POST | `/api/checkout/quote-fees` | User (Bearer) | Pre-checkout quote: `storeId`, `storeLocation` and `deliveryLocation` (lat/long), optional `weightKg`. Returns delivery fee (Arheb Box formula), service fee, 16% VAT on delivery fee only, route `distanceKm` / `minAmountJod`. |
+| POST | `/api/checkout/quote-fees` | User (Bearer) | Pre-checkout quote: `storeId` and `deliveryLocation` (lat/long), optional `weightKg`. Returns delivery fee (Arheb Box formula), service fee, 7% VAT on delivery fee only, route `distanceKm` / `minAmountJod`. |
+| GET | `/api/admin/drivers/active-map` | Admin / SuperAdmin | Returns active connected drivers for live map tracking (Aqaba): `{ city, center, activeDriversCount, drivers[] }`. |
 | GET | `/api/admin/orders/:orderId/available-drivers` | Admin (Store Admin: own store orders only) | Returns non-blocked drivers that do not already have a pending request for this order. Used when assigning a driver to an order. |
 | POST | `/api/admin/orders/:orderId/request-driver` | Admin (Store Admin: own store orders only) | Sends a delivery request to one or more drivers. Body: `{ "driverIds": [1, 2, 3] }`. Allowed only when order status is "Preparing" or "Waiting confirmation" and order has no driver assigned. |
 | GET | `/api/admin/orders/:orderId/tracking` | Admin (Store Admin: own store orders only) | Returns order tracking state for the dashboard: `orderId`, `orderStatus`, `driverId`, `driverName`, `isTracking`, `driverConnected`, `lastLocation` (latitude, longitude, timestamp). Used with Socket.IO for live driver tracking. |
@@ -2747,6 +2749,7 @@ For issues or questions, please contact: `contact@arheb.app`
 - **Admin Orders**  
   - **GET** `/api/admin/orders`: Supports filter by **`status`** (exact value: e.g. `Waiting confirmation`, `Preparing`, `On the way`, `Delivered`, `Cancelled`) in addition to existing `orderType`, `dateFrom`, `dateTo`, `storeName`, `name`. **Admin/SuperAdmin** can filter by **`storeIds`** (comma-separated) to limit to one or more stores; Store Admin sees only their store.  
   - **GET** `/api/admin/orders/counts`: **Admin/SuperAdmin** can pass optional **`storeIds`** (comma-separated) to get active/delivered/cancelled counts for selected stores only. Returns `{ active, delivered, cancelled, complete }`.
+  - **PATCH** `/api/admin/orders/:orderId/status`: when status is set to **`Preparing`** and order has no driver, backend auto-assigns nearest active driver (if available) and sends FCM to driver with order/store details.
 
 - **Driver order detail**  
   - **GET** `/api/driver/orders/:orderId` (and all driver order payloads): Response now includes **`storeName`**, **`storeAddress`**, **`storeMapsUrl`**, **`clientMapsUrl`** (Google Maps link for delivery address), **`numberOfItems`**, in addition to existing `totalPrice`, `deliveryFee`, `address`, and products.
@@ -2801,6 +2804,10 @@ For issues or questions, please contact: `contact@arheb.app`
   - **GET** `/api/admin/orders/:orderId/nearby-drivers` – returns active drivers with distance to store (when store has lat/long).  
   - **POST** `/api/admin/orders/:orderId/auto-assign` – assigns the nearest active driver and sends FCM to that driver.  
   - **POST** `/api/admin/orders/:orderId/request-driver` – sends FCM to each requested driver.
+  - For **`On the way`** orders, when driver gets within **0.5 km** of customer location, backend sends one-time **"order is near"** FCM notification to the user.
+
+- **Categories (icons by language)**  
+  - Category payloads now support **`iconAr`** and **`iconEn`** fields (stored and returned by categories APIs and admin category CRUD).
 
 - **Stores: Pause & Block**  
   - Stores can be **paused** (hidden from users; admins see status “Paused”) or **blocked** (hidden from users; only Admin/SuperAdmin can unblock; Store Admin cannot edit or add/remove products).  

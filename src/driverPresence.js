@@ -8,6 +8,7 @@
  */
 
 const jwt = require('jsonwebtoken');
+const fcm = require('./fcm');
 
 // driverId -> { socketId, latitude, longitude, lastSeen }
 const activeDrivers = new Map();
@@ -92,6 +93,10 @@ function getActiveFromListWithDistance(driverIds, storeLat, storeLong) {
   return list;
 }
 
+function round3(n) {
+  return Math.round((Number(n) + Number.EPSILON) * 1000) / 1000;
+}
+
 module.exports = function attachDriverPresence(io, db, JWT_SECRET) {
   const findDriverById = db.prepare('SELECT id FROM drivers WHERE id = ? AND isBlocked = 0');
   const nsp = io.of('/driver-presence');
@@ -142,6 +147,35 @@ module.exports = function attachDriverPresence(io, db, JWT_SECRET) {
         }
       } catch (e) {
         /* ignore */
+      }
+      // Notify customer once when driver is within 0.5km of delivery location.
+      try {
+        const rows = db.prepare(`
+          SELECT id, phoneNumber, addressLat, addressLong, nearArrivalNotified
+          FROM orders
+          WHERE driverId = ?
+            AND status = 'On the way'
+        `).all(driverId);
+        for (const order of rows) {
+          const dLat = Number(order.addressLat);
+          const dLong = Number(order.addressLong);
+          if (!Number.isFinite(dLat) || !Number.isFinite(dLong)) continue;
+          if (Number(order.nearArrivalNotified || 0) === 1) continue;
+          const distanceKm = haversineKm(lat, lon, dLat, dLong);
+          if (distanceKm <= 0.5) {
+            db.prepare('UPDATE orders SET nearArrivalNotified = 1 WHERE id = ?').run(order.id);
+            fcm.sendToUserByPhone(
+              db,
+              order.phoneNumber,
+              'Order is near',
+              `Order #${order.id} is about ${round3(distanceKm)} km away and will arrive soon.`,
+              null,
+              { orderId: String(order.id), type: 'order_near_arrival', distanceKm: String(round3(distanceKm)) }
+            ).catch(() => {});
+          }
+        }
+      } catch (e) {
+        /* ignore near-arrival notifications */
       }
       socket.emit('location_ack', { success: true });
     });
