@@ -117,7 +117,7 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
 
 - **Firebase Cloud Messaging (FCM)** is used to send push notifications to drivers (e.g. new order assigned) and to app users (order status updates, broadcast messages). Set **`FIREBASE_SERVICE_ACCOUNT_JSON`** in `.env` to a **stringified JSON** of your Firebase service account key (Project settings → Service accounts → Generate new private key). If unset, the backend uses `GOOGLE_APPLICATION_CREDENTIALS` (path to key file). Without valid credentials, FCM send is skipped (no crash).
 - **Driver presence**: Drivers connect to the **Socket.IO namespace `/driver-presence`** with their driver JWT and send `location` events (`latitude`, `longitude`). The server keeps a list of active drivers and their last location. Admin can request **nearby drivers** for an order (by distance to store) and **auto-assign** the nearest active driver; the driver is notified via FCM.
-- **User FCM**: Users can set `fcmToken` via **PUT /api/profile** or send it with **POST /api/checkout**. Order status changes (and broadcast notifications) are sent to the user’s token.
+- **User FCM**: Users can set `fcmToken` via **PUT /api/profile** or send it with **POST /api/checkout**. Order status changes (and broadcast notifications) are sent to the user’s token. **GET /api/profile/notifications** lists notification history for that user only (Bearer user JWT).
 - **Broadcast**: Admin/SuperAdmin can send a notification to all registered users via **POST /api/admin/notifications/broadcast** (`title`, `body`, optional `imageUrl`).
 
 ---
@@ -1052,6 +1052,53 @@ Retrieves the authenticated user's profile (name and addresses list).
   "timestamp": "2024-01-15T10:30:00Z"
 }
 ```
+
+---
+
+### List user notification history (in-app inbox)
+
+Returns **push notifications that were sent to this user** (order updates, near-arrival, broadcast “send to all”, etc.). Rows are stored when the backend sends FCM via `sendToUserByPhone` / broadcast. **Only the authenticated user’s rows** are returned (matched by `phoneNumber` from the Bearer JWT — same identity as when you register **`fcmToken`** on **PUT /api/profile**).
+
+**Endpoint:** `GET /api/profile/notifications`
+
+**Authentication:** Required (**Bearer** user JWT — not admin)
+
+**Query parameters:**
+- `page` (optional, default `1`)
+- `perPage` (optional, default `20`, max `50`)
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "message": "Notifications retrieved successfully",
+  "data": {
+    "notifications": [
+      {
+        "id": 1,
+        "title": "Order confirmed",
+        "body": "Order #12 is confirmed and preparing.",
+        "imageUrl": null,
+        "data": {
+          "orderId": "12",
+          "status": "Preparing",
+          "type": "order_tracking",
+          "screen": "order_details",
+          "deepLink": "arheb://orders/12",
+          "click_action": "FLUTTER_NOTIFICATION_CLICK"
+        },
+        "createdAt": "2026-03-26T12:00:00.000Z"
+      }
+    ],
+    "page": 1,
+    "perPage": 20,
+    "total": 1
+  },
+  "timestamp": "2026-03-26T12:00:00.000Z"
+}
+```
+
+The mobile app should use the same **Bearer token** as other user APIs; **`data`** mirrors the FCM `data` payload for deep links (`orderId`, `deepLink`, `type`, etc.).
 
 ---
 
@@ -2720,7 +2767,7 @@ For issues or questions, please contact: `contact@arheb.app`
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
 | POST | `/api/checkout/quote-fees` | User (Bearer) | Pre-checkout quote: `storeId` and `deliveryLocation` (lat/long), optional `weightKg`. Returns delivery fee (Arheb Box formula), service fee, 7% VAT on delivery fee only, route `distanceKm` / `minAmountJod`. |
-| GET | `/api/admin/drivers/active-map` | Admin / SuperAdmin | Returns active connected drivers for live map tracking (Aqaba): `{ city, center, activeDriversCount, drivers[] }`. |
+| GET | `/api/admin/drivers/active-map` | Admin / SuperAdmin | Returns drivers on **`/driver-presence`** (non-stale): `{ city, center, activeDriversCount, driversWithLocationCount, drivers[] }`. Each driver includes `hasLocation`, `latitude`, `longitude` (null until the app emits `location`), `lastSeen`. |
 | GET | `/api/admin/orders/:orderId/available-drivers` | Admin (Store Admin: own store orders only) | Returns non-blocked drivers that do not already have a pending request for this order. Used when assigning a driver to an order. |
 | POST | `/api/admin/orders/:orderId/request-driver` | Admin (Store Admin: own store orders only) | Sends a delivery request to one or more drivers. Body: `{ "driverIds": [1, 2, 3] }`. Allowed only when order status is "Preparing" or "Waiting confirmation" and order has no driver assigned. |
 | GET | `/api/admin/orders/:orderId/tracking` | Admin (Store Admin: own store orders only) | Returns order tracking state for the dashboard: `orderId`, `orderStatus`, `driverId`, `driverName`, `isTracking`, `driverConnected`, `lastLocation` (latitude, longitude, timestamp). Used with Socket.IO for live driver tracking. |
@@ -2733,6 +2780,7 @@ For issues or questions, please contact: `contact@arheb.app`
 | GET | `/api/admin/stores/pause-history` | Admin | Returns store pause history: sessions (pausedAt, unpausedAt, durationMinutes) and total duration. Query: `dateFrom`, `dateTo` (default today), optional `storeIds` (comma-separated). Store Admin sees only their store. |
 | GET | `/api/admin/notifications` | Admin / SuperAdmin | Returns list of sent broadcast notifications (id, title, body, imageUrl, successCount, failureCount, createdAt) for the dashboard history. |
 | POST | `/api/admin/notifications/broadcast` | Admin / SuperAdmin | Sends FCM to all users. Body: `{ title, body, imageUrl? }`. Each broadcast is **saved** to the `Notifications` table for later retrieval via GET `/api/admin/notifications`. |
+| GET | `/api/profile/notifications` | User (Bearer) | In-app notification inbox: paginated list (`page`, `perPage`) of notifications **sent to this user only**. Persisted in `user_notifications` when FCM is sent (per-user pushes and broadcast). Each item includes `data` (FCM payload: `orderId`, `deepLink`, `type`, …). |
 
 ### Adjusted / Updated APIs
 
@@ -2801,11 +2849,17 @@ For issues or questions, please contact: `contact@arheb.app`
   - **Broadcast:** **POST** `/api/admin/notifications/broadcast` (Admin/SuperAdmin) – body `{ title, body, imageUrl? }` sends FCM to all users with a stored token.
   - Tracking notifications include clickable data payload keys: `orderId`, `status`, `type`, `screen`, `deepLink`, `click_action`.
 
+- **Notification `data.type` values (for app click handling)**
+  - `order_tracking`: customer receives order status updates (e.g. `Waiting confirmation`, `Preparing`, `On the way`, `Delivered`)
+  - `driver_request`: driver receives an order assignment/request in the **Preparing** stage
+  - `order_near_arrival`: customer receives a one-time notification when driver is within **0.5 km**
+
 - **Driver presence (WebSocket)**  
   - Drivers connect to Socket.IO namespace **`/driver-presence`** with driver JWT and emit **`location`** `{ latitude, longitude }`.  
   - **GET** `/api/admin/orders/:orderId/nearby-drivers` – returns active drivers with distance to store (when store has lat/long).  
   - **POST** `/api/admin/orders/:orderId/auto-assign` – assigns the nearest active driver and sends FCM to that driver.  
   - **POST** `/api/admin/orders/:orderId/request-driver` – sends FCM to each requested driver.
+  - **Driver assignment FCM (manual + auto):** In all cases above, plus **PATCH** `/api/admin/orders/:orderId/status` → **`Preparing`** when the backend auto-assigns the nearest driver, the driver push includes **`type: driver_request`**, **`orderId`**, **`deepLink`: `arheb://orders/{orderId}`**, **`screen: order_details`**, **`click_action`**, and store fields where applicable — tap should open the driver’s order details for that `orderId`.
   - For **`On the way`** orders, when driver gets within **0.5 km** of customer location, backend sends one-time **"order is near"** FCM notification to the user.
 
 - **Categories (icons by language)**  

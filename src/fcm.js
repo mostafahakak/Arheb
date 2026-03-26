@@ -68,6 +68,33 @@ function buildMessagePayload(title, body, imageUrl, data = {}) {
 }
 
 /**
+ * Persist a row in user_notifications so the in-app inbox matches pushes sent to this user.
+ */
+function insertUserNotification(db, phoneNumber, title, body, imageUrl, data) {
+  if (!db || !phoneNumber) return;
+  try {
+    let dataJson = null;
+    if (data && typeof data === 'object' && Object.keys(data).length > 0) {
+      dataJson = JSON.stringify(data);
+    }
+    db.prepare(
+      `INSERT INTO user_notifications (phoneNumber, title, body, imageUrl, dataJson)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run(
+      phoneNumber,
+      title || 'Notification',
+      body != null ? String(body) : null,
+      imageUrl && typeof imageUrl === 'string' ? imageUrl.trim() || null : null,
+      dataJson
+    );
+  } catch (e) {
+    if (!e.message || !e.message.includes('no such table')) {
+      console.warn('user_notifications insert failed:', e.message);
+    }
+  }
+}
+
+/**
  * Send FCM to a single token.
  * @param {string} token
  * @param {string} title
@@ -156,6 +183,7 @@ async function sendToDrivers(db, driverIds, title, body, data = {}) {
  */
 async function sendToUserByPhone(db, phoneNumber, title, body, imageUrl, data = {}) {
   if (!db || !phoneNumber) return null;
+  insertUserNotification(db, phoneNumber, title, body, imageUrl, data);
   const row = db.prepare('SELECT fcmToken FROM users WHERE phoneNumber = ? AND fcmToken IS NOT NULL AND fcmToken != ?').get(phoneNumber, '');
   return sendToToken(row?.fcmToken, title, body, imageUrl, data);
 }
@@ -165,7 +193,10 @@ async function sendToUserByPhone(db, phoneNumber, title, body, imageUrl, data = 
  */
 async function sendToAllUsers(db, title, body, imageUrl, data = {}) {
   if (!db) return { successCount: 0, failureCount: 0 };
-  const rows = db.prepare("SELECT fcmToken FROM users WHERE fcmToken IS NOT NULL AND fcmToken != ''").all();
+  const rows = db.prepare("SELECT phoneNumber, fcmToken FROM users WHERE fcmToken IS NOT NULL AND fcmToken != ''").all();
+  for (const r of rows) {
+    if (r.phoneNumber) insertUserNotification(db, r.phoneNumber, title, body, imageUrl, data);
+  }
   const tokens = rows.map((r) => r.fcmToken).filter(Boolean);
   return sendToTokens(tokens, title, body, imageUrl, data);
 }
@@ -178,4 +209,5 @@ module.exports = {
   sendToDrivers,
   sendToUserByPhone,
   sendToAllUsers,
+  insertUserNotification,
 };

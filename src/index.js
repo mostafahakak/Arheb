@@ -179,6 +179,24 @@ try {
   /* column exists */
 }
 
+// In-app notification history for customers (FCM payloads logged per user phone).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS user_notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    phoneNumber TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT,
+    imageUrl TEXT,
+    dataJson TEXT,
+    createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+try {
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_user_notifications_phone ON user_notifications(phoneNumber)`);
+} catch (e) {
+  /* ignore */
+}
+
 const upsertUser = db.prepare(`
   INSERT INTO users (phoneNumber, userId, firebaseUid, token, deleted, deletedAt)
   VALUES (@phoneNumber, @userId, @firebaseUid, @token, @deleted, @deletedAt)

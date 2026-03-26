@@ -5,3 +5,6 @@ data/
 .firebase/
 dashboard/
 
+# Firebase Admin service account keys (never commit)
+*firebase-adminsdk*.json
+

@@ -579,6 +579,23 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
       updateOrderStatus.run('Delivered', orderId);
     }
     emitOrderStatus(orderId, 'Delivered');
+
+    // Notify customer with clickable payload (opens order details in the app).
+    fcm.sendToUserByPhone(
+      db,
+      order.phoneNumber,
+      'Order delivered',
+      `Order #${orderId} has been delivered. Thank you!`,
+      null,
+      {
+        orderId: String(orderId),
+        status: 'Delivered',
+        type: 'order_tracking',
+        screen: 'order_details',
+        deepLink: `arheb://orders/${orderId}`,
+        click_action: 'FLUTTER_NOTIFICATION_CLICK',
+      }
+    ).catch(() => {});
     const updated = findOrderById.get(orderId);
     const items = findOrderItems.all(orderId);
     const driverRow = findDriverById.get(driverId);

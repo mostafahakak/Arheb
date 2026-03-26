@@ -128,9 +128,14 @@ module.exports = function attachDriverPresence(io, db, JWT_SECRET) {
     socket.emit('connected', { driverId, message: 'Driver presence registered' });
 
     socket.on('location', (data) => {
-      const lat = data?.latitude;
-      const lon = data?.longitude;
-      if (typeof lat !== 'number' || typeof lon !== 'number' || isNaN(lat) || isNaN(lon)) {
+      // Accept numbers or numeric strings (mobile JSON often sends doubles as strings).
+      const lat = Number(data?.latitude);
+      const lon = Number(data?.longitude);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+        socket.emit('error', { message: 'Invalid latitude/longitude' });
+        return;
+      }
+      if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
         socket.emit('error', { message: 'Invalid latitude/longitude' });
         return;
       }

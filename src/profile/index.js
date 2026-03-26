@@ -57,6 +57,82 @@ module.exports = function attachProfileRoutes(app, db, authenticateRequest) {
     }
   });
 
+  /**
+   * In-app notification history for the authenticated user only (Bearer user JWT).
+   * Same user as FCM registration via PUT /api/profile { fcmToken }.
+   * Query: page (default 1), perPage (default 20, max 50).
+   */
+  app.get('/api/profile/notifications', authenticateRequest, (req, res) => {
+    try {
+      const phoneNumber = req.user.phoneNumber;
+      const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+      const perPage = Math.min(50, Math.max(1, parseInt(req.query.perPage, 10) || 20));
+      const offset = (page - 1) * perPage;
+
+      let rows = [];
+      let total = 0;
+      try {
+        rows = db
+          .prepare(
+            `SELECT id, title, body, imageUrl, dataJson, createdAt
+             FROM user_notifications
+             WHERE phoneNumber = ?
+             ORDER BY datetime(createdAt) DESC, id DESC
+             LIMIT ? OFFSET ?`
+          )
+          .all(phoneNumber, perPage, offset);
+        total = db.prepare('SELECT COUNT(*) AS c FROM user_notifications WHERE phoneNumber = ?').get(phoneNumber)?.c ?? 0;
+      } catch (e) {
+        if (e.message && e.message.includes('no such table')) {
+          return res.status(200).json({
+            success: true,
+            message: 'No notifications yet',
+            data: { notifications: [], page, perPage, total: 0 },
+            timestamp: new Date().toISOString(),
+          });
+        }
+        throw e;
+      }
+
+      const notifications = rows.map((r) => {
+        let data = null;
+        if (r.dataJson) {
+          try {
+            data = JSON.parse(r.dataJson);
+          } catch {
+            data = null;
+          }
+        }
+        return {
+          id: r.id,
+          title: r.title,
+          body: r.body,
+          imageUrl: r.imageUrl,
+          data,
+          createdAt: r.createdAt,
+        };
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: 'Notifications retrieved successfully',
+        data: {
+          notifications,
+          page,
+          perPage,
+          total,
+        },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error('List user notifications error:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Internal server error',
+      });
+    }
+  });
+
   // Update user profile (name, fcmToken)
   app.put('/api/profile', authenticateRequest, (req, res) => {
     try {

@@ -1884,24 +1884,37 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
         if (!e.message || !e.message.includes('no such table')) throw e;
       }
       const metaById = Object.fromEntries(driversMeta.map((d) => [Number(d.id), d]));
-      const drivers = active
-        .filter((d) => d.latitude != null && d.longitude != null)
-        .map((d) => ({
+      // Include every non-stale presence entry. Drivers who connected but have not sent
+      // `location` yet appear with hasLocation: false (dashboard can still list them).
+      const drivers = active.map((d) => {
+        const latNum = d.latitude != null ? Number(d.latitude) : NaN;
+        const lonNum = d.longitude != null ? Number(d.longitude) : NaN;
+        const hasLocation =
+          Number.isFinite(latNum) &&
+          Number.isFinite(lonNum) &&
+          latNum >= -90 &&
+          latNum <= 90 &&
+          lonNum >= -180 &&
+          lonNum <= 180;
+        return {
           id: d.driverId,
           name: metaById[d.driverId]?.name || null,
           mobile: metaById[d.driverId]?.mobile || null,
           vehicleType: metaById[d.driverId]?.vehicleType || null,
           vehicleNumber: metaById[d.driverId]?.vehicleNumber || null,
-          latitude: d.latitude,
-          longitude: d.longitude,
+          latitude: hasLocation ? latNum : null,
+          longitude: hasLocation ? lonNum : null,
+          hasLocation,
           lastSeen: d.lastSeen,
-        }));
+        };
+      });
       return res.status(200).json({
         success: true,
         data: {
           city: 'Aqaba',
           center: { latitude: 29.5321, longitude: 35.0063 },
           activeDriversCount: drivers.length,
+          driversWithLocationCount: drivers.filter((x) => x.hasLocation).length,
           drivers,
         },
       });
