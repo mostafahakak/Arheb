@@ -84,6 +84,7 @@ function orderToDriverApi(order, items = [], driverRow = null, store = null) {
     driver_longitude: driver ? driverRow.longitude : null,
     numberOfItems,
     clientMapsUrl,
+    deliveryProofImage: order.deliveryProofImage || null,
   };
   if (store) {
     out.storeName = store.nameEn || store.name || store.nameAr || null;
@@ -137,6 +138,11 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
   }
   try {
     db.exec(`ALTER TABLE orders ADD COLUMN driverName TEXT`);
+  } catch (e) {
+    // column exists
+  }
+  try {
+    db.exec(`ALTER TABLE orders ADD COLUMN deliveryProofImage TEXT`);
   } catch (e) {
     // column exists
   }
@@ -505,6 +511,21 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     const driverName = driverRowForAccept ? driverRowForAccept.name : null;
     updateOrderDriver.run(driverId, driverName, 'On the way', orderId);
     emitOrderStatus(orderId, 'On the way');
+    fcm.sendToUserByPhone(
+      db,
+      order.phoneNumber,
+      'Driver assigned',
+      `Driver is assigned for Order #${orderId} and is on the way.`,
+      null,
+      {
+        orderId: String(orderId),
+        status: 'On the way',
+        type: 'order_tracking',
+        screen: 'order_details',
+        deepLink: `arheb://orders/${orderId}`,
+        click_action: 'FLUTTER_NOTIFICATION_CLICK',
+      }
+    ).catch(() => {});
     const updated = findOrderById.get(orderId);
     const items = findOrderItems.all(orderId);
     const driverRow = findDriverById.get(driverId);
@@ -547,9 +568,17 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
         message: 'Order must be On the way before marking delivered. Accept the order first.',
       });
     }
-    updateOrderStatus.run('Delivered', orderId);
+    const body = req.body || {};
+    const deliveryProofImage =
+      body.deliveryProofImage != null && typeof body.deliveryProofImage === 'string'
+        ? body.deliveryProofImage.trim() || null
+        : null;
+    if (deliveryProofImage) {
+      db.prepare('UPDATE orders SET status = ?, deliveryProofImage = ? WHERE id = ?').run('Delivered', deliveryProofImage, orderId);
+    } else {
+      updateOrderStatus.run('Delivered', orderId);
+    }
     emitOrderStatus(orderId, 'Delivered');
-    fcm.sendToUserByPhone(db, order.phoneNumber, 'Order delivered', `Order #${orderId} has been delivered. Thank you!`, null, { orderId: String(orderId), status: 'Delivered', type: 'order_status' }).catch(() => {});
     const updated = findOrderById.get(orderId);
     const items = findOrderItems.all(orderId);
     const driverRow = findDriverById.get(driverId);

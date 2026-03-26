@@ -2538,12 +2538,13 @@ Marks a **store order** as **Delivered**. The **Bearer token** identifies the dr
 
 | Method | Path | Body |
 |--------|------|------|
-| POST | `/api/driver/orders/:orderId/complete` | _(none)_ — `orderId` in URL |
-| POST | `/api/driver/orders/complete` | `{ "orderId": 20 }` |
+| POST | `/api/driver/orders/:orderId/complete` | Optional: `{ "deliveryProofImage": "https://..." }` |
+| POST | `/api/driver/orders/complete` | `{ "orderId": 20, "deliveryProofImage": "https://..." }` |
 
 **Authentication:** Required (**Driver** `Authorization: Bearer <token>`)
 
-**Request Body** (only for `/complete`): `orderId` (number or string). Optional `driverId` must match the token user or request is `403`.
+**Request Body** (only for `/complete`): `orderId` (number or string). Optional `driverId` must match the token user or request is `403`.  
+Optional `deliveryProofImage` (string URL) is saved on the order and returned in order details for admin/store dashboard.
 
 **Success Response (200):**
 ```json
@@ -2795,9 +2796,10 @@ For issues or questions, please contact: `contact@arheb.app`
 ### FCM, driver presence, store pause/block, customer orders & tracking, Arheb Box
 
 - **Push notifications (FCM)**  
-  - **Driver:** **PATCH** `/api/driver/fcm` – body `{ fcmToken }` to register/update token when driver is active. Drivers receive FCM when an order is requested/auto-assigned to them.  
-  - **User:** **PUT** `/api/profile` and **POST** `/api/checkout` accept optional **`fcmToken`**. Order status changes (and broadcast) send FCM to the user.  
+  - **Driver:** **PATCH** `/api/driver/fcm` – body `{ fcmToken }` to register/update token when driver is active. Drivers receive order notifications only in **Preparing** stage (request/auto-assign).  
+  - **User:** **PUT** `/api/profile` and **POST** `/api/checkout` accept optional **`fcmToken`**. Users receive tracking notifications for: order confirmed/preparing, driver assigned/on-the-way, and near-arrival (0.5 km).  
   - **Broadcast:** **POST** `/api/admin/notifications/broadcast` (Admin/SuperAdmin) – body `{ title, body, imageUrl? }` sends FCM to all users with a stored token.
+  - Tracking notifications include clickable data payload keys: `orderId`, `status`, `type`, `screen`, `deepLink`, `click_action`.
 
 - **Driver presence (WebSocket)**  
   - Drivers connect to Socket.IO namespace **`/driver-presence`** with driver JWT and emit **`location`** `{ latitude, longitude }`.  
@@ -2820,6 +2822,7 @@ For issues or questions, please contact: `contact@arheb.app`
   - **GET** `/api/checkout` returns **all** store orders for the user plus **`arhebBoxRequests`** (same user’s Arheb Box deliveries) and **`arhebBoxCount`**; each store order includes **`storeId`**, **`driverId`**, **`driverName`**.  
   - **GET** `/api/orders/:orderId` (customer auth) – returns order with **live status** and items for tracking by order ID.  
   - **GET** `/api/orders/:orderId/tracking` – response now includes **`data.status`** (current order status) in addition to location and driver connected.
+  - Driver completion can include optional **`deliveryProofImage`** URL; it is stored on the order and visible in dashboard order details.
 
 - **Arheb Box: FCM & drivers**  
   - **POST** `/api/arheb-box` accepts optional **`fcmToken`**; stored on the request and used for status notifications, and **requires `receiverPhone` + `receiverName`** so drivers can contact the receiver.  

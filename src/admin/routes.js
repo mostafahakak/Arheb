@@ -1533,8 +1533,25 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     }
     let updated = findOrderById.get(orderId);
     const items = findOrderItems.all(orderId);
-    // Notify customer of order status change via FCM
-    fcm.sendToUserByPhone(db, order.phoneNumber, 'Order status updated', `Order #${orderId} is now: ${nextStatus}`, null, { orderId: String(orderId), status: nextStatus, type: 'order_status' }).catch(() => {});
+    // User notifications for tracking flow:
+    // - confirmed/preparing
+    if (nextStatus.toLowerCase() === 'waiting confirmation' || nextStatus.toLowerCase() === 'preparing') {
+      fcm.sendToUserByPhone(
+        db,
+        order.phoneNumber,
+        'Order confirmed',
+        `Order #${orderId} is confirmed and preparing.`,
+        null,
+        {
+          orderId: String(orderId),
+          status: nextStatus,
+          type: 'order_tracking',
+          screen: 'order_details',
+          deepLink: `arheb://orders/${orderId}`,
+          click_action: 'FLUTTER_NOTIFICATION_CLICK',
+        }
+      ).catch(() => {});
+    }
 
     // Auto-assign nearest active driver when status becomes Preparing and order has no driver yet.
     let autoAssignedDriverId = null;
@@ -1577,10 +1594,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
             `Order #${orderId} from ${store?.nameEn || store?.name || store?.nameAr || 'store'} has been auto-assigned to you.`,
             {
               orderId: String(orderId),
+              status: 'Preparing',
               storeId: String(updated.storeId || ''),
               storeName: String(store?.nameEn || store?.name || store?.nameAr || ''),
               storeMapsUrl: String(store?.mapsUrl || ''),
               type: 'driver_request',
+              screen: 'order_details',
+              deepLink: `arheb://orders/${orderId}`,
+              click_action: 'FLUTTER_NOTIFICATION_CLICK',
             }
           ).catch(() => {});
         }
@@ -1617,7 +1638,6 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     db.prepare('UPDATE orders SET status = ? WHERE id = ?').run('Cancelled', orderId);
     const updated = findOrderById.get(orderId);
     const items = findOrderItems.all(orderId);
-    fcm.sendToUserByPhone(db, order.phoneNumber, 'Order cancelled', `Order #${orderId} has been cancelled by the store.`, null, { orderId: String(orderId), status: 'Cancelled', type: 'order_status' }).catch(() => {});
     return res.status(200).json({
       success: true,
       data: {
@@ -1708,8 +1728,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       return res.status(403).json({ success: false, message: 'Access denied to this order' });
     }
     const statusLower = (order.status || '').toLowerCase();
-    if (!statusLower.includes('preparing') && !statusLower.includes('waiting')) {
-      return res.status(400).json({ success: false, message: 'Can only request driver when order is Preparing or Waiting confirmation' });
+    if (!statusLower.includes('preparing')) {
+      return res.status(400).json({ success: false, message: 'Can only request driver when order is Preparing' });
     }
     if (order.driverId != null) {
       return res.status(400).json({ success: false, message: 'Order already has a driver assigned' });
@@ -1726,7 +1746,20 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
         insertedIds.push(driverId);
       }
     }
-    fcm.sendToDrivers(db, insertedIds, 'New delivery request', `Order #${orderId} has been assigned to you. Open the app to accept.`, { orderId: String(orderId), type: 'driver_request' }).catch(() => {});
+    fcm.sendToDrivers(
+      db,
+      insertedIds,
+      'New delivery request',
+      `Order #${orderId} has been assigned to you. Open the app to accept.`,
+      {
+        orderId: String(orderId),
+        status: 'Preparing',
+        type: 'driver_request',
+        screen: 'order_details',
+        deepLink: `arheb://orders/${orderId}`,
+        click_action: 'FLUTTER_NOTIFICATION_CLICK',
+      }
+    ).catch(() => {});
     return res.status(200).json({
       success: true,
       message: 'Request sent to driver(s). They can accept in the driver app.',
@@ -1744,8 +1777,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       return res.status(403).json({ success: false, message: 'Access denied to this order' });
     }
     const statusLower = (order.status || '').toLowerCase();
-    if (!statusLower.includes('preparing') && !statusLower.includes('waiting')) {
-      return res.status(400).json({ success: false, message: 'Can only auto-assign when order is Preparing or Waiting confirmation' });
+    if (!statusLower.includes('preparing')) {
+      return res.status(400).json({ success: false, message: 'Can only auto-assign when order is Preparing' });
     }
     if (order.driverId != null) {
       return res.status(400).json({ success: false, message: 'Order already has a driver assigned' });
@@ -1787,10 +1820,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       `Order #${orderId} from ${store?.nameEn || store?.name || store?.nameAr || 'store'} has been auto-assigned to you. Open the app to accept.`,
       {
         orderId: String(orderId),
+        status: 'Preparing',
         storeId: String(order.storeId || ''),
         storeName: String(store?.nameEn || store?.name || store?.nameAr || ''),
         storeMapsUrl: String(store?.mapsUrl || ''),
         type: 'driver_request',
+        screen: 'order_details',
+        deepLink: `arheb://orders/${orderId}`,
+        click_action: 'FLUTTER_NOTIFICATION_CLICK',
       }
     ).catch(() => {});
     return res.status(200).json({

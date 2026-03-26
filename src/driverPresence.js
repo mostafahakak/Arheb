@@ -170,7 +170,15 @@ module.exports = function attachDriverPresence(io, db, JWT_SECRET) {
               'Order is near',
               `Order #${order.id} is about ${round3(distanceKm)} km away and will arrive soon.`,
               null,
-              { orderId: String(order.id), type: 'order_near_arrival', distanceKm: String(round3(distanceKm)) }
+              {
+                orderId: String(order.id),
+                status: 'On the way',
+                type: 'order_near_arrival',
+                distanceKm: String(round3(distanceKm)),
+                screen: 'order_details',
+                deepLink: `arheb://orders/${order.id}`,
+                click_action: 'FLUTTER_NOTIFICATION_CLICK',
+              }
             ).catch(() => {});
           }
         }
