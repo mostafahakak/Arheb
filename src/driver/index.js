@@ -1,7 +1,7 @@
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const fs = require('fs');
-const { normalizeJordanMobileKey, normalizeOtpDigits } = require('../utils/jordanMobile');
+const { jordanMobileLookupKeys, normalizeOtpDigits } = require('../utils/jordanMobile');
 const { getJsonPath } = require('../config/jsonPaths');
 const fcm = require('../fcm');
 const enrichArhebBoxRow = require('../arhebBox').enrichArhebBoxRow;
@@ -108,8 +108,6 @@ function mapOrderStatus(s) {
 }
 
 const DRIVER_OTP_TTL_MS = 5 * 60 * 1000;
-/** @type {Map<string, { code: string, verificationId: string, expiresAt: number }>} */
-const driverOtpPending = new Map();
 
 function randomDriverVerificationId() {
   return crypto.randomBytes(16).toString('hex');
@@ -168,8 +166,50 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
   try { db.exec(`ALTER TABLE drivers ADD COLUMN deleted INTEGER DEFAULT 0`); } catch (e) { /* exists */ }
   try { db.exec(`ALTER TABLE drivers ADD COLUMN deletedAt TEXT`); } catch (e) { /* exists */ }
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS driver_otp_pending (
+      mobile TEXT PRIMARY KEY,
+      code TEXT NOT NULL,
+      verificationId TEXT NOT NULL,
+      expiresAt INTEGER NOT NULL
+    )
+  `);
+  const upsertDriverOtp = db.prepare(`
+    INSERT INTO driver_otp_pending (mobile, code, verificationId, expiresAt)
+    VALUES (@mobile, @code, @verificationId, @expiresAt)
+    ON CONFLICT(mobile) DO UPDATE SET
+      code = excluded.code,
+      verificationId = excluded.verificationId,
+      expiresAt = excluded.expiresAt
+  `);
+  const getDriverOtpRow = db.prepare('SELECT * FROM driver_otp_pending WHERE mobile = ?');
+  const deleteDriverOtpRow = db.prepare('DELETE FROM driver_otp_pending WHERE mobile = ?');
+
   const findDriverById = db.prepare('SELECT * FROM drivers WHERE id = ?');
   const findDriverByMobile = db.prepare('SELECT * FROM drivers WHERE mobile = ?');
+
+  function findDriverByMobileFlexible(mobile) {
+    const keys = jordanMobileLookupKeys(mobile);
+    for (const k of keys) {
+      const d = findDriverByMobile.get(k);
+      if (d && !d.deleted) return d;
+    }
+    return null;
+  }
+
+  function getPendingDriverOtp(canonicalMobile) {
+    const row = getDriverOtpRow.get(canonicalMobile);
+    if (!row) return null;
+    if (Date.now() > row.expiresAt) {
+      deleteDriverOtpRow.run(canonicalMobile);
+      return null;
+    }
+    return {
+      code: row.code,
+      verificationId: row.verificationId,
+      expiresAt: row.expiresAt,
+    };
+  }
   const findOrderById = db.prepare('SELECT * FROM orders WHERE id = ?');
   const findOrderItems = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
   const updateOrderDriver = db.prepare('UPDATE orders SET driverId = ?, driverName = ?, status = ? WHERE id = ?');
@@ -218,11 +258,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     if (!mobile || !String(mobile).trim()) {
       return res.status(400).json({ success: false, message: 'mobile is required' });
     }
-    const key = normalizeJordanMobileKey(mobile);
-    const driver =
-      findDriverByMobile.get(key) ||
-      findDriverByMobile.get(String(mobile).trim()) ||
-      null;
+    const driver = findDriverByMobileFlexible(mobile);
     if (!driver || driver.deleted) {
       return res.status(404).json({
         success: false,
@@ -235,11 +271,8 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     const code = generateDriverOtpCode();
     const verificationId = randomDriverVerificationId();
     const canonicalMobile = String(driver.mobile).trim();
-    driverOtpPending.set(canonicalMobile, {
-      code,
-      verificationId,
-      expiresAt: Date.now() + DRIVER_OTP_TTL_MS,
-    });
+    const expiresAt = Date.now() + DRIVER_OTP_TTL_MS;
+    upsertDriverOtp.run({ mobile: canonicalMobile, code, verificationId, expiresAt });
     if (process.env.DRIVER_OTP_LOG === 'true') {
       console.warn(`[driver OTP] ${canonicalMobile} code=${code} verificationId=${verificationId}`);
     }
@@ -260,11 +293,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     if (!mobile || otpCode === undefined || otpCode === null || otpCode === '') {
       return res.status(400).json({ success: false, message: 'mobile and otpCode are required' });
     }
-    const key = normalizeJordanMobileKey(mobile);
-    const driver =
-      findDriverByMobile.get(key) ||
-      findDriverByMobile.get(String(mobile).trim()) ||
-      null;
+    const driver = findDriverByMobileFlexible(mobile);
     if (!driver || driver.deleted) {
       return res.status(401).json({ success: false, message: 'Driver not found. Contact admin to be added.' });
     }
@@ -272,8 +301,8 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
       return res.status(403).json({ success: false, message: 'Account is blocked' });
     }
     const canonicalMobile = String(driver.mobile).trim();
-    const pending = driverOtpPending.get(canonicalMobile);
-    if (!pending || Date.now() > pending.expiresAt) {
+    const pending = getPendingDriverOtp(canonicalMobile);
+    if (!pending) {
       return res.status(401).json({
         success: false,
         message: 'Invalid or expired OTP. Request a new code from POST /api/driver/send-otp.',
@@ -286,10 +315,10 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
       });
     }
     const otpNorm = normalizeOtpDigits(otpCode);
-    if (otpNorm.length !== 6 || otpNorm !== pending.code) {
+    if (otpNorm.length !== 6 || otpNorm !== String(pending.code)) {
       return res.status(401).json({ success: false, message: 'Invalid OTP code' });
     }
-    driverOtpPending.delete(canonicalMobile);
+    deleteDriverOtpRow.run(canonicalMobile);
     const token = jwt.sign(
       { driverId: driver.id, mobile: driver.mobile },
       JWT_SECRET,
