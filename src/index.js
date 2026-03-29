@@ -225,6 +225,17 @@ attachSearchRoutes(app);
 attachAdmin(app, db, JWT_SECRET);
 attachDriverRoutes(app, db, JWT_SECRET);
 
+const { jordanMobileLookupKeys } = require('./utils/jordanMobile');
+const findDriverByMobileStmt = db.prepare('SELECT * FROM drivers WHERE mobile = ?');
+function findDriverByMobileFlexible(firebaseOrLocalPhone) {
+  const keys = jordanMobileLookupKeys(firebaseOrLocalPhone);
+  for (const k of keys) {
+    const d = findDriverByMobileStmt.get(k);
+    if (d && !d.deleted) return d;
+  }
+  return null;
+}
+
 function extractFirebaseError(error) {
   const d = error?.response?.data;
   if (d?.error?.message) return d.error.message;
@@ -413,6 +424,42 @@ app.post('/api/auth/verify-firebase-token', async (req, res) => {
       });
     }
     const firebaseUid = decoded.uid || null;
+
+    const driver = findDriverByMobileFlexible(firebasePhone);
+    if (driver) {
+      if (driver.isBlocked) {
+        return res.status(403).json({ success: false, message: 'Account is blocked', case: 2 });
+      }
+      const token = jwt.sign(
+        { driverId: driver.id, mobile: driver.mobile },
+        JWT_SECRET,
+        { expiresIn: '7d' },
+      );
+      const d = { ...driver };
+      delete d.licenseNumber;
+      return res.status(200).json({
+        success: true,
+        token: `Bearer ${token}`,
+        userId: String(d.id),
+        phoneNumber: firebasePhone,
+        firebaseToken: idToken,
+        driver: {
+          id: String(d.id),
+          name: d.name,
+          photo: d.photo,
+          mobile: d.mobile,
+          phone: d.mobile,
+          email: d.email,
+          vehicleType: d.vehicleType,
+          vehicleNumber: d.vehicleNumber,
+          latitude: d.latitude,
+          longitude: d.longitude,
+          rating: d.rating ?? 5,
+          isVerified: Boolean(d.isVerified),
+        },
+      });
+    }
+
     const body = finalizePhoneAuthSession(firebasePhone, firebaseUid, idToken);
     return res.status(200).json(body);
   } catch (error) {
