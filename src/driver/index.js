@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const fs = require('fs');
 const { getJsonPath } = require('../config/jsonPaths');
 const fcm = require('../fcm');
@@ -105,6 +106,18 @@ function mapOrderStatus(s) {
   return s;
 }
 
+const DRIVER_OTP_TTL_MS = 5 * 60 * 1000;
+/** @type {Map<string, { code: string, verificationId: string, expiresAt: number }>} */
+const driverOtpPending = new Map();
+
+function randomDriverVerificationId() {
+  return crypto.randomBytes(16).toString('hex');
+}
+
+function generateDriverOtpCode() {
+  return String(crypto.randomInt(100000, 1000000));
+}
+
 module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS drivers (
@@ -205,12 +218,32 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
       return res.status(400).json({ success: false, message: 'mobile is required' });
     }
     const normalized = String(mobile).trim();
+    const driver = findDriverByMobile.get(normalized);
+    if (!driver || driver.deleted) {
+      return res.status(404).json({
+        success: false,
+        message: 'Driver not found. Contact admin to be added.',
+      });
+    }
+    if (driver.isBlocked) {
+      return res.status(403).json({ success: false, message: 'Account is blocked' });
+    }
+    const code = generateDriverOtpCode();
+    const verificationId = randomDriverVerificationId();
+    driverOtpPending.set(normalized, {
+      code,
+      verificationId,
+      expiresAt: Date.now() + DRIVER_OTP_TTL_MS,
+    });
+    if (process.env.DRIVER_OTP_LOG === 'true') {
+      console.warn(`[driver OTP] ${normalized} code=${code} verificationId=${verificationId}`);
+    }
     return res.status(200).json({
       success: true,
       message: 'OTP sent successfully',
       data: {
-        verificationId: `driver_otp_${Date.now()}`,
-        expiresIn: 300,
+        verificationId,
+        expiresIn: Math.floor(DRIVER_OTP_TTL_MS / 1000),
         mobile: normalized,
       },
     });
@@ -218,17 +251,35 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
 
   // POST /api/driver/login
   app.post('/api/driver/login', (req, res) => {
-    const { mobile, otpCode } = req.body || {};
+    const { mobile, otpCode, verificationId } = req.body || {};
     if (!mobile || !otpCode) {
       return res.status(400).json({ success: false, message: 'mobile and otpCode are required' });
     }
-    const driver = findDriverByMobile.get(String(mobile).trim());
+    const normalized = String(mobile).trim();
+    const driver = findDriverByMobile.get(normalized);
     if (!driver || driver.deleted) {
       return res.status(401).json({ success: false, message: 'Driver not found. Contact admin to be added.' });
     }
     if (driver.isBlocked) {
       return res.status(403).json({ success: false, message: 'Account is blocked' });
     }
+    const pending = driverOtpPending.get(normalized);
+    if (!pending || Date.now() > pending.expiresAt) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired OTP. Request a new code from POST /api/driver/send-otp.',
+      });
+    }
+    if (verificationId && String(verificationId) !== pending.verificationId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid verificationId. Use the value returned by send-otp.',
+      });
+    }
+    if (String(otpCode).trim() !== pending.code) {
+      return res.status(401).json({ success: false, message: 'Invalid OTP code' });
+    }
+    driverOtpPending.delete(normalized);
     const token = jwt.sign(
       { driverId: driver.id, mobile: driver.mobile },
       JWT_SECRET,

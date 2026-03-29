@@ -288,10 +288,11 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
         } catch (e) { /* ignore */ }
       }
       const serviceFee = order.serviceFee != null ? Number(order.serviceFee) : 0.65;
+      const deliveryNum = Number(order.deliveryFee) || 0;
       const feesTax =
         order.feesTax != null
           ? Number(order.feesTax)
-          : Math.round(((0.07 * (Number(order.deliveryFee) || 0)) + Number.EPSILON) * 100) / 100;
+          : Math.round(((0.07 * (deliveryNum + serviceFee)) + Number.EPSILON) * 100) / 100;
       return res.status(200).json({
         success: true,
         message: 'Order retrieved successfully',

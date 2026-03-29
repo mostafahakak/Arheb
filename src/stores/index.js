@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { getJsonPath } = require('../config/jsonPaths');
 const { isStoreVisibleToCustomers } = require('../utils/storeVisibility');
+const { enrichOpeningHoursObject } = require('../utils/openingHoursJordan');
 
 const storesResponsePath = getJsonPath('stores_listing_response.json');
 
@@ -160,10 +161,14 @@ const seedStoresTable = (db, stores) => {
 // Public store shape: include closingTime, openingTime, storeCategories; never expose arhebFee
 function toPublicStore(store) {
   const { arhebFee, ...rest } = store;
+  const openingHours = store.openingHours
+    ? enrichOpeningHoursObject(store.openingHours)
+    : enrichOpeningHoursObject(null);
   return {
     ...rest,
     closingTime: store.closingTime ?? null,
     openingTime: store.openingHours?.open ?? store.openingTime ?? null,
+    openingHours,
     storeCategories: Array.isArray(store.storeCategories) ? store.storeCategories : [],
   };
 }

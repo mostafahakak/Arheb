@@ -25,7 +25,15 @@ const { getActiveFromListWithDistance, getActiveDriversWithLocation } = require(
 const enrichArhebBoxRow = require('../arhebBox').enrichArhebBoxRow;
 const { mapOrderItemsRows, formatAddOnsSummary } = require('../utils/orderItemApi');
 const { sanitizeAddOnGroups } = require('../utils/productAddOns');
-const { isWithinOpeningHours, isStoreVisibleToCustomers } = require('../utils/storeVisibility');
+const {
+  isWithinOpeningHours,
+  getAdminStoreDashboardBucket,
+} = require('../utils/storeVisibility');
+const {
+  enrichStoreOpeningHours,
+  normalizeOpeningHoursFromBody,
+  parseFlexibleTimeTo24h,
+} = require('../utils/openingHoursJordan');
 
 const storesResponsePath = getJsonPath('stores_listing_response.json');
 const productsResponsePath = getJsonPath('products_listing_response.json');
@@ -462,12 +470,33 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
   // ——— Stores ———
   app.get('/api/admin/stores', auth, (req, res) => {
     const stores = loadStores();
-    let list = req.admin.role === ROLES.STORE_ADMIN ? stores.filter((s) => s.id === req.admin.storeId) : stores;
-    const isOpenParam = req.query.isOpen;
+    let list =
+      req.admin.role === ROLES.STORE_ADMIN
+        ? stores.filter((s) => s.id === req.admin.storeId)
+        : [...stores];
+
+    const bucket = (s) => getAdminStoreDashboardBucket(s);
+    const counts = { open: 0, paused: 0, closed: 0, total: list.length };
+    for (const s of list) {
+      counts[bucket(s)]++;
+    }
+
+    const isAdminOrSuper = req.admin.role === ROLES.ADMIN || req.admin.role === ROLES.SUPERADMIN;
+    const statusParam = String(req.query.status || '')
+      .trim()
+      .toLowerCase();
     const pausedParam = req.query.paused;
-    if (req.admin.role === ROLES.ADMIN || req.admin.role === ROLES.SUPERADMIN) {
-      if (pausedParam === 'true') {
+    const isOpenParam = req.query.isOpen;
+
+    let appliedFilter = { mode: 'all' };
+
+    if (isAdminOrSuper) {
+      if (statusParam === 'open' || statusParam === 'paused' || statusParam === 'closed') {
+        list = list.filter((s) => bucket(s) === statusParam);
+        appliedFilter = { mode: 'status', status: statusParam };
+      } else if (pausedParam === 'true') {
         list = list.filter((s) => s.paused === true);
+        appliedFilter = { mode: 'status', status: 'paused' };
       } else if (isOpenParam === 'true' || isOpenParam === 'false') {
         const wantOpen = isOpenParam === 'true';
         list = list.filter((s) => {
@@ -476,14 +505,40 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
           const effectivelyOpen = s.isOpen !== false && withinHours;
           return wantOpen ? effectivelyOpen : !effectivelyOpen;
         });
-      } else if (req.query.all !== 'true') {
-        list = list.filter((s) => isStoreVisibleToCustomers(s));
+        appliedFilter = { mode: 'legacyIsOpen', isOpen: wantOpen };
       }
     }
-    if (req.admin.role !== ROLES.SUPERADMIN) {
-      list = list.map((s) => { const { arhebFee, ...rest } = s; return rest; });
-    }
-    return res.status(200).json({ success: true, data: { stores: list } });
+
+    const bucketOrder = { open: 0, paused: 1, closed: 2 };
+    list.sort((a, b) => {
+      const ba = bucket(a);
+      const bb = bucket(b);
+      if (bucketOrder[ba] !== bucketOrder[bb]) return bucketOrder[ba] - bucketOrder[bb];
+      const na = String(a.name ?? a.nameEn ?? a.id ?? '');
+      const nb = String(b.name ?? b.nameEn ?? b.id ?? '');
+      return na.localeCompare(nb, undefined, { sensitivity: 'base' });
+    });
+
+    const mapStore = (s) => {
+      const dashboardStatus = bucket(s);
+      const base =
+        req.admin.role !== ROLES.SUPERADMIN
+          ? (() => {
+              const { arhebFee, ...rest } = s;
+              return rest;
+            })()
+          : { ...s };
+      return { ...enrichStoreOpeningHours(base), dashboardStatus };
+    };
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        stores: list.map(mapStore),
+        counts,
+        filter: appliedFilter,
+      },
+    });
   });
 
   // ——— Pause history: store admin sees their store (default today); Admin/SuperAdmin all stores or filter by storeIds + date range ———
@@ -603,9 +658,20 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const stores = loadStores();
     const ids = stores.map((s) => parseInt(String(s.id), 10)).filter((n) => !isNaN(n));
     const nextId = ids.length ? String(Math.max(...ids) + 1) : '1';
-    const openingHours = body.openingHours && typeof body.openingHours === 'object'
-      ? body.openingHours
-      : { open: body.openingHoursOpen ?? '09:00', close: body.openingHoursClose ?? '23:00' };
+    const rawOpening =
+      body.openingHours && typeof body.openingHours === 'object'
+        ? body.openingHours
+        : {
+            open: body.openingHoursOpen ?? '09:00',
+            ...(body.openingHoursClose != null && String(body.openingHoursClose).trim() !== ''
+              ? { close: body.openingHoursClose }
+              : {}),
+            openMeridiem: body.openingHoursOpenMeridiem,
+            closeMeridiem: body.openingHoursCloseMeridiem,
+          };
+    const normalizedHours = normalizeOpeningHoursFromBody(rawOpening, null);
+    const openingHours = normalizedHours.openingHours;
+    const closingTimeResolved = normalizedHours.closingTime ?? body.closingTime ?? null;
     const newStore = {
       id: nextId,
       name: body.name ?? body.nameEn ?? body.nameAr ?? '',
@@ -631,7 +697,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       subCategories: Array.isArray(body.subCategories) ? body.subCategories : [],
       isPremium: body.isPremium === true,
       mapsUrl: body.mapsUrl ?? '',
-      closingTime: body.closingTime ?? null,
+      closingTime: closingTimeResolved,
       arhebFee: req.admin.role === ROLES.SUPERADMIN && body.arhebFee != null ? (typeof body.arhebFee === 'number' ? body.arhebFee : parseFloat(body.arhebFee)) : null,
       storeCategories: Array.isArray(body.storeCategories) ? body.storeCategories : [],
       paused: false,
@@ -671,15 +737,19 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     } catch (e) {
       if (!e.message || !e.message.includes('no such table')) throw e;
     }
-    return res.status(201).json({ success: true, data: { store: newStore } });
+    return res.status(201).json({
+      success: true,
+      data: { store: enrichStoreOpeningHours({ ...newStore }) },
+    });
   });
 
   app.get('/api/admin/stores/:id', auth, requireStoreAccess((req) => req.params.id), (req, res) => {
     const stores = loadStores();
     const store = stores.find((s) => s.id === req.params.id);
     if (!store) return res.status(404).json({ success: false, message: 'Store not found' });
-    const out = req.admin.role === ROLES.SUPERADMIN ? store : (() => { const { arhebFee, ...rest } = store; return rest; })();
+    let out = req.admin.role === ROLES.SUPERADMIN ? { ...store } : (() => { const { arhebFee, ...rest } = store; return rest; })();
     out.storeCategories = Array.isArray(out.storeCategories) ? out.storeCategories : [];
+    out = enrichStoreOpeningHours(out);
     return res.status(200).json({ success: true, data: { store: out } });
   });
 
@@ -728,11 +798,41 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       }
       stores[idx].blocked = Boolean(body.blocked);
     }
+    const skipAllowed = new Set();
+    if (body.openingHours !== undefined) {
+      const n = normalizeOpeningHoursFromBody(body.openingHours, stores[idx]);
+      stores[idx].openingHours = n.openingHours;
+      stores[idx].closingTime = n.closingTime;
+      skipAllowed.add('openingHours');
+      skipAllowed.add('closingTime');
+    } else if (body.closingTime !== undefined) {
+      const ct = body.closingTime;
+      const oh =
+        stores[idx].openingHours && typeof stores[idx].openingHours === 'object'
+          ? { ...stores[idx].openingHours }
+          : { open: '09:00' };
+      if (ct === null || ct === '' || (typeof ct === 'string' && !ct.trim())) {
+        stores[idx].closingTime = null;
+        delete oh.close;
+        stores[idx].openingHours = oh;
+      } else {
+        const c = parseFlexibleTimeTo24h(String(ct).trim(), null);
+        const closeVal = c || String(ct).trim();
+        stores[idx].closingTime = closeVal;
+        oh.close = closeVal;
+        stores[idx].openingHours = oh;
+      }
+      skipAllowed.add('closingTime');
+    }
     for (const key of allowed) {
+      if (skipAllowed.has(key)) continue;
       if (body[key] !== undefined) stores[idx][key] = body[key];
     }
     saveStores(stores);
-    return res.status(200).json({ success: true, data: { store: stores[idx] } });
+    return res.status(200).json({
+      success: true,
+      data: { store: enrichStoreOpeningHours({ ...stores[idx] }) },
+    });
   });
 
   // Clone store: SuperAdmin/Admin can clone any store; Store Admin can clone only their store
@@ -760,7 +860,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       deliveryFee: sourceStore.deliveryFee ?? 0,
       minimumOrder: sourceStore.minimumOrder ?? 0,
       isOpen: sourceStore.isOpen !== false,
-      openingHours: sourceStore.openingHours ? { ...sourceStore.openingHours } : { open: '09:00', close: '23:00' },
+      openingHours: sourceStore.openingHours
+        ? { ...sourceStore.openingHours }
+        : { open: '09:00' },
       address: body.address ?? body.addressEn ?? sourceStore.address ?? '',
       addressAr: body.addressAr ?? body.address ?? sourceStore.addressAr ?? '',
       addressEn: body.addressEn ?? body.address ?? sourceStore.addressEn ?? '',

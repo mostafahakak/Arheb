@@ -1,6 +1,10 @@
 const fs = require('fs');
 const path = require('path');
-const { enrichArhebBoxRow, calcArhebBoxDeliveryFeeJod } = require('../arhebBox');
+const {
+  enrichArhebBoxRow,
+  calcArhebBoxDeliveryFeeJod,
+  calcDeliveryFeeFromDistanceAndWeight,
+} = require('../arhebBox');
 const { quoteFromPickupDropoff } = require('../arhebBox/pricing');
 const { mapOrderItemsRows } = require('../utils/orderItemApi');
 const { validateSelectedAddOnsAgainstProduct } = require('../utils/productAddOns');
@@ -23,13 +27,15 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
     return Number.isFinite(n) ? n : fallback;
   }
 
-  /** 7% tax applies to the delivery fee only (not order subtotal, not service fee). */
-  function calcFeesTaxJod(deliveryFeeJod) {
-    return round2(FEES_TAX_RATE * safeNumber(deliveryFeeJod, 0));
+  /** 7% tax on delivery fee + service fee (default service 0.65 JOD); not on order subtotal. */
+  function calcFeesTaxJod(deliveryFeeJod, serviceFeeJod) {
+    return round2(
+      FEES_TAX_RATE * (safeNumber(deliveryFeeJod, 0) + safeNumber(serviceFeeJod, 0)),
+    );
   }
 
   function buildOrderSummary(orderValueJod, deliveryFeeJod, serviceFeeJod) {
-    const taxJod = calcFeesTaxJod(deliveryFeeJod);
+    const taxJod = calcFeesTaxJod(deliveryFeeJod, serviceFeeJod);
     return {
       currency: 'JOD',
       orderValue: round2(safeNumber(orderValueJod, 0)),
@@ -42,7 +48,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   }
 
   function buildInvoice(deliveryFeeJod, serviceFeeJod) {
-    const taxJod = calcFeesTaxJod(deliveryFeeJod);
+    const taxJod = calcFeesTaxJod(deliveryFeeJod, serviceFeeJod);
     return {
       currency: 'JOD',
       deliveryFee: round2(safeNumber(deliveryFeeJod, 0)),
@@ -211,7 +217,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
 
   /**
    * Pre-checkout quote: delivery + service + tax (7% on delivery fee only).
-   * Same delivery formula as Arheb Box (1 + 0.15 JOD/kg). Store location is resolved from storeId/mapsUrl.
+   * Delivery fee from store→customer distance (min 2 JOD route floor, 1 JOD/km) plus 0.15 JOD/kg. Store location from storeId/mapsUrl.
    */
   app.post('/api/checkout/quote-fees', authenticateRequest, (req, res) => {
     try {
@@ -247,9 +253,8 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         });
       }
       const weightKgNum = Math.max(0, safeNumber(weightKg, 0));
-      const deliveryFee = calcArhebBoxDeliveryFeeJod(weightKgNum);
+      const deliveryFee = calcDeliveryFeeFromDistanceAndWeight(q.distanceKm, weightKgNum);
       const serviceFee = SERVICE_FEE_JOD;
-      const feesTax = calcFeesTaxJod(deliveryFee);
       const invoice = buildInvoice(deliveryFee, serviceFee);
       return res.status(200).json({
         success: true,
@@ -264,11 +269,11 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
           deliveryFee: invoice.deliveryFee,
           serviceFee: invoice.serviceFee,
           feesTaxRate: FEES_TAX_RATE,
-          feesTax,
-          feesTaxNote: '7% tax on delivery fee only (not on order subtotal or service fee).',
+          feesTax: invoice.feesTax,
+          feesTaxNote: '7% tax on delivery fee plus service fee (not on order subtotal).',
           invoiceTotal: invoice.total,
           pricingNote:
-            'Delivery fee matches Arheb Box: 1 JOD + 0.15 JOD/kg (uncapped). distanceKm and minAmountJod describe the route (same haversine rules as POST /api/arheb-box/quote).',
+            'Delivery fee = route minimum (1 JOD/km, min 2 JOD, same as POST /api/arheb-box/quote) plus 0.15 JOD/kg. Varies with distance to deliveryLocation.',
         },
         timestamp: new Date().toISOString(),
       });
@@ -559,9 +564,34 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         lowerPaymentType === 'cliq' ? 'Waiting cliq confirmation' : 'Waiting confirmation';
 
       const weightKgNum = Math.max(0, safeNumber(weightKg, 0));
-      const computedDeliveryFee = calcArhebBoxDeliveryFeeJod(weightKgNum);
+      let computedDeliveryFee = calcArhebBoxDeliveryFeeJod(weightKgNum);
+      if (
+        finalStoreId != null &&
+        String(finalStoreId).trim() !== '' &&
+        typeof addressLat === 'number' &&
+        !Number.isNaN(addressLat) &&
+        typeof addressLong === 'number' &&
+        !Number.isNaN(addressLong)
+      ) {
+        const st = loadStoreFromJsonById(finalStoreId);
+        if (st) {
+          const storeLoc =
+            (st.latitude != null && st.longitude != null)
+              ? { latitude: Number(st.latitude), longitude: Number(st.longitude) }
+              : parseLatLongFromGoogleMapsUrl(st.mapsUrl);
+          if (storeLoc) {
+            const qOrder = quoteFromPickupDropoff(storeLoc, {
+              latitude: addressLat,
+              longitude: addressLong,
+            });
+            if (qOrder) {
+              computedDeliveryFee = calcDeliveryFeeFromDistanceAndWeight(qOrder.distanceKm, weightKgNum);
+            }
+          }
+        }
+      }
       const computedServiceFee = SERVICE_FEE_JOD;
-      const computedFeesTax = calcFeesTaxJod(computedDeliveryFee);
+      const computedFeesTax = calcFeesTaxJod(computedDeliveryFee, computedServiceFee);
 
       const orderId = createOrder({
         userId,
@@ -607,7 +637,10 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
             discount: order.discount,
             deliveryFee: order.deliveryFee,
             serviceFee: order.serviceFee != null ? order.serviceFee : SERVICE_FEE_JOD,
-            feesTax: order.feesTax != null ? order.feesTax : calcFeesTaxJod(order.deliveryFee),
+            feesTax:
+              order.feesTax != null
+                ? order.feesTax
+                : calcFeesTaxJod(order.deliveryFee, order.serviceFee ?? SERVICE_FEE_JOD),
             weightKg: order.weightKg != null ? order.weightKg : round3(weightKgNum),
             totalAmount: order.totalAmount,
             orderSummary: buildOrderSummary(order.totalAmount, order.deliveryFee, order.serviceFee ?? SERVICE_FEE_JOD),
@@ -648,7 +681,8 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       const ordersWithItems = orders.map(order => {
         const items = findOrderItems.all(order.id);
         const serviceFee = order.serviceFee != null ? Number(order.serviceFee) : SERVICE_FEE_JOD;
-        const feesTax = order.feesTax != null ? Number(order.feesTax) : calcFeesTaxJod(order.deliveryFee);
+        const feesTax =
+          order.feesTax != null ? Number(order.feesTax) : calcFeesTaxJod(order.deliveryFee, serviceFee);
         return {
           id: order.id,
           userId: order.userId,
@@ -744,7 +778,10 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       const findOrderItems = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
       const items = findOrderItems.all(orderId);
       const serviceFee = order.serviceFee != null ? Number(order.serviceFee) : SERVICE_FEE_JOD;
-      const feesTax = order.feesTax != null ? Number(order.feesTax) : calcFeesTaxJod(order.deliveryFee);
+      const feesTax =
+        order.feesTax != null
+          ? Number(order.feesTax)
+          : calcFeesTaxJod(order.deliveryFee, serviceFee);
 
       return res.status(200).json({
         success: true,
@@ -866,7 +903,10 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       const findOrderItems = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
       const items = findOrderItems.all(orderId);
       const serviceFee = updatedOrder.serviceFee != null ? Number(updatedOrder.serviceFee) : SERVICE_FEE_JOD;
-      const feesTax = updatedOrder.feesTax != null ? Number(updatedOrder.feesTax) : calcFeesTaxJod(updatedOrder.deliveryFee);
+      const feesTax =
+        updatedOrder.feesTax != null
+          ? Number(updatedOrder.feesTax)
+          : calcFeesTaxJod(updatedOrder.deliveryFee, serviceFee);
 
       return res.status(200).json({
         success: true,

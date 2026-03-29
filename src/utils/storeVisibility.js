@@ -1,35 +1,23 @@
-/** Current time in Jordan (Asia/Amman) as minutes since midnight (0-1439). */
-function getJordanMinutesNow() {
-  const s = new Date().toLocaleTimeString('en-GB', { timeZone: 'Asia/Amman', hour12: false });
-  const [h, m] = s.split(':').map(Number);
-  return (h || 0) * 60 + (m || 0);
-}
+const {
+  JORDAN_IANA_TIMEZONE,
+  getJordanMinutesNow,
+  parse24hClockToMinutes,
+  isWithinOpeningHoursStore,
+} = require('./openingHoursJordan');
 
-/** Parse "HH:MM" or "HH:mm" to minutes since midnight. Returns 0 if invalid. */
+/** @deprecated use parse24hClockToMinutes from openingHoursJordan; kept for callers */
 function parseTimeToMinutes(str) {
-  if (!str || typeof str !== 'string') return 0;
-  const parts = str.trim().match(/^(\d{1,2}):(\d{2})$/);
-  if (!parts) return 0;
-  const h = parseInt(parts[1], 10);
-  const m = parseInt(parts[2], 10);
-  if (h < 0 || h > 23 || m < 0 || m > 59) return 0;
-  return h * 60 + m;
+  const m = parse24hClockToMinutes(str);
+  return m == null ? 0 : m;
 }
 
-/** True if current Jordan time is within store opening hours (openingHours.open / .close or closingTime). */
 function isWithinOpeningHours(store) {
-  const openStr = (store.openingHours && store.openingHours.open) || '09:00';
-  const closeStr = (store.openingHours && store.openingHours.close) || store.closingTime || '23:00';
-  const openMin = parseTimeToMinutes(openStr);
-  const closeMin = parseTimeToMinutes(closeStr);
-  const now = getJordanMinutesNow();
-  if (closeMin > openMin) return now >= openMin && now < closeMin;
-  return now >= openMin || now < closeMin;
+  return isWithinOpeningHoursStore(store);
 }
 
 /**
  * Store should appear in customer-facing lists and product APIs:
- * not paused, not blocked, admin toggle isOpen !== false, and within Jordan opening hours.
+ * not paused, not blocked, admin toggle isOpen !== false, and within Jordan (Asia/Amman) hours when a closing time exists.
  */
 function isStoreVisibleToCustomers(store) {
   if (!store || store.paused === true || store.blocked === true) return false;
@@ -37,9 +25,20 @@ function isStoreVisibleToCustomers(store) {
   return isWithinOpeningHours(store);
 }
 
+/** Admin dashboard bucket: open (customer-visible) → paused → closed. */
+function getAdminStoreDashboardBucket(store) {
+  if (!store) return 'closed';
+  if (store.paused === true) return 'paused';
+  if (isStoreVisibleToCustomers(store)) return 'open';
+  return 'closed';
+}
+
 module.exports = {
+  JORDAN_IANA_TIMEZONE,
   getJordanMinutesNow,
   parseTimeToMinutes,
+  parse24hClockToMinutes,
   isWithinOpeningHours,
   isStoreVisibleToCustomers,
+  getAdminStoreDashboardBucket,
 };
