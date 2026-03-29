@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const fs = require('fs');
+const { normalizeJordanMobileKey, normalizeOtpDigits } = require('../utils/jordanMobile');
 const { getJsonPath } = require('../config/jsonPaths');
 const fcm = require('../fcm');
 const enrichArhebBoxRow = require('../arhebBox').enrichArhebBoxRow;
@@ -217,8 +218,11 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     if (!mobile || !String(mobile).trim()) {
       return res.status(400).json({ success: false, message: 'mobile is required' });
     }
-    const normalized = String(mobile).trim();
-    const driver = findDriverByMobile.get(normalized);
+    const key = normalizeJordanMobileKey(mobile);
+    const driver =
+      findDriverByMobile.get(key) ||
+      findDriverByMobile.get(String(mobile).trim()) ||
+      null;
     if (!driver || driver.deleted) {
       return res.status(404).json({
         success: false,
@@ -230,13 +234,14 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     }
     const code = generateDriverOtpCode();
     const verificationId = randomDriverVerificationId();
-    driverOtpPending.set(normalized, {
+    const canonicalMobile = String(driver.mobile).trim();
+    driverOtpPending.set(canonicalMobile, {
       code,
       verificationId,
       expiresAt: Date.now() + DRIVER_OTP_TTL_MS,
     });
     if (process.env.DRIVER_OTP_LOG === 'true') {
-      console.warn(`[driver OTP] ${normalized} code=${code} verificationId=${verificationId}`);
+      console.warn(`[driver OTP] ${canonicalMobile} code=${code} verificationId=${verificationId}`);
     }
     return res.status(200).json({
       success: true,
@@ -244,7 +249,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
       data: {
         verificationId,
         expiresIn: Math.floor(DRIVER_OTP_TTL_MS / 1000),
-        mobile: normalized,
+        mobile: canonicalMobile,
       },
     });
   });
@@ -252,18 +257,22 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
   // POST /api/driver/login
   app.post('/api/driver/login', (req, res) => {
     const { mobile, otpCode, verificationId } = req.body || {};
-    if (!mobile || !otpCode) {
+    if (!mobile || otpCode === undefined || otpCode === null || otpCode === '') {
       return res.status(400).json({ success: false, message: 'mobile and otpCode are required' });
     }
-    const normalized = String(mobile).trim();
-    const driver = findDriverByMobile.get(normalized);
+    const key = normalizeJordanMobileKey(mobile);
+    const driver =
+      findDriverByMobile.get(key) ||
+      findDriverByMobile.get(String(mobile).trim()) ||
+      null;
     if (!driver || driver.deleted) {
       return res.status(401).json({ success: false, message: 'Driver not found. Contact admin to be added.' });
     }
     if (driver.isBlocked) {
       return res.status(403).json({ success: false, message: 'Account is blocked' });
     }
-    const pending = driverOtpPending.get(normalized);
+    const canonicalMobile = String(driver.mobile).trim();
+    const pending = driverOtpPending.get(canonicalMobile);
     if (!pending || Date.now() > pending.expiresAt) {
       return res.status(401).json({
         success: false,
@@ -276,10 +285,11 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
         message: 'Invalid verificationId. Use the value returned by send-otp.',
       });
     }
-    if (String(otpCode).trim() !== pending.code) {
+    const otpNorm = normalizeOtpDigits(otpCode);
+    if (otpNorm.length !== 6 || otpNorm !== pending.code) {
       return res.status(401).json({ success: false, message: 'Invalid OTP code' });
     }
-    driverOtpPending.delete(normalized);
+    driverOtpPending.delete(canonicalMobile);
     const token = jwt.sign(
       { driverId: driver.id, mobile: driver.mobile },
       JWT_SECRET,

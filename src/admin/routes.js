@@ -2093,10 +2093,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       .slice(0, 10)
       .map((o) => ({ id: o.id, totalAmount: o.totalAmount, status: o.status, createdAt: o.createdAt, storeId: o.storeId }));
     const data = {
-      totalOrders: orders.length,
-      totalRevenue,
-      byStatus,
-      recentOrders: recent,
+        totalOrders: orders.length,
+        totalRevenue,
+        byStatus,
+        recentOrders: recent,
     };
     // Admin and SuperAdmin only: open/closed/paused store counts. Jordan time + opening hours: open = within hours + admin open + unpaused; closed = admin closed or outside hours (not paused); paused = separate count.
     if (req.admin.role === ROLES.ADMIN || req.admin.role === ROLES.SUPERADMIN) {
@@ -2393,7 +2393,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     };
     categories.push(newCat);
     try {
-      syncCategoriesToDb(db, categories);
+    syncCategoriesToDb(db, categories);
     } catch (err) {
       console.error('Categories DB sync failed:', err);
       categories.pop();
@@ -2418,7 +2418,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       categories[idx].name = (categories[idx].nameEn || '').toLowerCase().replace(/\s+/g, '_').trim() || categories[idx].name;
     }
     try {
-      syncCategoriesToDb(db, categories);
+    syncCategoriesToDb(db, categories);
     } catch (err) {
       console.error('Categories DB sync failed:', err);
       return res.status(500).json({ success: false, message: 'Database sync failed', error: err.message });
@@ -2434,7 +2434,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (idx === -1) return res.status(404).json({ success: false, message: 'Category not found' });
     categories.splice(idx, 1);
     try {
-      syncCategoriesToDb(db, categories);
+    syncCategoriesToDb(db, categories);
     } catch (err) {
       console.error('Categories DB sync failed:', err);
       return res.status(500).json({ success: false, message: 'Database sync failed', error: err.message });
