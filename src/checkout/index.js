@@ -23,7 +23,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
     return Number.isFinite(n) ? n : fallback;
   }
 
-  /** 16% VAT applies to the delivery fee only (not order subtotal, not service fee). */
+  /** 7% tax applies to the delivery fee only (not order subtotal, not service fee). */
   function calcFeesTaxJod(deliveryFeeJod) {
     return round2(FEES_TAX_RATE * safeNumber(deliveryFeeJod, 0));
   }
@@ -210,7 +210,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   `);
 
   /**
-   * Pre-checkout quote: delivery + service + VAT (16% on delivery fee only).
+   * Pre-checkout quote: delivery + service + tax (7% on delivery fee only).
    * Same delivery formula as Arheb Box (1 + 0.15 JOD/kg). Store location is resolved from storeId/mapsUrl.
    */
   app.post('/api/checkout/quote-fees', authenticateRequest, (req, res) => {
@@ -265,7 +265,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
           serviceFee: invoice.serviceFee,
           feesTaxRate: FEES_TAX_RATE,
           feesTax,
-          feesTaxNote: '16% VAT on delivery fee only (not on order subtotal or service fee).',
+          feesTaxNote: '7% tax on delivery fee only (not on order subtotal or service fee).',
           invoiceTotal: invoice.total,
           pricingNote:
             'Delivery fee matches Arheb Box: 1 JOD + 0.15 JOD/kg (uncapped). distanceKm and minAmountJod describe the route (same haversine rules as POST /api/arheb-box/quote).',

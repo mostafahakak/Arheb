@@ -8,8 +8,11 @@
 let admin = null;
 let messaging = null;
 
-function getMessaging() {
-  if (messaging) return messaging;
+/**
+ * Initialize firebase-admin once; returns the admin namespace or null if unavailable.
+ */
+function ensureFirebaseAdmin() {
+  if (admin?.apps?.length) return admin;
   if (!admin) {
     try {
       admin = require('firebase-admin');
@@ -38,12 +41,37 @@ function getMessaging() {
         return null;
       }
     }
-    messaging = admin.messaging();
   } catch (e) {
     console.warn('fcm: Failed to initialize Firebase Admin:', e.message);
     return null;
   }
+  return admin;
+}
+
+function getMessaging() {
+  const a = ensureFirebaseAdmin();
+  if (!a) return null;
+  if (!messaging) {
+    try {
+      messaging = a.messaging();
+    } catch (e) {
+      console.warn('fcm: messaging() failed:', e.message);
+      return null;
+    }
+  }
   return messaging;
+}
+
+/** Firebase Auth (verifyIdToken, etc.). Same credentials as FCM. */
+function getAuth() {
+  const a = ensureFirebaseAdmin();
+  if (!a) return null;
+  try {
+    return a.auth();
+  } catch (e) {
+    console.warn('fcm: auth() failed:', e.message);
+    return null;
+  }
 }
 
 /**
@@ -202,7 +230,9 @@ async function sendToAllUsers(db, title, body, imageUrl, data = {}) {
 }
 
 module.exports = {
+  ensureFirebaseAdmin,
   getMessaging,
+  getAuth,
   sendToToken,
   sendToTokens,
   sendToDriver,

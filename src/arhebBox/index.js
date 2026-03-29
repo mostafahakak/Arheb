@@ -2,7 +2,7 @@ const fcm = require('../fcm');
 const { quoteFromPickupDropoff, minAmountJod, distanceKm: haversineKm } = require('./pricing');
 
 const SERVICE_FEE_JOD = 0.65;
-const FEES_TAX_RATE = 0.16;
+const FEES_TAX_RATE = 0.07;
 
 function round3(n) {
   return Math.round((Number(n) + Number.EPSILON) * 1000) / 1000;

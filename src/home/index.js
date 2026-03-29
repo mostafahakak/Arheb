@@ -2,6 +2,18 @@ const fs = require('fs');
 const path = require('path');
 const jwt = require('jsonwebtoken');
 const { getJsonPath } = require('../config/jsonPaths');
+const { isStoreVisibleToCustomers } = require('../utils/storeVisibility');
+
+function loadStoresListForVisibility() {
+  try {
+    const filePath = getJsonPath('stores_listing_response.json');
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const data = JSON.parse(raw);
+    return data?.data?.stores ?? [];
+  } catch (e) {
+    return [];
+  }
+}
 
 function loadDiscountedProducts() {
   try {
@@ -322,6 +334,16 @@ module.exports = function attachHomeRoutes(app, db, JWT_SECRET) {
     }));
     if (response.data) {
       response.data = { ...response.data, discountedProducts };
+    }
+
+    const storesForVisibility = loadStoresListForVisibility();
+    const visibleStoreIds = new Set(
+      storesForVisibility.filter((s) => isStoreVisibleToCustomers(s)).map((s) => String(s.id))
+    );
+    if (response.data?.mostPopularStores?.length) {
+      response.data.mostPopularStores = response.data.mostPopularStores.filter((s) =>
+        s && s.id != null && visibleStoreIds.has(String(s.id))
+      );
     }
 
     // If user is authenticated, add activeOrder (orderID, status) only when they have an order in active status

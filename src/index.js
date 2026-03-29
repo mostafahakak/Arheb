@@ -22,6 +22,7 @@ const attachPopupRoutes = require('./popup');
 const attachArhebBoxRoutes = require('./arhebBox');
 const attachSearchRoutes = require('./search');
 const attachDriverRoutes = require('./driver');
+const { getAuth } = require('./fcm');
 
 dotenv.config();
 
@@ -225,20 +226,84 @@ attachAdmin(app, db, JWT_SECRET);
 attachDriverRoutes(app, db, JWT_SECRET);
 
 function extractFirebaseError(error) {
-  return (
-    error?.response?.data?.error?.message ||
-    error?.response?.data?.error ||
-    error?.message ||
-    'Unexpected Firebase error'
-  );
+  const d = error?.response?.data;
+  if (d?.error?.message) return d.error.message;
+  if (typeof d?.error === 'string') return d.error;
+  if (d?.error && typeof d.error === 'object' && d.error.message) return d.error.message;
+  return error?.message || 'Unexpected Firebase error';
 }
 
-async function sendPhoneOtp(phoneNumber, recaptchaToken) {
+/**
+ * Human hint when Identity Toolkit rejects server-only sendVerificationCode (real numbers need client verification).
+ */
+function hintForSendVerificationError(rawMessage) {
+  const s = String(rawMessage || '');
+  if (
+    s.includes('MISSING_CLIENT_IDENTIFIER') ||
+    s.includes('MISSING_CLIENT_ID') ||
+    s.includes('CAPTCHA_CHECK_FAILED')
+  ) {
+    return (
+      'Real phone numbers require app verification tokens (Firebase test numbers skip this). ' +
+      'Recommended: complete phone sign-in on the device with Firebase Auth SDK, then call POST /api/auth/verify-firebase-token with the Firebase idToken. ' +
+      'Alternative: send recaptchaToken or captchaResponse from the client to POST /api/auth/register (see Identity Toolkit sendVerificationCode).'
+    );
+  }
+  return null;
+}
+
+function finalizePhoneAuthSession(firebasePhone, firebaseUid, verificationIdToken) {
+  const existing = findUserByPhone.get(firebasePhone);
+  if (existing && existing.isBlocked) {
+    const e = new Error('User is blocked');
+    e.statusCode = 403;
+    throw e;
+  }
+  const newUserId =
+    existing && existing.deleted
+      ? `u_${Date.now()}_${Math.random().toString(16).slice(2)}`
+      : (existing?.userId || firebasePhone);
+
+  const token = jwt.sign(
+    { phoneNumber: firebasePhone, userId: newUserId },
+    JWT_SECRET,
+    { expiresIn: '7d' },
+  );
+
+  upsertUser.run({
+    phoneNumber: firebasePhone,
+    userId: newUserId,
+    firebaseUid,
+    token,
+    deleted: 0,
+    deletedAt: null,
+  });
+
+  if (existing && existing.deleted) {
+    try {
+      db.prepare(
+        `UPDATE users SET name = NULL, addressName = NULL, addressLong = NULL, addressLat = NULL, addresses = '[]', fcmToken = NULL WHERE phoneNumber = ?`,
+      ).run(firebasePhone);
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
+  return {
+    success: true,
+    token: `Bearer ${token}`,
+    firebaseToken: verificationIdToken ?? null,
+    phoneNumber: firebasePhone,
+    userId: newUserId,
+  };
+}
+
+async function sendPhoneOtp(phoneNumber, options = {}) {
   const url = `https://identitytoolkit.googleapis.com/v1/accounts:sendVerificationCode?key=${FIREBASE_API_KEY}`;
   const payload = { phoneNumber };
-  if (recaptchaToken) {
-    payload.recaptchaToken = recaptchaToken;
-  }
+  if (options.recaptchaToken) payload.recaptchaToken = options.recaptchaToken;
+  if (options.captchaResponse) payload.captchaResponse = options.captchaResponse;
+  if (options.clientType) payload.clientType = options.clientType;
 
   const response = await axios.post(url, payload, { timeout: 15000 });
   return response.data.sessionInfo;
@@ -251,7 +316,7 @@ async function verifyPhoneOtp(sessionInfo, code) {
 }
 
 app.post('/api/auth/register', async (req, res) => {
-  const { phoneNumber, recaptchaToken } = req.body;
+  const { phoneNumber, recaptchaToken, captchaResponse, clientType } = req.body || {};
   if (!phoneNumber) {
     return res.status(400).json({ message: 'phoneNumber is required', case: 2 });
   }
@@ -259,7 +324,11 @@ app.post('/api/auth/register', async (req, res) => {
   try {
     const normalizedPhone = phoneNumber.trim();
     const existingUser = findUserByPhone.get(normalizedPhone);
-    const sessionInfo = await sendPhoneOtp(normalizedPhone, recaptchaToken);
+    const sessionInfo = await sendPhoneOtp(normalizedPhone, {
+      recaptchaToken,
+      captchaResponse,
+      clientType,
+    });
     return res.status(200).json({
       message: 'OTP SENT SUCCESSFUL',
       case: 1,
@@ -267,9 +336,12 @@ app.post('/api/auth/register', async (req, res) => {
       sessionInfo,
     });
   } catch (error) {
+    const raw = extractFirebaseError(error);
+    const hint = hintForSendVerificationError(raw);
     return res.status(500).json({
-      message: extractFirebaseError(error),
+      message: hint ? `${raw}. ${hint}` : raw,
       case: 2,
+      ...(hint && { firebaseHint: hint }),
     });
   }
 });
@@ -306,6 +378,55 @@ attachArhebBoxRoutes(app, db, authenticateRequest);
 attachOrderTrackingRoutes(io, app, db, authenticateRequest, JWT_SECRET);
 attachDriverPresence(io, db, JWT_SECRET);
 
+/**
+ * Preferred for mobile apps: client completes Firebase Phone Auth on device, then exchanges idToken for your JWT.
+ * Requires FIREBASE_SERVICE_ACCOUNT_JSON (same Firebase project as the app).
+ */
+app.post('/api/auth/verify-firebase-token', async (req, res) => {
+  const { idToken } = req.body || {};
+  if (!idToken || typeof idToken !== 'string') {
+    return res.status(400).json({
+      success: false,
+      message: 'idToken is required',
+      case: 2,
+    });
+  }
+
+  const auth = getAuth();
+  if (!auth) {
+    return res.status(503).json({
+      success: false,
+      message:
+        'Firebase Admin is not configured (set FIREBASE_SERVICE_ACCOUNT_JSON for the same project as the client app)',
+      case: 2,
+    });
+  }
+
+  try {
+    const decoded = await auth.verifyIdToken(idToken);
+    const firebasePhone = decoded.phone_number;
+    if (!firebasePhone) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID token has no phone_number claim (sign in with Firebase phone auth)',
+        case: 2,
+      });
+    }
+    const firebaseUid = decoded.uid || null;
+    const body = finalizePhoneAuthSession(firebasePhone, firebaseUid, idToken);
+    return res.status(200).json(body);
+  } catch (error) {
+    if (error.statusCode === 403) {
+      return res.status(403).json({ success: false, message: error.message, case: 2 });
+    }
+    return res.status(401).json({
+      success: false,
+      message: error.message || 'Invalid id token',
+      case: 2,
+    });
+  }
+});
+
 app.post('/api/auth/verify-otp', async (req, res) => {
   const { phoneNumber, sessionInfo, otp } = req.body;
   if (!phoneNumber || !sessionInfo || !otp) {
@@ -319,50 +440,15 @@ app.post('/api/auth/verify-otp', async (req, res) => {
     const verification = await verifyPhoneOtp(sessionInfo, otp);
     const firebasePhone = verification.phoneNumber || phoneNumber;
     const firebaseUid = verification.localId || verification?.userId || null;
-
-    const existing = findUserByPhone.get(firebasePhone);
-    if (existing && existing.isBlocked) {
+    const body = finalizePhoneAuthSession(firebasePhone, firebaseUid, verification.idToken ?? null);
+    return res.status(200).json(body);
+  } catch (error) {
+    if (error.statusCode === 403) {
       return res.status(403).json({
         success: false,
-        message: 'User is blocked',
+        message: error.message,
       });
     }
-    // If the user previously deleted the account, we "re-signup" by issuing a new userId and clearing old profile fields.
-    const newUserId =
-      existing && existing.deleted
-        ? `u_${Date.now()}_${Math.random().toString(16).slice(2)}`
-        : (existing?.userId || firebasePhone);
-
-    const token = jwt.sign(
-      { phoneNumber: firebasePhone, userId: newUserId },
-      JWT_SECRET,
-      { expiresIn: '7d' },
-    );
-
-    upsertUser.run({
-      phoneNumber: firebasePhone,
-      userId: newUserId,
-      firebaseUid,
-      token,
-      deleted: 0,
-      deletedAt: null,
-    });
-
-    if (existing && existing.deleted) {
-      // Reset old profile data so the new account doesn't see previous data
-      try {
-        db.prepare(`UPDATE users SET name = NULL, addressName = NULL, addressLong = NULL, addressLat = NULL, addresses = '[]', fcmToken = NULL WHERE phoneNumber = ?`).run(firebasePhone);
-      } catch (e) { /* ignore */ }
-    }
-
-    return res.status(200).json({
-      success: true,
-      token: `Bearer ${token}`,
-      firebaseToken: verification.idToken ?? null,
-      phoneNumber: firebasePhone,
-      userId: newUserId,
-    });
-  } catch (error) {
     return res.status(401).json({
       success: false,
       message: extractFirebaseError(error),
