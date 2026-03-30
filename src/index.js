@@ -211,6 +211,7 @@ const upsertUser = db.prepare(`
 
 const findUserByPhone = db.prepare('SELECT * FROM users WHERE phoneNumber = ?');
 const findUserByFirebaseUid = db.prepare('SELECT * FROM users WHERE firebaseUid = ?');
+const findDriverByMobile = db.prepare('SELECT * FROM drivers WHERE mobile = ?');
 
 const { jordanMobileLookupKeys } = require('./utils/jordanMobile');
 
@@ -219,6 +220,15 @@ function findUserByPhoneFlexible(phone) {
   for (const k of keys) {
     const u = findUserByPhone.get(k);
     if (u) return u;
+  }
+  return null;
+}
+
+function findDriverByPhoneFlexible(phone) {
+  const keys = jordanMobileLookupKeys(phone);
+  for (const k of keys) {
+    const driver = findDriverByMobile.get(k);
+    if (driver && !driver.deleted) return driver;
   }
   return null;
 }
@@ -247,7 +257,10 @@ function summarizeTraceBody(body) {
 }
 
 app.use((req, res, next) => {
-  const traceable = req.path.startsWith('/api/auth/') || req.path.startsWith('/api/driver/');
+  const traceable =
+    req.path.startsWith('/api/auth/') ||
+    req.path.startsWith('/api/driver/') ||
+    req.path.startsWith('/api/profile');
   if (!traceable) return next();
 
   const startedAt = Date.now();
@@ -349,11 +362,50 @@ function finalizePhoneAuthSession(firebasePhone, firebaseUid, verificationIdToke
   };
 }
 
+function attachDriverClaimsToSession(sessionBody, phoneNumber, verificationIdToken) {
+  const driver = findDriverByPhoneFlexible(phoneNumber);
+  if (!driver || driver.isBlocked) return sessionBody;
+
+  const combinedToken = jwt.sign(
+    {
+      phoneNumber: sessionBody.phoneNumber,
+      userId: sessionBody.userId,
+      driverId: driver.id,
+      mobile: driver.mobile,
+    },
+    JWT_SECRET,
+    { expiresIn: '7d' },
+  );
+
+  const d = { ...driver };
+  delete d.licenseNumber;
+  return {
+    ...sessionBody,
+    token: `Bearer ${combinedToken}`,
+    firebaseToken: verificationIdToken ?? sessionBody.firebaseToken ?? null,
+    driver: {
+      id: String(d.id),
+      name: d.name,
+      photo: d.photo,
+      mobile: d.mobile,
+      phone: d.mobile,
+      email: d.email,
+      vehicleType: d.vehicleType,
+      vehicleNumber: d.vehicleNumber,
+      latitude: d.latitude,
+      longitude: d.longitude,
+      rating: d.rating ?? 5,
+      isVerified: Boolean(d.isVerified),
+    },
+  };
+}
+
 function finalizeFirebaseIdentitySession(decoded, verificationIdToken) {
   const firebaseUid = decoded?.uid || null;
   const firebasePhone = decoded?.phone_number || null;
   if (firebasePhone) {
-    return finalizePhoneAuthSession(firebasePhone, firebaseUid, verificationIdToken);
+    const sessionBody = finalizePhoneAuthSession(firebasePhone, firebaseUid, verificationIdToken);
+    return attachDriverClaimsToSession(sessionBody, firebasePhone, verificationIdToken);
   }
   if (!firebaseUid) {
     const e = new Error('Firebase token is missing uid');
