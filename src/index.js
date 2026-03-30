@@ -211,6 +211,17 @@ const upsertUser = db.prepare(`
 
 const findUserByPhone = db.prepare('SELECT * FROM users WHERE phoneNumber = ?');
 
+const { jordanMobileLookupKeys } = require('./utils/jordanMobile');
+
+function findUserByPhoneFlexible(phone) {
+  const keys = jordanMobileLookupKeys(phone);
+  for (const k of keys) {
+    const u = findUserByPhone.get(k);
+    if (u) return u;
+  }
+  return null;
+}
+
 const testClientDir = path.join(__dirname, '..', 'test-client');
 if (fs.existsSync(testClientDir)) {
   app.use('/test-client', express.static(testClientDir));
@@ -225,7 +236,6 @@ attachSearchRoutes(app);
 attachAdmin(app, db, JWT_SECRET);
 attachDriverRoutes(app, db, JWT_SECRET);
 
-const { jordanMobileLookupKeys } = require('./utils/jordanMobile');
 const findDriverByMobileStmt = db.prepare('SELECT * FROM drivers WHERE mobile = ?');
 function findDriverByMobileFlexible(firebaseOrLocalPhone) {
   const keys = jordanMobileLookupKeys(firebaseOrLocalPhone);
@@ -264,7 +274,8 @@ function hintForSendVerificationError(rawMessage) {
 }
 
 function finalizePhoneAuthSession(firebasePhone, firebaseUid, verificationIdToken) {
-  const existing = findUserByPhone.get(firebasePhone);
+  const existing = findUserByPhoneFlexible(firebasePhone);
+  const phoneKey = existing?.phoneNumber ?? firebasePhone;
   if (existing && existing.isBlocked) {
     const e = new Error('User is blocked');
     e.statusCode = 403;
@@ -273,16 +284,16 @@ function finalizePhoneAuthSession(firebasePhone, firebaseUid, verificationIdToke
   const newUserId =
     existing && existing.deleted
       ? `u_${Date.now()}_${Math.random().toString(16).slice(2)}`
-      : (existing?.userId || firebasePhone);
+      : (existing?.userId || phoneKey);
 
   const token = jwt.sign(
-    { phoneNumber: firebasePhone, userId: newUserId },
+    { phoneNumber: phoneKey, userId: newUserId },
     JWT_SECRET,
     { expiresIn: '7d' },
   );
 
   upsertUser.run({
-    phoneNumber: firebasePhone,
+    phoneNumber: phoneKey,
     userId: newUserId,
     firebaseUid,
     token,
@@ -294,7 +305,7 @@ function finalizePhoneAuthSession(firebasePhone, firebaseUid, verificationIdToke
     try {
       db.prepare(
         `UPDATE users SET name = NULL, addressName = NULL, addressLong = NULL, addressLat = NULL, addresses = '[]', fcmToken = NULL WHERE phoneNumber = ?`,
-      ).run(firebasePhone);
+      ).run(phoneKey);
     } catch (e) {
       /* ignore */
     }
@@ -302,11 +313,124 @@ function finalizePhoneAuthSession(firebasePhone, firebaseUid, verificationIdToke
 
   return {
     success: true,
+    accountType: 'customer',
     token: `Bearer ${token}`,
     firebaseToken: verificationIdToken ?? null,
-    phoneNumber: firebasePhone,
+    phoneNumber: phoneKey,
     userId: newUserId,
   };
+}
+
+/** driver | customer | legacy (driver first if registered, else customer) */
+function getAuthIntent(req) {
+  const q = (req.query && String(req.query.intent || '').trim()) || '';
+  const b = req.body || {};
+  const fromBody = String(b.client || b.appRole || b.accountType || '').trim();
+  const h = String(req.headers['x-arheb-client'] || '').trim().toLowerCase();
+  const raw = String(q || fromBody || h || '').toLowerCase();
+  if (raw === 'driver' || raw === 'driver_app') return 'driver';
+  if (raw === 'customer' || raw === 'user' || raw === 'consumer' || raw === 'client') return 'customer';
+  return 'legacy';
+}
+
+function buildDriverVerifyResponse(driver, firebasePhone, idToken) {
+  const token = jwt.sign(
+    { driverId: driver.id, mobile: driver.mobile },
+    JWT_SECRET,
+    { expiresIn: '7d' },
+  );
+  const d = { ...driver };
+  delete d.licenseNumber;
+  return {
+    success: true,
+    accountType: 'driver',
+    token: `Bearer ${token}`,
+    userId: String(d.id),
+    phoneNumber: firebasePhone,
+    firebaseToken: idToken,
+    driver: {
+      id: String(d.id),
+      name: d.name,
+      photo: d.photo,
+      mobile: d.mobile,
+      phone: d.mobile,
+      email: d.email,
+      vehicleType: d.vehicleType,
+      vehicleNumber: d.vehicleNumber,
+      latitude: d.latitude,
+      longitude: d.longitude,
+      rating: d.rating ?? 5,
+      isVerified: Boolean(d.isVerified),
+    },
+  };
+}
+
+function exchangeFirebasePhoneForSession(req, res, firebasePhone, firebaseUid, idToken) {
+  const intent = getAuthIntent(req);
+  const driver = findDriverByMobileFlexible(firebasePhone);
+
+  if (intent === 'driver') {
+    if (!driver || driver.deleted) {
+      return res.status(403).json({
+        success: false,
+        accountType: 'not_driver',
+        message:
+          'This phone number is not registered as a driver. Use the customer app to sign in, or ask an admin to add you as a driver.',
+        case: 2,
+      });
+    }
+    if (driver.isBlocked) {
+      return res.status(403).json({
+        success: false,
+        accountType: 'driver',
+        message: 'Account is blocked',
+        case: 2,
+      });
+    }
+    return res.status(200).json(buildDriverVerifyResponse(driver, firebasePhone, idToken));
+  }
+
+  if (intent === 'customer') {
+    try {
+      return res.status(200).json(finalizePhoneAuthSession(firebasePhone, firebaseUid, idToken));
+    } catch (e) {
+      if (e.statusCode === 403) {
+        return res.status(403).json({ success: false, message: e.message, case: 2 });
+      }
+      return res.status(500).json({
+        success: false,
+        accountType: 'customer',
+        message: e.message || 'Could not create session',
+        case: 2,
+      });
+    }
+  }
+
+  if (driver && !driver.deleted) {
+    if (driver.isBlocked) {
+      return res.status(403).json({
+        success: false,
+        accountType: 'driver',
+        message: 'Account is blocked',
+        case: 2,
+      });
+    }
+    return res.status(200).json(buildDriverVerifyResponse(driver, firebasePhone, idToken));
+  }
+
+  try {
+    return res.status(200).json(finalizePhoneAuthSession(firebasePhone, firebaseUid, idToken));
+  } catch (e) {
+    if (e.statusCode === 403) {
+      return res.status(403).json({ success: false, message: e.message, case: 2 });
+    }
+    return res.status(500).json({
+      success: false,
+      accountType: 'customer',
+      message: e.message || 'Could not create session',
+      case: 2,
+    });
+  }
 }
 
 async function sendPhoneOtp(phoneNumber, options = {}) {
@@ -424,44 +548,7 @@ app.post('/api/auth/verify-firebase-token', async (req, res) => {
       });
     }
     const firebaseUid = decoded.uid || null;
-
-    const driver = findDriverByMobileFlexible(firebasePhone);
-    if (driver) {
-      if (driver.isBlocked) {
-        return res.status(403).json({ success: false, message: 'Account is blocked', case: 2 });
-      }
-      const token = jwt.sign(
-        { driverId: driver.id, mobile: driver.mobile },
-        JWT_SECRET,
-        { expiresIn: '7d' },
-      );
-      const d = { ...driver };
-      delete d.licenseNumber;
-      return res.status(200).json({
-        success: true,
-        token: `Bearer ${token}`,
-        userId: String(d.id),
-        phoneNumber: firebasePhone,
-        firebaseToken: idToken,
-        driver: {
-          id: String(d.id),
-          name: d.name,
-          photo: d.photo,
-          mobile: d.mobile,
-          phone: d.mobile,
-          email: d.email,
-          vehicleType: d.vehicleType,
-          vehicleNumber: d.vehicleNumber,
-          latitude: d.latitude,
-          longitude: d.longitude,
-          rating: d.rating ?? 5,
-          isVerified: Boolean(d.isVerified),
-        },
-      });
-    }
-
-    const body = finalizePhoneAuthSession(firebasePhone, firebaseUid, idToken);
-    return res.status(200).json(body);
+    return exchangeFirebasePhoneForSession(req, res, firebasePhone, firebaseUid, idToken);
   } catch (error) {
     if (error.statusCode === 403) {
       return res.status(403).json({ success: false, message: error.message, case: 2 });
@@ -487,8 +574,8 @@ app.post('/api/auth/verify-otp', async (req, res) => {
     const verification = await verifyPhoneOtp(sessionInfo, otp);
     const firebasePhone = verification.phoneNumber || phoneNumber;
     const firebaseUid = verification.localId || verification?.userId || null;
-    const body = finalizePhoneAuthSession(firebasePhone, firebaseUid, verification.idToken ?? null);
-    return res.status(200).json(body);
+    const vToken = verification.idToken ?? null;
+    return exchangeFirebasePhoneForSession(req, res, firebasePhone, firebaseUid, vToken);
   } catch (error) {
     if (error.statusCode === 403) {
       return res.status(403).json({
@@ -520,13 +607,13 @@ app.delete('/api/auth/user', authenticateRequest, async (req, res) => {
 });
 
 app.use((req, res) => {
-  res.status(404).json({ message: 'Route not found' });
+  res.status(404).json({ success: false, message: 'Route not found', case: 2 });
 });
 
 app.use((err, req, res, next) => {
   console.error(err);
-  res.status(500).json({ message: 'Internal server error' });
-  next();
+  if (res.headersSent) return next(err);
+  res.status(500).json({ success: false, message: 'Internal server error', case: 2 });
 });
 
 httpServer.listen(PORT, () => {
