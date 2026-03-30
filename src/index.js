@@ -334,19 +334,53 @@ function getAuthIntent(req) {
 }
 
 function buildDriverVerifyResponse(driver, firebasePhone, idToken) {
+  const d = { ...driver };
+  delete d.licenseNumber;
+  return {
+    success: true,
+    accountType: 'driver',
+    token: `Bearer ${jwt.sign(
+      { driverId: driver.id, mobile: driver.mobile },
+      JWT_SECRET,
+      { expiresIn: '7d' },
+    )}`,
+    userId: String(d.id),
+    phoneNumber: firebasePhone,
+    firebaseToken: idToken,
+    driver: {
+      id: String(d.id),
+      name: d.name,
+      photo: d.photo,
+      mobile: d.mobile,
+      phone: d.mobile,
+      email: d.email,
+      vehicleType: d.vehicleType,
+      vehicleNumber: d.vehicleNumber,
+      latitude: d.latitude,
+      longitude: d.longitude,
+      rating: d.rating ?? 5,
+      isVerified: Boolean(d.isVerified),
+    },
+  };
+}
+
+function buildUnifiedVerifyResponse(customerBody, driver, idToken) {
   const token = jwt.sign(
-    { driverId: driver.id, mobile: driver.mobile },
+    {
+      phoneNumber: customerBody.phoneNumber,
+      userId: customerBody.userId,
+      driverId: driver.id,
+      mobile: driver.mobile,
+    },
     JWT_SECRET,
     { expiresIn: '7d' },
   );
   const d = { ...driver };
   delete d.licenseNumber;
   return {
-    success: true,
+    ...customerBody,
     accountType: 'driver',
     token: `Bearer ${token}`,
-    userId: String(d.id),
-    phoneNumber: firebasePhone,
     firebaseToken: idToken,
     driver: {
       id: String(d.id),
@@ -406,46 +440,12 @@ function exchangeFirebasePhoneForSession(req, res, firebasePhone, firebaseUid, i
     }
   }
 
-  // Legacy (default): shoppers get a user JWT if they already have an active users row; else driver-only accounts get driver JWT; else create customer.
-  const existingUser = findUserByPhoneFlexible(firebasePhone);
-  if (existingUser && !existingUser.deleted) {
-    if (existingUser.isBlocked) {
-      return res.status(403).json({
-        success: false,
-        accountType: 'customer',
-        message: 'User is blocked',
-        case: 2,
-      });
-    }
-    try {
-      return res.status(200).json(finalizePhoneAuthSession(firebasePhone, firebaseUid, idToken));
-    } catch (e) {
-      if (e.statusCode === 403) {
-        return res.status(403).json({ success: false, message: e.message, case: 2 });
-      }
-      return res.status(500).json({
-        success: false,
-        accountType: 'customer',
-        message: e.message || 'Could not create session',
-        case: 2,
-      });
-    }
-  }
-
-  if (driver && !driver.deleted) {
-    if (driver.isBlocked) {
-      return res.status(403).json({
-        success: false,
-        accountType: 'driver',
-        message: 'Account is blocked',
-        case: 2,
-      });
-    }
-    return res.status(200).json(buildDriverVerifyResponse(driver, firebasePhone, idToken));
-  }
-
+  // Legacy (default, no Flutter flags):
+  // always create/refresh the shopper session first, then add driver claims
+  // when this phone is also a driver so the returned JWT works in both apps.
+  let customerBody;
   try {
-    return res.status(200).json(finalizePhoneAuthSession(firebasePhone, firebaseUid, idToken));
+    customerBody = finalizePhoneAuthSession(firebasePhone, firebaseUid, idToken);
   } catch (e) {
     if (e.statusCode === 403) {
       return res.status(403).json({ success: false, message: e.message, case: 2 });
@@ -457,6 +457,12 @@ function exchangeFirebasePhoneForSession(req, res, firebasePhone, firebaseUid, i
       case: 2,
     });
   }
+
+  if (driver && !driver.deleted && !driver.isBlocked) {
+    return res.status(200).json(buildUnifiedVerifyResponse(customerBody, driver, idToken));
+  }
+
+  return res.status(200).json(customerBody);
 }
 
 async function sendPhoneOtp(phoneNumber, options = {}) {
