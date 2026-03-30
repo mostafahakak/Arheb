@@ -236,16 +236,6 @@ attachSearchRoutes(app);
 attachAdmin(app, db, JWT_SECRET);
 attachDriverRoutes(app, db, JWT_SECRET);
 
-const findDriverByMobileStmt = db.prepare('SELECT * FROM drivers WHERE mobile = ?');
-function findDriverByMobileFlexible(firebaseOrLocalPhone) {
-  const keys = jordanMobileLookupKeys(firebaseOrLocalPhone);
-  for (const k of keys) {
-    const d = findDriverByMobileStmt.get(k);
-    if (d && !d.deleted) return d;
-  }
-  return null;
-}
-
 function extractFirebaseError(error) {
   const d = error?.response?.data;
   if (d?.error?.message) return d.error.message;
@@ -313,156 +303,11 @@ function finalizePhoneAuthSession(firebasePhone, firebaseUid, verificationIdToke
 
   return {
     success: true,
-    accountType: 'customer',
     token: `Bearer ${token}`,
     firebaseToken: verificationIdToken ?? null,
     phoneNumber: phoneKey,
     userId: newUserId,
   };
-}
-
-/** driver | customer | legacy (active customer first, else driver-only, else new customer — works without Flutter flags) */
-function getAuthIntent(req) {
-  const q = (req.query && String(req.query.intent || '').trim()) || '';
-  const b = req.body || {};
-  const fromBody = String(b.client || b.appRole || b.accountType || '').trim();
-  const h = String(req.headers['x-arheb-client'] || '').trim().toLowerCase();
-  const raw = String(q || fromBody || h || '').toLowerCase();
-  if (raw === 'driver' || raw === 'driver_app') return 'driver';
-  if (raw === 'customer' || raw === 'user' || raw === 'consumer' || raw === 'client') return 'customer';
-  return 'legacy';
-}
-
-function buildDriverVerifyResponse(driver, firebasePhone, idToken) {
-  const d = { ...driver };
-  delete d.licenseNumber;
-  return {
-    success: true,
-    accountType: 'driver',
-    token: `Bearer ${jwt.sign(
-      { driverId: driver.id, mobile: driver.mobile },
-      JWT_SECRET,
-      { expiresIn: '7d' },
-    )}`,
-    userId: String(d.id),
-    phoneNumber: firebasePhone,
-    firebaseToken: idToken,
-    driver: {
-      id: String(d.id),
-      name: d.name,
-      photo: d.photo,
-      mobile: d.mobile,
-      phone: d.mobile,
-      email: d.email,
-      vehicleType: d.vehicleType,
-      vehicleNumber: d.vehicleNumber,
-      latitude: d.latitude,
-      longitude: d.longitude,
-      rating: d.rating ?? 5,
-      isVerified: Boolean(d.isVerified),
-    },
-  };
-}
-
-function buildUnifiedVerifyResponse(customerBody, driver, idToken) {
-  const token = jwt.sign(
-    {
-      phoneNumber: customerBody.phoneNumber,
-      userId: customerBody.userId,
-      driverId: driver.id,
-      mobile: driver.mobile,
-    },
-    JWT_SECRET,
-    { expiresIn: '7d' },
-  );
-  const d = { ...driver };
-  delete d.licenseNumber;
-  return {
-    ...customerBody,
-    accountType: 'driver',
-    token: `Bearer ${token}`,
-    firebaseToken: idToken,
-    driver: {
-      id: String(d.id),
-      name: d.name,
-      photo: d.photo,
-      mobile: d.mobile,
-      phone: d.mobile,
-      email: d.email,
-      vehicleType: d.vehicleType,
-      vehicleNumber: d.vehicleNumber,
-      latitude: d.latitude,
-      longitude: d.longitude,
-      rating: d.rating ?? 5,
-      isVerified: Boolean(d.isVerified),
-    },
-  };
-}
-
-function exchangeFirebasePhoneForSession(req, res, firebasePhone, firebaseUid, idToken) {
-  const intent = getAuthIntent(req);
-  const driver = findDriverByMobileFlexible(firebasePhone);
-
-  if (intent === 'driver') {
-    if (!driver || driver.deleted) {
-      return res.status(403).json({
-        success: false,
-        accountType: 'not_driver',
-        message:
-          'This phone number is not registered as a driver. Use the customer app to sign in, or ask an admin to add you as a driver.',
-        case: 2,
-      });
-    }
-    if (driver.isBlocked) {
-      return res.status(403).json({
-        success: false,
-        accountType: 'driver',
-        message: 'Account is blocked',
-        case: 2,
-      });
-    }
-    return res.status(200).json(buildDriverVerifyResponse(driver, firebasePhone, idToken));
-  }
-
-  if (intent === 'customer') {
-    try {
-      return res.status(200).json(finalizePhoneAuthSession(firebasePhone, firebaseUid, idToken));
-    } catch (e) {
-      if (e.statusCode === 403) {
-        return res.status(403).json({ success: false, message: e.message, case: 2 });
-      }
-      return res.status(500).json({
-        success: false,
-        accountType: 'customer',
-        message: e.message || 'Could not create session',
-        case: 2,
-      });
-    }
-  }
-
-  // Legacy (default, no Flutter flags):
-  // always create/refresh the shopper session first, then add driver claims
-  // when this phone is also a driver so the returned JWT works in both apps.
-  let customerBody;
-  try {
-    customerBody = finalizePhoneAuthSession(firebasePhone, firebaseUid, idToken);
-  } catch (e) {
-    if (e.statusCode === 403) {
-      return res.status(403).json({ success: false, message: e.message, case: 2 });
-    }
-    return res.status(500).json({
-      success: false,
-      accountType: 'customer',
-      message: e.message || 'Could not create session',
-      case: 2,
-    });
-  }
-
-  if (driver && !driver.deleted && !driver.isBlocked) {
-    return res.status(200).json(buildUnifiedVerifyResponse(customerBody, driver, idToken));
-  }
-
-  return res.status(200).json(customerBody);
 }
 
 async function sendPhoneOtp(phoneNumber, options = {}) {
@@ -580,7 +425,8 @@ app.post('/api/auth/verify-firebase-token', async (req, res) => {
       });
     }
     const firebaseUid = decoded.uid || null;
-    return exchangeFirebasePhoneForSession(req, res, firebasePhone, firebaseUid, idToken);
+    const body = finalizePhoneAuthSession(firebasePhone, firebaseUid, idToken);
+    return res.status(200).json(body);
   } catch (error) {
     if (error.statusCode === 403) {
       return res.status(403).json({ success: false, message: error.message, case: 2 });
@@ -606,8 +452,8 @@ app.post('/api/auth/verify-otp', async (req, res) => {
     const verification = await verifyPhoneOtp(sessionInfo, otp);
     const firebasePhone = verification.phoneNumber || phoneNumber;
     const firebaseUid = verification.localId || verification?.userId || null;
-    const vToken = verification.idToken ?? null;
-    return exchangeFirebasePhoneForSession(req, res, firebasePhone, firebaseUid, vToken);
+    const body = finalizePhoneAuthSession(firebasePhone, firebaseUid, verification.idToken ?? null);
+    return res.status(200).json(body);
   } catch (error) {
     if (error.statusCode === 403) {
       return res.status(403).json({
