@@ -1,11 +1,17 @@
 'use strict';
 
+function toAsciiDigits(value) {
+  return String(value ?? '')
+    .replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
+    .replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)));
+}
+
 /**
  * Normalize driver/customer mobile input to match DB (Jordan: 0 7XXXXXXXX).
  * Handles 079..., 96279..., +962..., spaces, dashes.
  */
 function normalizeJordanMobileKey(input) {
-  const raw = String(input ?? '').trim();
+  const raw = toAsciiDigits(input).trim();
   if (!raw) return '';
   const digits = raw.replace(/\D/g, '');
   if (!digits) return raw;
@@ -29,7 +35,7 @@ function normalizeJordanMobileKey(input) {
  * Used to resolve drivers.mobile regardless of input format.
  */
 function jordanMobileLookupKeys(input) {
-  const raw = String(input ?? '').trim();
+  const raw = toAsciiDigits(input).trim();
   const keys = new Set();
   const norm = normalizeJordanMobileKey(input);
   if (norm) keys.add(norm);
@@ -50,10 +56,11 @@ function jordanMobileLookupKeys(input) {
 
 /** OTP from SMS / paste: digits only (strips spaces / hidden chars). */
 function normalizeOtpDigits(otp) {
-  return String(otp ?? '').replace(/\D/g, '');
+  return toAsciiDigits(otp).replace(/\D/g, '');
 }
 
 module.exports = {
+  toAsciiDigits,
   normalizeJordanMobileKey,
   jordanMobileLookupKeys,
   normalizeOtpDigits,

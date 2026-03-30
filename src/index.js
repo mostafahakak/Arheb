@@ -223,6 +223,13 @@ function findUserByPhoneFlexible(phone) {
   return null;
 }
 
+function maskPhoneForLog(phone) {
+  const s = String(phone || '').trim();
+  if (!s) return '-';
+  if (s.length <= 4) return s;
+  return `${s.slice(0, 3)}***${s.slice(-2)}`;
+}
+
 const testClientDir = path.join(__dirname, '..', 'test-client');
 if (fs.existsSync(testClientDir)) {
   app.use('/test-client', express.static(testClientDir));
@@ -378,6 +385,12 @@ async function verifyPhoneOtp(sessionInfo, code) {
 
 app.post('/api/auth/register', async (req, res) => {
   const { phoneNumber, recaptchaToken, captchaResponse, clientType } = req.body || {};
+  console.log('auth/register hit', {
+    phoneNumber: maskPhoneForLog(phoneNumber),
+    hasRecaptchaToken: Boolean(recaptchaToken),
+    hasCaptchaResponse: Boolean(captchaResponse),
+    clientType: clientType || null,
+  });
   if (!phoneNumber) {
     return res.status(400).json({ message: 'phoneNumber is required', case: 2 });
   }
@@ -446,6 +459,7 @@ attachDriverPresence(io, db, JWT_SECRET);
  */
 app.post('/api/auth/verify-firebase-token', async (req, res) => {
   const { idToken } = req.body || {};
+  console.log('auth/verify-firebase-token hit', { hasIdToken: Boolean(idToken) });
   if (!idToken || typeof idToken !== 'string') {
     return res.status(400).json({
       success: false,
@@ -483,6 +497,11 @@ app.post('/api/auth/verify-firebase-token', async (req, res) => {
 
 app.post('/api/auth/verify-otp', async (req, res) => {
   const { phoneNumber, sessionInfo, otp } = req.body;
+  console.log('auth/verify-otp hit', {
+    phoneNumber: maskPhoneForLog(phoneNumber),
+    hasSessionInfo: Boolean(sessionInfo),
+    otpLength: String(otp ?? '').length,
+  });
   if (!phoneNumber || !sessionInfo || !otp) {
     return res.status(400).json({
       success: false,

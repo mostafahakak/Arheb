@@ -117,6 +117,13 @@ function generateDriverOtpCode() {
   return String(crypto.randomInt(100000, 1000000));
 }
 
+function maskPhoneForLog(phone) {
+  const s = String(phone || '').trim();
+  if (!s) return '-';
+  if (s.length <= 4) return s;
+  return `${s.slice(0, 3)}***${s.slice(-2)}`;
+}
+
 module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS drivers (
@@ -255,6 +262,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
   // POST /api/driver/send-otp
   app.post('/api/driver/send-otp', (req, res) => {
     const { mobile } = req.body || {};
+    console.log('driver/send-otp hit', { mobile: maskPhoneForLog(mobile) });
     if (!mobile || !String(mobile).trim()) {
       return res.status(400).json({ success: false, message: 'mobile is required' });
     }
@@ -290,6 +298,11 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
   // POST /api/driver/login
   app.post('/api/driver/login', (req, res) => {
     const { mobile, otpCode, verificationId } = req.body || {};
+    console.log('driver/login hit', {
+      mobile: maskPhoneForLog(mobile),
+      otpLength: String(otpCode ?? '').length,
+      hasVerificationId: Boolean(verificationId),
+    });
     if (!mobile || otpCode === undefined || otpCode === null || otpCode === '') {
       return res.status(400).json({ success: false, message: 'mobile and otpCode are required' });
     }
