@@ -321,7 +321,7 @@ function finalizePhoneAuthSession(firebasePhone, firebaseUid, verificationIdToke
   };
 }
 
-/** driver | customer | legacy (driver first if registered, else customer) */
+/** driver | customer | legacy (active customer first, else driver-only, else new customer — works without Flutter flags) */
 function getAuthIntent(req) {
   const q = (req.query && String(req.query.intent || '').trim()) || '';
   const b = req.body || {};
@@ -406,6 +406,32 @@ function exchangeFirebasePhoneForSession(req, res, firebasePhone, firebaseUid, i
     }
   }
 
+  // Legacy (default): shoppers get a user JWT if they already have an active users row; else driver-only accounts get driver JWT; else create customer.
+  const existingUser = findUserByPhoneFlexible(firebasePhone);
+  if (existingUser && !existingUser.deleted) {
+    if (existingUser.isBlocked) {
+      return res.status(403).json({
+        success: false,
+        accountType: 'customer',
+        message: 'User is blocked',
+        case: 2,
+      });
+    }
+    try {
+      return res.status(200).json(finalizePhoneAuthSession(firebasePhone, firebaseUid, idToken));
+    } catch (e) {
+      if (e.statusCode === 403) {
+        return res.status(403).json({ success: false, message: e.message, case: 2 });
+      }
+      return res.status(500).json({
+        success: false,
+        accountType: 'customer',
+        message: e.message || 'Could not create session',
+        case: 2,
+      });
+    }
+  }
+
   if (driver && !driver.deleted) {
     if (driver.isBlocked) {
       return res.status(403).json({
@@ -458,7 +484,7 @@ app.post('/api/auth/register', async (req, res) => {
 
   try {
     const normalizedPhone = phoneNumber.trim();
-    const existingUser = findUserByPhone.get(normalizedPhone);
+    const existingUser = findUserByPhoneFlexible(normalizedPhone);
     const sessionInfo = await sendPhoneOtp(normalizedPhone, {
       recaptchaToken,
       captchaResponse,
@@ -492,7 +518,7 @@ function authenticateRequest(req, res, next) {
     const payload = jwt.verify(token, JWT_SECRET);
     const phone = payload?.phoneNumber;
     if (!phone) return res.status(401).json({ message: 'Invalid token' });
-    const row = findUserByPhone.get(phone);
+    const row = findUserByPhoneFlexible(phone);
     if (!row || row.deleted) {
       return res.status(401).json({ message: 'User does not exist' });
     }
