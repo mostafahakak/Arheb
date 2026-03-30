@@ -210,6 +210,7 @@ const upsertUser = db.prepare(`
 `);
 
 const findUserByPhone = db.prepare('SELECT * FROM users WHERE phoneNumber = ?');
+const findUserByFirebaseUid = db.prepare('SELECT * FROM users WHERE firebaseUid = ?');
 
 const { jordanMobileLookupKeys } = require('./utils/jordanMobile');
 
@@ -310,6 +311,54 @@ function finalizePhoneAuthSession(firebasePhone, firebaseUid, verificationIdToke
   };
 }
 
+function finalizeFirebaseIdentitySession(decoded, verificationIdToken) {
+  const firebaseUid = decoded?.uid || null;
+  const firebasePhone = decoded?.phone_number || null;
+  if (firebasePhone) {
+    return finalizePhoneAuthSession(firebasePhone, firebaseUid, verificationIdToken);
+  }
+  if (!firebaseUid) {
+    const e = new Error('Firebase token is missing uid');
+    e.statusCode = 400;
+    throw e;
+  }
+
+  const existingByUid = findUserByFirebaseUid.get(firebaseUid);
+  const userKey = existingByUid?.phoneNumber || `firebase:${firebaseUid}`;
+  if (existingByUid && existingByUid.isBlocked) {
+    const e = new Error('User is blocked');
+    e.statusCode = 403;
+    throw e;
+  }
+  const newUserId =
+    existingByUid && existingByUid.deleted
+      ? `u_${Date.now()}_${Math.random().toString(16).slice(2)}`
+      : (existingByUid?.userId || userKey);
+
+  const token = jwt.sign(
+    { phoneNumber: userKey, userId: newUserId },
+    JWT_SECRET,
+    { expiresIn: '7d' },
+  );
+
+  upsertUser.run({
+    phoneNumber: userKey,
+    userId: newUserId,
+    firebaseUid,
+    token,
+    deleted: 0,
+    deletedAt: null,
+  });
+
+  return {
+    success: true,
+    token: `Bearer ${token}`,
+    firebaseToken: verificationIdToken ?? null,
+    phoneNumber: userKey,
+    userId: newUserId,
+  };
+}
+
 async function sendPhoneOtp(phoneNumber, options = {}) {
   const url = `https://identitytoolkit.googleapis.com/v1/accounts:sendVerificationCode?key=${FIREBASE_API_KEY}`;
   const payload = { phoneNumber };
@@ -350,6 +399,7 @@ app.post('/api/auth/register', async (req, res) => {
   } catch (error) {
     const raw = extractFirebaseError(error);
     const hint = hintForSendVerificationError(raw);
+    console.error('auth/register error:', raw);
     return res.status(500).json({
       message: hint ? `${raw}. ${hint}` : raw,
       case: 2,
@@ -416,18 +466,10 @@ app.post('/api/auth/verify-firebase-token', async (req, res) => {
 
   try {
     const decoded = await auth.verifyIdToken(idToken);
-    const firebasePhone = decoded.phone_number;
-    if (!firebasePhone) {
-      return res.status(400).json({
-        success: false,
-        message: 'ID token has no phone_number claim (sign in with Firebase phone auth)',
-        case: 2,
-      });
-    }
-    const firebaseUid = decoded.uid || null;
-    const body = finalizePhoneAuthSession(firebasePhone, firebaseUid, idToken);
+    const body = finalizeFirebaseIdentitySession(decoded, idToken);
     return res.status(200).json(body);
   } catch (error) {
+    console.error('verify-firebase-token error:', error?.message, error?.code || '', error?.errorInfo?.code || '');
     if (error.statusCode === 403) {
       return res.status(403).json({ success: false, message: error.message, case: 2 });
     }
@@ -455,6 +497,7 @@ app.post('/api/auth/verify-otp', async (req, res) => {
     const body = finalizePhoneAuthSession(firebasePhone, firebaseUid, verification.idToken ?? null);
     return res.status(200).json(body);
   } catch (error) {
+    console.error('verify-otp error:', extractFirebaseError(error));
     if (error.statusCode === 403) {
       return res.status(403).json({
         success: false,
