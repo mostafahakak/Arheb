@@ -230,6 +230,37 @@ function maskPhoneForLog(phone) {
   return `${s.slice(0, 3)}***${s.slice(-2)}`;
 }
 
+function summarizeTraceBody(body) {
+  const src = body && typeof body === 'object' ? body : {};
+  return {
+    phoneNumber: src.phoneNumber ? maskPhoneForLog(src.phoneNumber) : undefined,
+    mobile: src.mobile ? maskPhoneForLog(src.mobile) : undefined,
+    hasIdToken: Boolean(src.idToken),
+    hasSessionInfo: Boolean(src.sessionInfo),
+    hasVerificationId: Boolean(src.verificationId),
+    hasOtp: src.otp != null || src.otpCode != null,
+    otpLength: src.otp != null ? String(src.otp).length : (src.otpCode != null ? String(src.otpCode).length : 0),
+    hasRecaptchaToken: Boolean(src.recaptchaToken),
+    hasCaptchaResponse: Boolean(src.captchaResponse),
+    clientType: src.clientType || null,
+  };
+}
+
+app.use((req, res, next) => {
+  const traceable = req.path.startsWith('/api/auth/') || req.path.startsWith('/api/driver/');
+  if (!traceable) return next();
+
+  const startedAt = Date.now();
+  console.log(`[trace:start] ${req.method} ${req.path}`, summarizeTraceBody(req.body));
+
+  res.on('finish', () => {
+    const durationMs = Date.now() - startedAt;
+    console.log(`[trace:end] ${req.method} ${req.path} -> ${res.statusCode} (${durationMs}ms)`);
+  });
+
+  next();
+});
+
 const testClientDir = path.join(__dirname, '..', 'test-client');
 if (fs.existsSync(testClientDir)) {
   app.use('/test-client', express.static(testClientDir));
