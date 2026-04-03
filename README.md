@@ -33,6 +33,12 @@ FIREBASE_PRIVATE_KEY=...
 JWT_SECRET=change-me
 SUPERADMIN_EMAIL=admin@arheb.app
 SUPERADMIN_PASSWORD=strong-password-here
+
+# Madfoat / PayTabs payment gateway
+PAYTABS_SERVER_KEY=S9JNLKHZRK-JMRR6BJ2RN-DZ69WH62JK
+PAYTABS_CLIENT_KEY=CBKMDV-VR626N-RRG26M-HBNT7P
+PAYTABS_CURRENCY=JOD
+BASE_URL=https://arheb-backend.onrender.com
 ```
 
 - **Run locally**:
@@ -157,6 +163,14 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
   - [Get All Orders](#get-all-orders)
   - [Get Order by ID](#get-order-by-id)
   - [Rate Order](#rate-order)
+- [Payment (Card / Online)](#payment-card--online)
+  - [Get Client Key](#get-client-key)
+  - [Initiate Payment](#initiate-payment)
+  - [Payment Callback (server-to-server)](#payment-callback)
+  - [Payment Return (browser redirect)](#payment-return)
+  - [Query Transaction](#query-transaction)
+  - [Refund Transaction](#refund-transaction)
+  - [List Payment Transactions](#list-payment-transactions)
 - [Order Tracking (WebSocket)](#order-tracking-websocket)
   - [Connection](#connection)
   - [Driver Events](#driver-events)
@@ -802,7 +816,7 @@ console.log(data.data.products);
 
 ### Get All Categories
 
-Retrieves all categories and subcategories.
+Retrieves all categories and subcategories. The response automatically includes a virtual **"Offers"** category (id `"offers"`) as the first item when there are products with active discounts. The Offers category includes a `stores` array of all visible stores that have at least one discounted product, and `productsCount` / `storesCount` for display.
 
 **Endpoint:** `GET /api/categories`
 
@@ -814,6 +828,28 @@ Retrieves all categories and subcategories.
   "success": true,
   "data": {
     "categories": [
+      {
+        "id": "offers",
+        "name": "Offers",
+        "nameAr": "العروض",
+        "nameEn": "Offers",
+        "image": "",
+        "isComingSoon": false,
+        "order": 0,
+        "subCategories": [],
+        "stores": [
+          {
+            "id": "1",
+            "name": "كريسبي تشيكن",
+            "nameEn": "Crispy Chicken",
+            "logo": "https://example.com/stores/crispy.png",
+            "rate": 4.9,
+            "status": "open"
+          }
+        ],
+        "storesCount": 1,
+        "productsCount": 5
+      },
       {
         "id": "1",
         "name": "supermarket",
@@ -827,10 +863,17 @@ Retrieves all categories and subcategories.
 }
 ```
 
+**Note:** The "Offers" category is only included when there are products with active discounts. Use `GET /api/offers` to get the actual discounted products. The `stores` array within the Offers category lets the client show which stores currently have offers.
+
 **Example:**
 ```javascript
 const response = await fetch('https://arheb-backend.onrender.com/api/categories');
 const data = await response.json();
+const offersCategory = data.data.categories.find(c => c.id === 'offers');
+if (offersCategory) {
+  console.log(`${offersCategory.storesCount} stores with ${offersCategory.productsCount} offers`);
+  console.log(offersCategory.stores); // stores with active discounts
+}
 ```
 
 ---
@@ -1475,6 +1518,400 @@ const response = await fetch('https://arheb-backend.onrender.com/api/checkout/1/
   },
   body: JSON.stringify({ rating: 5 })
 });
+```
+
+---
+
+## Payment (Card / Online)
+
+Online card payments are processed via **Madfoat (PayTabs)**. The flow is:
+
+1. Client calls **POST /api/payment/initiate** → receives a `redirectUrl`.
+2. Client opens the `redirectUrl` in a browser/WebView for the customer to enter card details (hosted payment page).
+3. After 3DS / card entry, Madfoat sends a **server-to-server callback** to `POST /api/payment/callback` with the result.
+4. The customer's browser is redirected to `GET /api/payment/return` which shows a success/failure page.
+5. Client can query status via **GET /api/payment/query/:tranRef** at any time.
+
+**Test credentials:**
+
+| | Value |
+|---|---|
+| Profile ID | `47145` |
+| Server Key | `S9JNLKHZRK-JMRR6BJ2RN-DZ69WH62JK` |
+| Client Key | `CBKMDV-VR626N-RRG26M-HBNT7P` |
+
+**Test Card:**
+
+| Card Number | Scheme | CVV | 3D Enrolled |
+|---|---|---|---|
+| `4000000000000002` | Visa | `123` | Yes |
+
+Use any future expiry (e.g. `12/2027`).
+
+---
+
+### Get Client Key
+
+Returns the client key and profile ID for frontend managed-form integration (paylib.js).
+
+**Endpoint:** `GET /api/payment/client-key`
+
+**Authentication:** Not required
+
+**Success Response (200):**
+
+```json
+{
+  "success": true,
+  "data": {
+    "clientKey": "CBKMDV-VR626N-RRG26M-HBNT7P",
+    "profileId": 47145
+  }
+}
+```
+
+---
+
+### Initiate Payment
+
+Creates a payment transaction and returns either a direct result (if no 3DS needed) or a redirect URL for the hosted payment page.
+
+**Endpoint:** `POST /api/payment/initiate`
+
+**Authentication:** Required (Bearer token)
+
+**Request Body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `amount` | number | Yes | Total amount to charge (must be > 0) |
+| `orderId` | number | No | Order ID to link payment to an existing order |
+| `currency` | string | No | 3-char currency code (default: `JOD`) |
+| `description` | string | No | Cart description shown on payment page |
+| `customerName` | string | No | Customer name (pre-fills payment page) |
+| `customerEmail` | string | No | Customer email |
+| `customerPhone` | string | No | Customer phone |
+| `customerAddress` | string | No | Street address |
+| `customerCity` | string | No | City |
+| `customerCountry` | string | No | 2-char country code (e.g. `JO`) |
+
+**Example Request:**
+
+```json
+{
+  "amount": 15.5,
+  "orderId": 42,
+  "currency": "JOD",
+  "description": "Arheb Order #42",
+  "customerName": "Ahmad",
+  "customerEmail": "ahmad@example.com",
+  "customerPhone": "+962791111111",
+  "customerCity": "Amman",
+  "customerCountry": "JO"
+}
+```
+
+**Redirect Response (200) — most common:**
+
+```json
+{
+  "success": true,
+  "message": "Redirect customer to complete payment",
+  "data": {
+    "tranRef": "TST2014900000688",
+    "cartId": "ORDER-42-1712160000000",
+    "status": "pending_redirect",
+    "redirectUrl": "https://madfoat-secure.paytabs.com/payment/page/REF/redirect",
+    "redirectMethod": "GET"
+  }
+}
+```
+
+The client must open `redirectUrl` in a browser or WebView. After the customer completes payment, Madfoat will call the server callback and redirect the browser to the return URL.
+
+**Direct Success Response (200) — when no 3DS required:**
+
+```json
+{
+  "success": true,
+  "message": "Payment completed successfully",
+  "data": {
+    "tranRef": "TST2014900000688",
+    "cartId": "ORDER-42-1712160000000",
+    "status": "completed",
+    "paymentResult": {
+      "response_status": "A",
+      "response_code": "831000",
+      "response_message": "Authorised",
+      "acquirer_message": "ACCEPT",
+      "transaction_time": "2026-04-03T14:35:38+03:00"
+    },
+    "paymentInfo": {
+      "card_type": "Credit",
+      "card_scheme": "Visa",
+      "payment_description": "4000 00## #### 0002"
+    }
+  }
+}
+```
+
+**Error Response (400/500):**
+
+```json
+{
+  "success": false,
+  "message": "Invalid currency code",
+  "code": 206
+}
+```
+
+**Example (JavaScript):**
+
+```javascript
+const response = await fetch('https://arheb-backend.onrender.com/api/payment/initiate', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer your-jwt-token-here'
+  },
+  body: JSON.stringify({
+    amount: 15.5,
+    orderId: 42,
+    customerName: 'Ahmad',
+    customerEmail: 'ahmad@example.com',
+    customerPhone: '+962791111111',
+    customerCountry: 'JO'
+  })
+});
+
+const data = await response.json();
+if (data.data.redirectUrl) {
+  // Open in browser/WebView for customer to complete payment
+  window.open(data.data.redirectUrl);
+}
+```
+
+---
+
+### Payment Callback
+
+Server-to-server POST from Madfoat after a redirected payment completes. **Not called by the client.** The server verifies the HMAC signature and updates the payment and order status.
+
+**Endpoint:** `POST /api/payment/callback`
+
+**Content-Type:** `application/x-www-form-urlencoded`
+
+**Parameters (form fields):**
+
+| Field | Type | Description |
+|---|---|---|
+| `tranRef` | string | Transaction reference |
+| `cartId` | string | Cart ID |
+| `respStatus` | string | `A` = Approved, `D` = Declined |
+| `respCode` | string | Response code |
+| `respMessage` | string | Response message |
+| `acquirerRRN` | string | Acquirer reference |
+| `acquirerMessage` | string | Acquirer message |
+| `token` | string | Tokenization identifier |
+| `customerEmail` | string | Customer email |
+| `signature` | string | HMAC-SHA256 signature for verification |
+
+**Response:** `200 OK` with `{ success: true }`.
+
+---
+
+### Payment Return
+
+Browser redirect URL after customer completes payment on the hosted page. Shows a simple HTML result page (success or failure). **Not an API endpoint for the client to call directly** — this is the URL Madfoat redirects the browser to.
+
+**Endpoint:** `GET /api/payment/return`
+
+**Query Parameters:** `tranRef`, `respStatus`, `respMessage` (sent by Madfoat)
+
+**Response:** HTML page indicating payment success or failure.
+
+---
+
+### Query Transaction
+
+Look up a payment transaction status by its transaction reference. Updates the local DB with latest info from Madfoat.
+
+**Endpoint:** `GET /api/payment/query/:tranRef`
+
+**Authentication:** Required (Bearer token)
+
+**Path Parameters:**
+- `tranRef` — Transaction reference (e.g. `TST2014900000688`)
+
+**Success Response (200):**
+
+```json
+{
+  "success": true,
+  "data": {
+    "tranRef": "TST2014900000688",
+    "cartId": "ORDER-42-1712160000000",
+    "cartAmount": "15.5",
+    "cartCurrency": "JOD",
+    "status": "completed",
+    "paymentResult": {
+      "response_status": "A",
+      "response_code": "831000",
+      "response_message": "Authorised",
+      "acquirer_message": "ACCEPT",
+      "acquirer_rrn": "014910159369",
+      "transaction_time": "2026-04-03T14:35:38+03:00"
+    },
+    "paymentInfo": {
+      "card_type": "Credit",
+      "card_scheme": "Visa",
+      "payment_description": "4000 00## #### 0002"
+    },
+    "customerDetails": {
+      "name": "Ahmad",
+      "email": "ahmad@example.com",
+      "phone": "+962791111111"
+    }
+  }
+}
+```
+
+**Example:**
+
+```javascript
+const response = await fetch('https://arheb-backend.onrender.com/api/payment/query/TST2014900000688', {
+  headers: { 'Authorization': 'Bearer your-jwt-token-here' }
+});
+const data = await response.json();
+console.log(data.data.status); // "completed", "declined", "pending"
+```
+
+---
+
+### Refund Transaction
+
+Issues a full or partial refund for a completed transaction.
+
+**Endpoint:** `POST /api/payment/refund`
+
+**Authentication:** Required (Bearer token)
+
+**Request Body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `tranRef` | string | Yes | Transaction reference to refund |
+| `amount` | number | No | Refund amount (defaults to original amount if omitted) |
+| `description` | string | No | Refund description |
+
+**Example Request:**
+
+```json
+{
+  "tranRef": "TST2014900000688",
+  "amount": 5.0,
+  "description": "Partial refund for item return"
+}
+```
+
+**Success Response (200):**
+
+```json
+{
+  "success": true,
+  "message": "Refund processed successfully",
+  "data": {
+    "originalTranRef": "TST2014900000688",
+    "refundTranRef": "TST2014900000689",
+    "amount": 5.0,
+    "status": "refunded",
+    "paymentResult": {
+      "response_status": "A",
+      "response_code": "831000",
+      "response_message": "Authorised"
+    }
+  }
+}
+```
+
+---
+
+### List Payment Transactions
+
+Retrieves payment transaction history with optional filters.
+
+**Endpoint:** `GET /api/payment/transactions`
+
+**Authentication:** Required (Bearer token)
+
+**Query Parameters:**
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `orderId` | number | — | Filter by order ID |
+| `status` | string | — | Filter by status (`initiated`, `pending_redirect`, `completed`, `declined`, `refunded`) |
+| `page` | number | 1 | Page number |
+| `perPage` | number | 20 | Items per page (max 50) |
+
+**Success Response (200):**
+
+```json
+{
+  "success": true,
+  "data": {
+    "transactions": [
+      {
+        "id": 1,
+        "orderId": 42,
+        "tranRef": "TST2014900000688",
+        "cartId": "ORDER-42-1712160000000",
+        "cartAmount": 15.5,
+        "cartCurrency": "JOD",
+        "tranType": "sale",
+        "status": "completed",
+        "responseStatus": "A",
+        "responseMessage": "Authorised",
+        "paymentDescription": "4000 00## #### 0002",
+        "cardScheme": "Visa",
+        "cardType": "Credit",
+        "createdAt": "2026-04-03T14:35:38",
+        "updatedAt": "2026-04-03T14:35:40"
+      }
+    ],
+    "total": 1,
+    "page": 1,
+    "perPage": 20
+  }
+}
+```
+
+---
+
+### Payment Flow (Mobile App Integration)
+
+```
+┌─────────┐     POST /api/payment/initiate     ┌─────────┐
+│  Mobile  │ ──────────────────────────────────> │ Backend │
+│   App    │ <────────── { redirectUrl } ─────── │         │
+│          │                                     │         │
+│  Opens   │ ──── browser/WebView ──────────> ┌──┴─────────┴──┐
+│ redirect │                                  │  Madfoat Page  │
+│          │                                  │  (Card Entry)  │
+│          │                                  └──┬─────────┬──┘
+│          │                                     │ 3DS etc │
+│          │   POST /api/payment/callback        │         │
+│          │   (server-to-server)                 ▼         │
+│          │                              ┌─────────┐      │
+│          │                              │ Backend  │      │
+│          │                              │ updates  │      │
+│          │                              │ DB/order │      │
+│          │                              └─────────┘      │
+│          │   GET /api/payment/return (browser redirect)   │
+│          │ <──────────────────────────────────────────────┘
+│          │
+│  Polls   │  GET /api/payment/query/:tranRef
+│  status  │ ──────────────────────────────────> Backend
+└─────────┘
 ```
 
 ---
@@ -2143,7 +2580,7 @@ All under `/api/admin/stores/:storeId/products`. Store Admin can only access the
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/admin/stores/:storeId/products` | List products for store |
+| GET | `/api/admin/stores/:storeId/products` | List products for store. Query param `?name=text` to search by product name (EN/AR, case-insensitive partial match). |
 | POST | `/api/admin/stores/:storeId/products` | Create product. **Store Admin**: product enters pending queue (returns `pendingId`, `status: "pending"`). **SuperAdmin/Admin**: product added directly. |
 | PATCH | `/api/admin/stores/:storeId/products/:productId` | Update product |
 | DELETE | `/api/admin/stores/:storeId/products/:productId` | Delete product |
@@ -2782,6 +3219,14 @@ For issues or questions, please contact: `contact@arheb.app`
 | POST | `/api/admin/notifications/broadcast` | Admin / SuperAdmin | Sends FCM to all users. Body: `{ title, body, imageUrl? }`. Each broadcast is **saved** to the `Notifications` table for later retrieval via GET `/api/admin/notifications`. |
 | GET | `/api/profile/notifications` | User (Bearer) | In-app notification inbox: paginated list (`page`, `perPage`) of notifications **sent to this user only**. Persisted in `user_notifications` when FCM is sent (per-user pushes and broadcast). Each item includes `data` (FCM payload: `orderId`, `deepLink`, `type`, …). |
 
+| POST | `/api/payment/initiate` | User (Bearer) | Initiate online card payment via Madfoat (PayTabs). Returns `redirectUrl` for hosted payment page or direct result. Links to `orderId` if provided. |
+| GET | `/api/payment/client-key` | None | Returns client key and profile ID for managed-form (paylib.js) frontend integration. |
+| GET | `/api/payment/query/:tranRef` | User (Bearer) | Query transaction status from Madfoat by transaction reference. |
+| POST | `/api/payment/refund` | User (Bearer) | Full or partial refund of a completed transaction. Body: `{ tranRef, amount?, description? }`. |
+| GET | `/api/payment/transactions` | User (Bearer) | List payment transactions with optional filters (`orderId`, `status`, `page`, `perPage`). |
+| POST | `/api/payment/callback` | None (Madfoat server-to-server) | Receives payment result from Madfoat after hosted page completion. Verifies HMAC signature. Not called by client. |
+| GET | `/api/payment/return` | None (browser redirect) | Browser landing page after payment. Shows HTML success/failure. |
+
 ### Adjusted / Updated APIs
 
 - **Stores (public)**  
@@ -2862,8 +3307,12 @@ For issues or questions, please contact: `contact@arheb.app`
   - **Driver assignment FCM (manual + auto):** In all cases above, plus **PATCH** `/api/admin/orders/:orderId/status` → **`Preparing`** when the backend auto-assigns the nearest driver, the driver push includes **`type: driver_request`**, **`orderId`**, **`deepLink`: `arheb://orders/{orderId}`**, **`screen: order_details`**, **`click_action`**, and store fields where applicable — tap should open the driver’s order details for that `orderId`.
   - For **`On the way`** orders, when driver gets within **0.5 km** of customer location, backend sends one-time **"order is near"** FCM notification to the user.
 
-- **Categories (icons by language)**  
+- **Categories (icons by language + Offers)**  
   - Category payloads now support **`iconAr`** and **`iconEn`** fields (stored and returned by categories APIs and admin category CRUD).
+  - **GET** `/api/categories` now automatically includes a virtual **"Offers"** category (id `"offers"`, order `0`) as the first item when there are products with active discounts. The Offers category includes a `stores` array (visible stores with at least one discounted product), `storesCount`, and `productsCount`.
+
+- **Admin Products search**  
+  - **GET** `/api/admin/stores/:storeId/products` now accepts query param **`?name=text`** to filter products by name (searches `name`, `nameAr`, `nameEn`; case-insensitive partial match).
 
 - **Stores: Pause & Block**  
   - Stores can be **paused** (hidden from users; admins see status “Paused”) or **blocked** (hidden from users; only Admin/SuperAdmin can unblock; Store Admin cannot edit or add/remove products).  

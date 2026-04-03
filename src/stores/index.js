@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { getJsonPath } = require('../config/jsonPaths');
-const { isStoreVisibleToCustomers } = require('../utils/storeVisibility');
+const { isStoreVisibleToCustomers, getAdminStoreDashboardBucket } = require('../utils/storeVisibility');
 const { enrichOpeningHoursObject } = require('../utils/openingHoursJordan');
 
 const storesResponsePath = getJsonPath('stores_listing_response.json');
@@ -158,7 +158,14 @@ const seedStoresTable = (db, stores) => {
   insertAll(stores);
 };
 
-// Public store shape: include closingTime, openingTime, storeCategories; never expose arhebFee
+function computeStoreStatus(store) {
+  if (!store) return 'closed';
+  if (store.paused === true) return 'paused';
+  if (isStoreVisibleToCustomers(store)) return 'open';
+  return 'closed';
+}
+
+// Public store shape: include closingTime, openingTime, storeCategories, status; never expose arhebFee
 function toPublicStore(store) {
   const { arhebFee, ...rest } = store;
   const openingHours = store.openingHours
@@ -170,6 +177,7 @@ function toPublicStore(store) {
     openingTime: store.openingHours?.open ?? store.openingTime ?? null,
     openingHours,
     storeCategories: Array.isArray(store.storeCategories) ? store.storeCategories : [],
+    status: computeStoreStatus(store),
   };
 }
 
@@ -238,7 +246,7 @@ module.exports = function attachStoresRoutes(app, db) {
     });
   });
 
-  // Get stores by category name
+  // Get stores by category name (also matches store subcategories)
   app.get('/api/stores/category/:categoryName', (req, res) => {
     const categoryName = req.params.categoryName;
     if (!categoryName || categoryName.trim() === '') {
@@ -252,8 +260,21 @@ module.exports = function attachStoresRoutes(app, db) {
       const s = String(val).toLowerCase();
       return s === categoryNameLower || s.includes(categoryNameLower) || categoryNameLower.includes(s);
     };
+
+    const storeMatchesSubCategories = (store) => {
+      const subs = Array.isArray(store.subCategories) ? store.subCategories : [];
+      return subs.some(sub => {
+        if (typeof sub === 'string') return matches(sub);
+        if (sub && typeof sub === 'object') {
+          return matches(sub.name) || matches(sub.nameAr) || matches(sub.nameEn) || matches(sub.id);
+        }
+        return false;
+      });
+    };
+
     const storesByCategory = storesList.filter(store =>
-      matches(store.category) || matches(store.categoryAr) || matches(store.categoryEn)
+      matches(store.category) || matches(store.categoryAr) || matches(store.categoryEn) ||
+      storeMatchesSubCategories(store)
     );
     return res.status(200).json({
       success: true,
@@ -309,6 +330,7 @@ module.exports = function attachStoresRoutes(app, db) {
           closingTime: store.closingTime ?? null,
           openingTime: store.openingHours?.open ?? store.openingTime ?? null,
           storeCategories: Array.isArray(store.storeCategories) ? store.storeCategories : [],
+          status: computeStoreStatus(store),
         },
         products: storeProducts.map(toClientProduct),
         count: storeProducts.length
@@ -426,6 +448,7 @@ module.exports = function attachStoresRoutes(app, db) {
           closingTime: store.closingTime ?? null,
           openingTime: store.openingHours?.open ?? store.openingTime ?? null,
           storeCategories: Array.isArray(store.storeCategories) ? store.storeCategories : [],
+          status: computeStoreStatus(store),
         },
         categoryName: categoryName,
         subCategory: subCategoryQuery || null,

@@ -1,9 +1,17 @@
 const fs = require('fs');
 const path = require('path');
 const { getJsonPath } = require('../config/jsonPaths');
+const { isStoreVisibleToCustomers } = require('../utils/storeVisibility');
 
 const storesResponsePath = getJsonPath('stores_listing_response.json');
 const productsResponsePath = getJsonPath('products_listing_response.json');
+
+function computeStoreStatus(store) {
+  if (!store) return 'closed';
+  if (store.paused === true) return 'paused';
+  if (isStoreVisibleToCustomers(store)) return 'open';
+  return 'closed';
+}
 
 function loadStores() {
   try {
@@ -53,7 +61,12 @@ module.exports = function attachSearchRoutes(app) {
     const storeFields = ['name', 'nameAr', 'nameEn', 'category', 'categoryAr', 'categoryEn'];
     const productFields = ['name', 'nameAr', 'nameEn', 'productName', 'productNameAr', 'productNameEn', 'category', 'categoryName'];
 
-    const matchedStores = stores.filter((s) => matchesText(s, q, storeFields));
+    const matchedStores = stores
+      .filter((s) => matchesText(s, q, storeFields))
+      .map((s) => {
+        const { arhebFee, ...rest } = s;
+        return { ...rest, status: computeStoreStatus(s) };
+      });
     const matchedProducts = products.filter((p) => p.isAvailable !== false && matchesText(p, q, productFields));
 
     return res.status(200).json({

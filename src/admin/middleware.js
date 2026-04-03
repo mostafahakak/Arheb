@@ -38,7 +38,7 @@ function requireStoreAccess(getStoreIdFromRequest) {
     if (!req.admin) return res.status(401).json({ success: false, message: 'Not authenticated' });
     if (req.admin.role === ROLES.SUPERADMIN || req.admin.role === ROLES.ADMIN) return next();
     const storeId = getStoreIdFromRequest(req);
-    if (req.admin.role === ROLES.STORE_ADMIN && req.admin.storeId === storeId) return next();
+    if (req.admin.role === ROLES.STORE_ADMIN && req.admin.storeId && String(req.admin.storeId) === String(storeId)) return next();
     return res.status(403).json({ success: false, message: 'Access denied to this store' });
   };
 }

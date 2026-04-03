@@ -41,8 +41,17 @@ const categoriesResponsePath = getJsonPath('categories_response.json');
 const popupJsonPath = getJsonPath('popup.json');
 const homeJsonPath = getJsonPath('home_response.json');
 
+function ensureJsonFile(filePath, defaultData) {
+  if (!fs.existsSync(filePath)) {
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(defaultData, null, 2), 'utf-8');
+  }
+}
+
 function loadStores() {
   try {
+    ensureJsonFile(storesResponsePath, { success: true, message: 'Stores listing', data: { stores: [] } });
     const raw = fs.readFileSync(storesResponsePath, 'utf-8');
     const data = JSON.parse(raw);
     return data?.data?.stores ?? [];
@@ -70,15 +79,14 @@ function loadHome() {
 }
 
 function saveHome(data) {
-  try {
-    fs.writeFileSync(homeJsonPath, JSON.stringify(data, null, 2), 'utf-8');
-  } catch (e) {
-    throw new Error('Failed to save home_response.json');
-  }
+  const dir = path.dirname(homeJsonPath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(homeJsonPath, JSON.stringify(data, null, 2), 'utf-8');
 }
 
 function loadProducts() {
   try {
+    ensureJsonFile(productsResponsePath, { success: true, message: 'Products listing', data: { products: [] } });
     const raw = fs.readFileSync(productsResponsePath, 'utf-8');
     const data = JSON.parse(raw);
     return data?.data?.products ?? [];
@@ -89,6 +97,7 @@ function loadProducts() {
 
 function loadCategories() {
   try {
+    ensureJsonFile(categoriesResponsePath, { success: true, message: 'Categories data', data: { categories: [] } });
     const raw = fs.readFileSync(categoriesResponsePath, 'utf-8');
     const data = JSON.parse(raw);
     return data?.data?.categories ?? [];
@@ -98,27 +107,33 @@ function loadCategories() {
 }
 
 function saveProducts(products) {
+  let data;
   try {
     const raw = fs.readFileSync(productsResponsePath, 'utf-8');
-    const data = JSON.parse(raw);
-    data.data = data.data || {};
-    data.data.products = products;
-    fs.writeFileSync(productsResponsePath, JSON.stringify(data, null, 2), 'utf-8');
+    data = JSON.parse(raw);
   } catch (e) {
-    throw new Error('Failed to save products');
+    data = { success: true, message: 'Products listing', data: {} };
   }
+  data.data = data.data || {};
+  data.data.products = products;
+  const dir = path.dirname(productsResponsePath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(productsResponsePath, JSON.stringify(data, null, 2), 'utf-8');
 }
 
 function saveStores(stores) {
+  let data;
   try {
     const raw = fs.readFileSync(storesResponsePath, 'utf-8');
-    const data = JSON.parse(raw);
-    data.data = data.data || {};
-    data.data.stores = stores;
-    fs.writeFileSync(storesResponsePath, JSON.stringify(data, null, 2), 'utf-8');
+    data = JSON.parse(raw);
   } catch (e) {
-    throw new Error('Failed to save stores');
+    data = { success: true, message: 'Stores listing', data: {} };
   }
+  data.data = data.data || {};
+  data.data.stores = stores;
+  const dir = path.dirname(storesResponsePath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(storesResponsePath, JSON.stringify(data, null, 2), 'utf-8');
 }
 
 function parseLatLongFromGoogleMapsUrl(url) {
@@ -143,15 +158,18 @@ function parseLatLongFromGoogleMapsUrl(url) {
 }
 
 function saveCategories(categories) {
+  let data;
   try {
     const raw = fs.readFileSync(categoriesResponsePath, 'utf-8');
-    const data = JSON.parse(raw);
-    data.data = data.data || {};
-    data.data.categories = categories;
-    fs.writeFileSync(categoriesResponsePath, JSON.stringify(data, null, 2), 'utf-8');
+    data = JSON.parse(raw);
   } catch (e) {
-    throw new Error('Failed to save categories');
+    data = { success: true, message: 'Categories data', data: {} };
   }
+  data.data = data.data || {};
+  data.data.categories = categories;
+  const dir = path.dirname(categoriesResponsePath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(categoriesResponsePath, JSON.stringify(data, null, 2), 'utf-8');
 }
 
 function loadPopup() {
@@ -472,7 +490,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const stores = loadStores();
     let list =
       req.admin.role === ROLES.STORE_ADMIN
-        ? stores.filter((s) => s.id === req.admin.storeId)
+        ? stores.filter((s) => String(s.id) === String(req.admin.storeId))
         : [...stores];
 
     const bucket = (s) => getAdminStoreDashboardBucket(s);
@@ -745,7 +763,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
 
   app.get('/api/admin/stores/:id', auth, requireStoreAccess((req) => req.params.id), (req, res) => {
     const stores = loadStores();
-    const store = stores.find((s) => s.id === req.params.id);
+    const store = stores.find((s) => String(s.id) === String(req.params.id));
     if (!store) return res.status(404).json({ success: false, message: 'Store not found' });
     let out = req.admin.role === ROLES.SUPERADMIN ? { ...store } : (() => { const { arhebFee, ...rest } = store; return rest; })();
     out.storeCategories = Array.isArray(out.storeCategories) ? out.storeCategories : [];
@@ -755,7 +773,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
 
   app.patch('/api/admin/stores/:id', auth, requireStoreAccess((req) => req.params.id), (req, res) => {
     const stores = loadStores();
-    const idx = stores.findIndex((s) => s.id === req.params.id);
+    const idx = stores.findIndex((s) => String(s.id) === String(req.params.id));
     if (idx === -1) return res.status(404).json({ success: false, message: 'Store not found' });
     const store = stores[idx];
     if (store.blocked === true && req.admin.role === ROLES.STORE_ADMIN) {
@@ -828,7 +846,12 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       if (skipAllowed.has(key)) continue;
       if (body[key] !== undefined) stores[idx][key] = body[key];
     }
-    saveStores(stores);
+    try {
+      saveStores(stores);
+    } catch (e) {
+      console.error('Failed to save store update:', e);
+      return res.status(500).json({ success: false, message: 'Failed to save store changes' });
+    }
     return res.status(200).json({
       success: true,
       data: { store: enrichStoreOpeningHours({ ...stores[idx] }) },
@@ -1020,14 +1043,25 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
   // ——— Products (per store) ———
   app.get('/api/admin/stores/:storeId/products', auth, requireStoreAccess((req) => req.params.storeId), (req, res) => {
     const products = loadProducts();
-    const storeProducts = products.filter((p) => p.store?.id === req.params.storeId);
+    let storeProducts = products.filter((p) => String(p.store?.id) === String(req.params.storeId));
+
+    const nameQuery = (req.query.name || '').trim().toLowerCase();
+    if (nameQuery) {
+      storeProducts = storeProducts.filter((p) => {
+        const n = String(p.name || '').toLowerCase();
+        const nAr = String(p.nameAr || '').toLowerCase();
+        const nEn = String(p.nameEn || '').toLowerCase();
+        return n.includes(nameQuery) || nAr.includes(nameQuery) || nEn.includes(nameQuery);
+      });
+    }
+
     return res.status(200).json({ success: true, data: { products: storeProducts } });
   });
 
   app.post('/api/admin/stores/:storeId/products', auth, requireStoreAccess((req) => req.params.storeId), (req, res) => {
     const storeId = req.params.storeId;
     const stores = loadStores();
-    const store = stores.find((s) => s.id === storeId);
+    const store = stores.find((s) => String(s.id) === String(storeId));
     if (!store) return res.status(404).json({ success: false, message: 'Store not found' });
     if (store.blocked === true && req.admin.role === ROLES.STORE_ADMIN) {
       return res.status(403).json({ success: false, message: 'Store is blocked. Only Admin or SuperAdmin can add products.' });
@@ -1063,7 +1097,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
   app.post('/api/admin/stores/:storeId/products/import', auth, requireStoreAccess((req) => req.params.storeId), upload.single('file'), (req, res) => {
     const storeId = req.params.storeId;
     const stores = loadStores();
-    const store = stores.find((s) => s.id === storeId);
+    const store = stores.find((s) => String(s.id) === String(storeId));
     if (!store) return res.status(404).json({ success: false, message: 'Store not found' });
     if (store.blocked === true && req.admin.role === ROLES.STORE_ADMIN) {
       return res.status(403).json({ success: false, message: 'Store is blocked. Only Admin or SuperAdmin can import products.' });
@@ -1288,12 +1322,12 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
   app.patch('/api/admin/stores/:storeId/products/:productId', auth, requireStoreAccess((req) => req.params.storeId), (req, res) => {
     const { storeId, productId } = req.params;
     const stores = loadStores();
-    const store = stores.find((s) => s.id === storeId);
+    const store = stores.find((s) => String(s.id) === String(storeId));
     if (store && store.blocked === true && req.admin.role === ROLES.STORE_ADMIN) {
       return res.status(403).json({ success: false, message: 'Store is blocked. Only Admin or SuperAdmin can edit products.' });
     }
     const products = loadProducts();
-    const idx = products.findIndex((p) => p.id === productId && p.store?.id === storeId);
+    const idx = products.findIndex((p) => String(p.id) === String(productId) && String(p.store?.id) === String(storeId));
     if (idx === -1) return res.status(404).json({ success: false, message: 'Product not found' });
     const allowed = [
       'name', 'nameAr', 'nameEn', 'image', 'images', 'price', 'originalPrice', 'discount',
@@ -1321,7 +1355,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
   app.post('/api/admin/stores/:storeId/products/bulk-discount', auth, requireStoreAccess((req) => req.params.storeId), (req, res) => {
     const { storeId } = req.params;
     const stores = loadStores();
-    const store = stores.find((s) => s.id === storeId);
+    const store = stores.find((s) => String(s.id) === String(storeId));
     if (store && store.blocked === true && req.admin.role === ROLES.STORE_ADMIN) {
       return res.status(403).json({ success: false, message: 'Store is blocked. Only Admin or SuperAdmin can edit products.' });
     }
@@ -1363,7 +1397,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
   app.post('/api/admin/stores/:storeId/products/bulk-remove-discount', auth, requireStoreAccess((req) => req.params.storeId), (req, res) => {
     const { storeId } = req.params;
     const stores = loadStores();
-    const store = stores.find((s) => s.id === storeId);
+    const store = stores.find((s) => String(s.id) === String(storeId));
     if (store && store.blocked === true && req.admin.role === ROLES.STORE_ADMIN) {
       return res.status(403).json({ success: false, message: 'Store is blocked. Only Admin or SuperAdmin can edit products.' });
     }
@@ -1391,12 +1425,12 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
   app.delete('/api/admin/stores/:storeId/products/:productId', auth, requireStoreAccess((req) => req.params.storeId), (req, res) => {
     const { storeId, productId } = req.params;
     const stores = loadStores();
-    const store = stores.find((s) => s.id === storeId);
+    const store = stores.find((s) => String(s.id) === String(storeId));
     if (store && store.blocked === true && req.admin.role === ROLES.STORE_ADMIN) {
       return res.status(403).json({ success: false, message: 'Store is blocked. Only Admin or SuperAdmin can delete products.' });
     }
     const products = loadProducts();
-    const idx = products.findIndex((p) => p.id === productId && p.store?.id === storeId);
+    const idx = products.findIndex((p) => String(p.id) === String(productId) && String(p.store?.id) === String(storeId));
     if (idx === -1) return res.status(404).json({ success: false, message: 'Product not found' });
     products.splice(idx, 1);
     saveProducts(products);

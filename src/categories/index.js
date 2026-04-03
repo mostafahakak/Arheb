@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { getJsonPath } = require('../config/jsonPaths');
+const { isStoreVisibleToCustomers } = require('../utils/storeVisibility');
 
 const categoriesResponsePath = getJsonPath('categories_response.json');
 
@@ -13,6 +14,29 @@ const loadCategoriesResponse = () => {
     return null;
   }
 };
+
+function loadStoreStatusMap() {
+  try {
+    const storesPath = getJsonPath('stores_listing_response.json');
+    const raw = fs.readFileSync(storesPath, 'utf-8');
+    const stores = JSON.parse(raw)?.data?.stores ?? [];
+    const map = {};
+    for (const s of stores) {
+      if (!s) continue;
+      if (s.paused === true) { map[s.id] = 'paused'; }
+      else if (isStoreVisibleToCustomers(s)) { map[s.id] = 'open'; }
+      else { map[s.id] = 'closed'; }
+    }
+    return map;
+  } catch (e) {
+    return {};
+  }
+}
+
+function enrichProductWithStoreStatus(product, statusMap) {
+  if (!product || !product.store || !statusMap) return product;
+  return { ...product, store: { ...product.store, status: statusMap[product.store.id] ?? 'closed' } };
+}
 
 /** Minimal default when JSON file is missing (e.g. on Render after deploy). */
 const FALLBACK_CATEGORIES = [
@@ -207,32 +231,92 @@ function attachCategoriesRoutes(app, db) {
     seedCategoriesTables(db, FALLBACK_CATEGORIES);
   }
 
+  function hasDiscount(p) {
+    const d = p.discount;
+    if (d == null || d === '') return false;
+    if (typeof d === 'number') return d > 0;
+    if (typeof d === 'string') return d.trim() !== '' && d.trim() !== '0';
+    return false;
+  }
+
+  function buildOffersCategory() {
+    try {
+      const productsPath = getJsonPath('products_listing_response.json');
+      const rawProducts = fs.readFileSync(productsPath, 'utf-8');
+      const allProducts = JSON.parse(rawProducts)?.data?.products ?? [];
+      const discounted = allProducts.filter(p => p.isAvailable !== false && hasDiscount(p));
+      if (discounted.length === 0) return null;
+
+      const storesPath = getJsonPath('stores_listing_response.json');
+      const rawStores = fs.readFileSync(storesPath, 'utf-8');
+      const allStores = JSON.parse(rawStores)?.data?.stores ?? [];
+
+      const storeIdsWithOffers = new Set();
+      for (const p of discounted) {
+        const sid = p.store?.id;
+        if (sid != null) storeIdsWithOffers.add(String(sid));
+      }
+
+      const statusMap = loadStoreStatusMap();
+      const offerStores = allStores
+        .filter(s => storeIdsWithOffers.has(String(s.id)) && isStoreVisibleToCustomers(s))
+        .map(s => {
+          const { arhebFee, ...rest } = s;
+          return { ...rest, status: statusMap[s.id] ?? 'closed' };
+        });
+
+      return {
+        id: 'offers',
+        name: 'Offers',
+        nameAr: 'العروض',
+        nameEn: 'Offers',
+        image: '',
+        iconAr: null,
+        iconEn: null,
+        isComingSoon: false,
+        order: 0,
+        subCategories: [],
+        stores: offerStores,
+        storesCount: offerStores.length,
+        productsCount: discounted.length,
+      };
+    } catch (e) {
+      return null;
+    }
+  }
+
   // Prefer database so admin edits (synced to DB) are visible. Never wipe DB when JSON is empty.
   app.get('/api/categories', (req, res) => {
+    let categories = null;
+
     const fromDb = loadCategoriesFromDb(db);
     if (fromDb && fromDb.data && Array.isArray(fromDb.data.categories) && fromDb.data.categories.length > 0) {
-      return res.status(200).json({
-        ...fromDb,
-        timestamp: fromDb.timestamp || new Date().toISOString(),
-      });
+      categories = fromDb.data.categories;
     }
-    const categoriesResponse = loadCategoriesResponse();
-    const jsonCategories = categoriesResponse?.data?.categories ?? [];
-    if (Array.isArray(jsonCategories) && jsonCategories.length > 0) {
-      return res.status(200).json({
-        success: categoriesResponse?.success !== false,
-        message: categoriesResponse?.message || 'Categories data retrieved successfully',
-        data: { categories: jsonCategories },
-        timestamp: categoriesResponse?.timestamp || new Date().toISOString(),
-      });
+
+    if (!categories) {
+      const categoriesResponse = loadCategoriesResponse();
+      const jsonCategories = categoriesResponse?.data?.categories ?? [];
+      if (Array.isArray(jsonCategories) && jsonCategories.length > 0) {
+        categories = jsonCategories;
+      }
     }
-    // Both DB and JSON empty (e.g. first request after deploy): seed fallback and return it.
-    seedCategoriesTables(db, FALLBACK_CATEGORIES);
-    const afterSeed = loadCategoriesFromDb(db);
+
+    if (!categories) {
+      seedCategoriesTables(db, FALLBACK_CATEGORIES);
+      const afterSeed = loadCategoriesFromDb(db);
+      categories = afterSeed?.data?.categories ?? FALLBACK_CATEGORIES;
+    }
+
+    const offersCategory = buildOffersCategory();
+    if (offersCategory) {
+      categories = [offersCategory, ...categories.filter(c => c.id !== 'offers')];
+    }
+
     return res.status(200).json({
       success: true,
       message: 'Categories data retrieved successfully',
-      data: afterSeed?.data ?? { categories: FALLBACK_CATEGORIES },
+      data: { categories },
       timestamp: new Date().toISOString(),
     });
   });
@@ -320,6 +404,7 @@ function attachCategoriesRoutes(app, db) {
       });
     }
 
+    const statusMap = loadStoreStatusMap();
     return res.status(200).json({
       success: true,
       message: 'Products by category retrieved successfully',
@@ -336,7 +421,7 @@ function attachCategoriesRoutes(app, db) {
         } : null,
         categoryName: categoryName,
         subCategory: subCategoryQuery || null,
-        products: filtered,
+        products: filtered.map(p => enrichProductWithStoreStatus(p, statusMap)),
         count: filtered.length
       },
       timestamp: new Date().toISOString()

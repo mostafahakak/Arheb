@@ -22,6 +22,7 @@ const attachPopupRoutes = require('./popup');
 const attachArhebBoxRoutes = require('./arhebBox');
 const attachSearchRoutes = require('./search');
 const attachDriverRoutes = require('./driver');
+const attachPaymentRoutes = require('./payment');
 const { getAuth } = require('./fcm');
 
 dotenv.config();
@@ -531,6 +532,7 @@ function authenticateRequest(req, res, next) {
 
 attachProfileRoutes(app, db, authenticateRequest);
 attachCheckoutRoutes(app, db, authenticateRequest);
+attachPaymentRoutes(app, db, authenticateRequest);
 attachContactRoutes(app, db, authenticateRequest);
 attachArhebBoxRoutes(app, db, authenticateRequest);
 attachOrderTrackingRoutes(io, app, db, authenticateRequest, JWT_SECRET);

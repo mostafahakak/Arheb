@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { getJsonPath } = require('../config/jsonPaths');
+const { isStoreVisibleToCustomers } = require('../utils/storeVisibility');
 
 const loadProductsFromPath = (filePath) => {
   try {
@@ -12,6 +13,24 @@ const loadProductsFromPath = (filePath) => {
   }
 };
 
+function loadStoreStatusMap() {
+  try {
+    const storesPath = getJsonPath('stores_listing_response.json');
+    const raw = fs.readFileSync(storesPath, 'utf-8');
+    const stores = JSON.parse(raw)?.data?.stores ?? [];
+    const map = {};
+    for (const s of stores) {
+      if (!s) continue;
+      if (s.paused === true) { map[s.id] = 'paused'; }
+      else if (isStoreVisibleToCustomers(s)) { map[s.id] = 'open'; }
+      else { map[s.id] = 'closed'; }
+    }
+    return map;
+  } catch (e) {
+    return {};
+  }
+}
+
 function hasDiscount(p) {
   const d = p.discount;
   if (d == null || d === '') return false;
@@ -21,15 +40,19 @@ function hasDiscount(p) {
 }
 
 // Ensure client always receives discount and originalPrice; strip cart-only selectedAddOns from catalog payloads
-function toClientProduct(p) {
+function toClientProduct(p, storeStatusMap) {
   if (!p) return p;
   const { selectedAddOns: _omitSelected, ...rest } = p;
-  return {
+  const result = {
     ...rest,
     discount: p.discount ?? null,
     originalPrice: p.originalPrice ?? p.price ?? null,
     addOnGroups: Array.isArray(p.addOnGroups) ? p.addOnGroups : [],
   };
+  if (result.store && storeStatusMap) {
+    result.store = { ...result.store, status: storeStatusMap[result.store.id] ?? 'closed' };
+  }
+  return result;
 }
 
 // Load from file on each request so admin add/edit/delete is visible immediately (same pattern as stores).
@@ -41,8 +64,9 @@ module.exports = function attachProductsRoutes(app, db) {
     if (!productsResponse) {
       return res.status(500).json({ success: false, message: 'Products payload is unavailable' });
     }
+    const statusMap = loadStoreStatusMap();
     const allProducts = (productsResponse?.data?.products ?? []).filter((p) => p.isAvailable !== false);
-    const offers = allProducts.filter(hasDiscount).map(toClientProduct);
+    const offers = allProducts.filter(hasDiscount).map((p) => toClientProduct(p, statusMap));
     return res.status(200).json({
       success: true,
       message: 'Offers (discounted products) retrieved successfully',
@@ -100,7 +124,8 @@ module.exports = function attachProductsRoutes(app, db) {
     }
 
     // Get products for current page
-    const paginatedProducts = allProducts.slice(startIndex, endIndex).map(toClientProduct);
+    const statusMap = loadStoreStatusMap();
+    const paginatedProducts = allProducts.slice(startIndex, endIndex).map((p) => toClientProduct(p, statusMap));
     const hasMore = endIndex < totalProducts;
     const totalPages = Math.ceil(totalProducts / itemsPerPage);
 
@@ -165,12 +190,13 @@ module.exports = function attachProductsRoutes(app, db) {
       .slice(0, 8)
       .map((x) => x.product);
 
+    const statusMap = loadStoreStatusMap();
     return res.status(200).json({
       success: true,
       message: 'Product details retrieved successfully',
       data: {
-        product: toClientProduct(product),
-        relatedProducts: related.map(toClientProduct),
+        product: toClientProduct(product, statusMap),
+        relatedProducts: related.map((p) => toClientProduct(p, statusMap)),
       },
       timestamp: new Date().toISOString()
     });

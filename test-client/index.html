@@ -477,6 +477,7 @@
         <a class="nav-item" data-section="arhebBox">📦 Arheb Box</a>
         <a class="nav-item" data-section="admin">🔧 Admin</a>
         <a class="nav-item" data-section="driver">🚗 Driver</a>
+        <a class="nav-item" data-section="payment">💳 Payment</a>
         <a class="nav-item" data-section="contact">📞 Contact</a>
       </nav>
 
@@ -1268,6 +1269,111 @@
               </div>
             </div>
             <div id="driverTrackOutput" class="output" style="max-height: 200px; display: none;"></div>
+          </div>
+        </section>
+
+        <!-- Payment Section -->
+        <section id="payment" class="section">
+          <h2>Payment (Madfoat / PayTabs) <span class="badge admin">Auth Required</span></h2>
+
+          <div class="card" style="background:#fffbea;border-color:#f6e05e;">
+            <h3>Test Card Info</h3>
+            <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+              <tr><td style="padding:4px 8px;font-weight:600;">Card Number</td><td style="padding:4px 8px;"><code>4000000000000002</code></td></tr>
+              <tr><td style="padding:4px 8px;font-weight:600;">Scheme</td><td style="padding:4px 8px;">Visa</td></tr>
+              <tr><td style="padding:4px 8px;font-weight:600;">CVV</td><td style="padding:4px 8px;"><code>123</code></td></tr>
+              <tr><td style="padding:4px 8px;font-weight:600;">Expiry</td><td style="padding:4px 8px;">12/2027 (any future date)</td></tr>
+              <tr><td style="padding:4px 8px;font-weight:600;">3D Enrolled</td><td style="padding:4px 8px;">Yes</td></tr>
+            </table>
+          </div>
+
+          <div class="card">
+            <h3>Get Client Key</h3>
+            <button id="payGetClientKeyBtn">Get Client Key</button>
+            <div id="payClientKeyOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Initiate Payment</h3>
+            <div class="form-group">
+              <label for="payAmount">Amount</label>
+              <input id="payAmount" type="number" value="1.00" min="0.01" step="0.01" />
+            </div>
+            <div class="form-group">
+              <label for="payOrderId">Order ID (optional)</label>
+              <input id="payOrderId" type="text" placeholder="e.g. 42" />
+            </div>
+            <div class="form-group">
+              <label for="payCurrency">Currency</label>
+              <input id="payCurrency" type="text" value="JOD" maxlength="3" />
+            </div>
+            <div class="form-group">
+              <label for="payDescription">Description (optional)</label>
+              <input id="payDescription" type="text" placeholder="Arheb Order" />
+            </div>
+            <div class="form-group">
+              <label for="payCustomerName">Customer Name (optional)</label>
+              <input id="payCustomerName" type="text" placeholder="Ahmad" />
+            </div>
+            <div class="form-group">
+              <label for="payCustomerEmail">Customer Email (optional)</label>
+              <input id="payCustomerEmail" type="email" placeholder="ahmad@example.com" />
+            </div>
+            <div class="form-group">
+              <label for="payCustomerPhone">Customer Phone (optional)</label>
+              <input id="payCustomerPhone" type="tel" placeholder="+962791111111" />
+            </div>
+            <button id="payInitiateBtn">Initiate Payment</button>
+            <div id="payInitiateStatus" class="status" style="display:none;"></div>
+            <div id="payInitiateOutput" class="output" style="display: none;"></div>
+            <div id="payRedirectContainer" style="display:none;margin-top:12px;">
+              <a id="payRedirectLink" href="#" target="_blank" style="display:inline-block;padding:10px 20px;background:#667eea;color:#fff;border-radius:8px;text-decoration:none;font-weight:600;">Open Payment Page</a>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>Query Transaction</h3>
+            <div class="form-group">
+              <label for="payQueryTranRef">Transaction Reference</label>
+              <input id="payQueryTranRef" type="text" placeholder="TST2014900000688" />
+            </div>
+            <button id="payQueryBtn">Query Status</button>
+            <div id="payQueryOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Refund Transaction</h3>
+            <div class="form-group">
+              <label for="payRefundTranRef">Transaction Reference</label>
+              <input id="payRefundTranRef" type="text" placeholder="TST2014900000688" />
+            </div>
+            <div class="form-group">
+              <label for="payRefundAmount">Amount (leave empty for full refund)</label>
+              <input id="payRefundAmount" type="number" step="0.01" placeholder="Full amount" />
+            </div>
+            <button id="payRefundBtn" class="secondary">Refund</button>
+            <div id="payRefundOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>List Transactions</h3>
+            <div class="form-group">
+              <label for="payListOrderId">Filter by Order ID (optional)</label>
+              <input id="payListOrderId" type="text" placeholder="" />
+            </div>
+            <div class="form-group">
+              <label for="payListStatus">Filter by Status (optional)</label>
+              <select id="payListStatus">
+                <option value="">All</option>
+                <option value="initiated">Initiated</option>
+                <option value="pending_redirect">Pending Redirect</option>
+                <option value="completed">Completed</option>
+                <option value="declined">Declined</option>
+                <option value="refunded">Refunded</option>
+              </select>
+            </div>
+            <button id="payListBtn">List Transactions</button>
+            <div id="payListOutput" class="output" style="display: none;"></div>
           </div>
         </section>
 
@@ -2874,6 +2980,112 @@
         if (driverTrackInterval) { clearInterval(driverTrackInterval); driverTrackInterval = null; }
         if (driverTrackSocket) { driverTrackSocket.disconnect(); driverTrackSocket = null; }
         showDriverTrackStatus('Stopped', 'info');
+      });
+
+      // ——— Payment ———
+      document.getElementById('payGetClientKeyBtn').addEventListener('click', async () => {
+        try {
+          const r = await fetch(getBackendBase() + '/api/payment/client-key');
+          const data = await r.json();
+          showOutput('payClientKeyOutput', data);
+        } catch (e) { showOutput('payClientKeyOutput', { error: e.message }); }
+      });
+
+      document.getElementById('payInitiateBtn').addEventListener('click', async () => {
+        if (!lastAppToken) {
+          const s = document.getElementById('payInitiateStatus');
+          s.textContent = 'Please authenticate first (Auth section)';
+          s.className = 'status error'; s.style.display = 'block';
+          return;
+        }
+        const body = {
+          amount: parseFloat(document.getElementById('payAmount').value) || 1,
+          currency: document.getElementById('payCurrency').value.trim() || 'JOD',
+        };
+        const orderId = document.getElementById('payOrderId').value.trim();
+        if (orderId) body.orderId = parseInt(orderId) || orderId;
+        const desc = document.getElementById('payDescription').value.trim();
+        if (desc) body.description = desc;
+        const cName = document.getElementById('payCustomerName').value.trim();
+        if (cName) body.customerName = cName;
+        const cEmail = document.getElementById('payCustomerEmail').value.trim();
+        if (cEmail) body.customerEmail = cEmail;
+        const cPhone = document.getElementById('payCustomerPhone').value.trim();
+        if (cPhone) body.customerPhone = cPhone;
+
+        try {
+          const s = document.getElementById('payInitiateStatus');
+          s.textContent = 'Processing...'; s.className = 'status info'; s.style.display = 'block';
+          const r = await fetch(getBackendBase() + '/api/payment/initiate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': lastAppToken },
+            body: JSON.stringify(body),
+          });
+          const data = await r.json();
+          showOutput('payInitiateOutput', data);
+
+          const rc = document.getElementById('payRedirectContainer');
+          if (data.data && data.data.redirectUrl) {
+            document.getElementById('payRedirectLink').href = data.data.redirectUrl;
+            rc.style.display = 'block';
+            s.textContent = 'Redirect URL received — click the link to open the payment page';
+            s.className = 'status success'; s.style.display = 'block';
+          } else {
+            rc.style.display = 'none';
+            s.textContent = data.data?.status === 'completed' ? 'Payment completed!' : (data.message || 'Done');
+            s.className = 'status ' + (data.success ? 'success' : 'error'); s.style.display = 'block';
+          }
+
+          if (data.data?.tranRef) {
+            document.getElementById('payQueryTranRef').value = data.data.tranRef;
+            document.getElementById('payRefundTranRef').value = data.data.tranRef;
+          }
+        } catch (e) {
+          showOutput('payInitiateOutput', { error: e.message });
+          const s = document.getElementById('payInitiateStatus');
+          s.textContent = e.message; s.className = 'status error'; s.style.display = 'block';
+        }
+      });
+
+      document.getElementById('payQueryBtn').addEventListener('click', async () => {
+        const tranRef = document.getElementById('payQueryTranRef').value.trim();
+        if (!tranRef) { showOutput('payQueryOutput', { error: 'Enter a transaction reference' }); return; }
+        try {
+          const r = await fetch(getBackendBase() + '/api/payment/query/' + encodeURIComponent(tranRef), {
+            headers: { 'Authorization': lastAppToken },
+          });
+          showOutput('payQueryOutput', await r.json());
+        } catch (e) { showOutput('payQueryOutput', { error: e.message }); }
+      });
+
+      document.getElementById('payRefundBtn').addEventListener('click', async () => {
+        const tranRef = document.getElementById('payRefundTranRef').value.trim();
+        if (!tranRef) { showOutput('payRefundOutput', { error: 'Enter a transaction reference' }); return; }
+        const body = { tranRef };
+        const amt = parseFloat(document.getElementById('payRefundAmount').value);
+        if (amt > 0) body.amount = amt;
+        try {
+          const r = await fetch(getBackendBase() + '/api/payment/refund', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': lastAppToken },
+            body: JSON.stringify(body),
+          });
+          showOutput('payRefundOutput', await r.json());
+        } catch (e) { showOutput('payRefundOutput', { error: e.message }); }
+      });
+
+      document.getElementById('payListBtn').addEventListener('click', async () => {
+        const params = new URLSearchParams();
+        const oid = document.getElementById('payListOrderId').value.trim();
+        if (oid) params.set('orderId', oid);
+        const st = document.getElementById('payListStatus').value;
+        if (st) params.set('status', st);
+        try {
+          const r = await fetch(getBackendBase() + '/api/payment/transactions?' + params.toString(), {
+            headers: { 'Authorization': lastAppToken },
+          });
+          showOutput('payListOutput', await r.json());
+        } catch (e) { showOutput('payListOutput', { error: e.message }); }
       });
 
       setupVerifier();
