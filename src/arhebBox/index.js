@@ -21,14 +21,16 @@ function safeNumber(v, fallback = 0) {
 function calcArhebBoxDeliveryFeeJod(weightKg) {
   const w = Math.max(0, safeNumber(weightKg, 0));
   const fee = 1 + 0.15 * w;
-  return round2(fee);
+  return round2(Math.min(MAX_DELIVERY_FEE_JOD, fee));
 }
 
-/** Route minimum (1 JOD/km, min 2 JOD) + 0.15 JOD/kg — same basis as Arheb Box quote. */
+const MAX_DELIVERY_FEE_JOD = 3;
+
+/** Route minimum (1 JOD/km, min 2 JOD) + 0.15 JOD/kg — same basis as Arheb Box quote. Capped at 3 JOD. */
 function calcDeliveryFeeFromDistanceAndWeight(distanceKm, weightKg) {
   const d = typeof distanceKm === 'number' && Number.isFinite(distanceKm) ? Math.max(0, distanceKm) : 0;
   const w = Math.max(0, safeNumber(weightKg, 0));
-  return round2(minAmountJod(d) + 0.15 * w);
+  return round2(Math.min(MAX_DELIVERY_FEE_JOD, minAmountJod(d) + 0.15 * w));
 }
 
 function calcFeesTaxJod(deliveryFeeJod, serviceFeeJod) {
@@ -368,3 +370,4 @@ module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest) {
 module.exports.enrichArhebBoxRow = enrichRequestRow;
 module.exports.calcArhebBoxDeliveryFeeJod = calcArhebBoxDeliveryFeeJod;
 module.exports.calcDeliveryFeeFromDistanceAndWeight = calcDeliveryFeeFromDistanceAndWeight;
+module.exports.MAX_DELIVERY_FEE_JOD = MAX_DELIVERY_FEE_JOD;

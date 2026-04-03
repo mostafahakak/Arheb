@@ -94,6 +94,7 @@ A separate **Admin Dashboard** (React + Next.js) is in the `dashboard/` folder. 
   - **Store Admin**: Sees only their assigned store; can edit store details, add/edit/delete products, and view orders for that store.
 - **Arheb Box**: Admins can view all Arheb box requests (id, date/time, username, phone, pickup, dropoff, notes, status) and update status (pending → confirmed → in_progress → delivered → cancelled). Requests are submitted by users with Bearer token and stored in the database.
 - **English and Arabic** (language switcher in the UI).
+- **Driver earnings:** Admin/SuperAdmin can set **global driver commission** (percent of delivery fee or fixed JOD per delivery) under **App info** (`/dashboard/info/`). The **Drivers** list links to a **driver profile** page (`/dashboard/drivers/profile/?id=`) with filters (status, date range), delivered-order profit totals, and full customer **driver ratings** (stars + notes). Drivers only see their **average rating** in the driver app, not individual reviews.
 
 To create the **initial SuperAdmin** on first run, set in the backend `.env`:
 
@@ -163,6 +164,7 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
   - [Get All Orders](#get-all-orders)
   - [Get Order by ID](#get-order-by-id)
   - [Rate Order](#rate-order)
+  - [Rate Driver (Customer)](#rate-driver-customer)
 - [Payment (Card / Online)](#payment-card--online)
   - [Get Client Key](#get-client-key)
   - [Initiate Payment](#initiate-payment)
@@ -197,6 +199,8 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
   - [Admin Arheb Box](#admin-arheb-box)
   - [Admin Categories](#admin-categories)
   - [Admin Drivers](#admin-drivers)
+  - [Admin Driver Commission](#admin-driver-commission)
+  - [Admin Driver Profile (detail)](#admin-driver-profile-detail)
 - [Driver API](#driver-api)
   - [Driver Send OTP](#driver-send-otp)
   - [Driver Login](#driver-login)
@@ -207,6 +211,9 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
   - [Driver Accept Order](#driver-accept-order)
   - [Driver Complete Order](#driver-complete-order)
   - [Driver Complete Arheb Box](#driver-complete-arheb-box-delivery)
+  - [Driver Assigned Orders](#driver-assigned-orders)
+  - [Driver Earnings (Today & Summary)](#driver-earnings-today--summary)
+  - [Driver order object (fields)](#driver-order-object-fields)
 - [Error Handling](#error-handling)
 - [Testing](#testing)
 
@@ -1275,13 +1282,13 @@ Call **before** `POST /api/checkout` to preview **delivery fee**, **service fee*
     "feesTax": 0.22,
     "feesTaxNote": "7% VAT on delivery fee only (not on order subtotal or service fee).",
     "invoiceTotal": 2.25,
-    "pricingNote": "Delivery fee matches Arheb Box: 1 JOD + 0.15 JOD/kg (uncapped). distanceKm and minAmountJod describe the route (same haversine rules as POST /api/arheb-box/quote)."
+    "pricingNote": "Delivery fee matches Arheb Box: route minimum (1 JOD/km, floor 2 JOD) + 0.15 JOD/kg, capped at 3 JOD. distanceKm and minAmountJod describe the route (same haversine rules as POST /api/arheb-box/quote)."
   },
   "timestamp": "2024-01-15T10:30:00Z"
 }
 ```
 
-- **`deliveryFee`**: `1 + 0.15 × weightKg` JOD (rounded to 2 decimals), same as **Arheb Box** / store checkout.
+- **`deliveryFee`**: Same formula as **Arheb Box** / store checkout: **route minimum** (`minAmountJod` from distance: 1 JOD/km, **minimum 2 JOD**) **+ 0.15 × weightKg** JOD, rounded to 2 decimals, then **capped at a maximum of 3 JOD**.
 - **`serviceFee`**: fixed **0.65** JOD.
 - **`feesTax`**: **7% × deliveryFee** only.
 - **`invoiceTotal`**: `deliveryFee + serviceFee + feesTax` (fees-only total; does **not** include cart subtotal).
@@ -1522,11 +1529,55 @@ const response = await fetch('https://arheb-backend.onrender.com/api/checkout/1/
 
 ---
 
+### Rate Driver (Customer)
+
+After delivery, the customer can rate the **assigned driver** (1–5 stars) once per order. This updates the driver’s **average rating** and **rating count**; it does **not** affect the store’s product rating (see [Rate Order](#rate-order) for store ratings).
+
+**Endpoint:** `POST /api/orders/:orderId/rate-driver`
+
+**Authentication:** Required (Bearer user token)
+
+**Path parameters:** `orderId` – order ID
+
+**Request body:**
+```json
+{
+  "rating": 5,
+  "notes": "Optional short comment"
+}
+```
+
+- **`rating`** (required): integer **1–5**
+- **`notes`** (optional): string (trimmed, max length enforced server-side)
+
+**Rules:**
+- Order must belong to the authenticated user (`userId` / `phoneNumber` match).
+- Order **`status`** must be **`Delivered`** and a **`driverId`** must be set.
+- **One rating per order** (unique on `orderId`).
+
+**Success (201):**
+```json
+{
+  "success": true,
+  "message": "Thank you for your feedback",
+  "data": {
+    "rating": 5,
+    "driverRatingAvg": 4.85
+  }
+}
+```
+
+**Errors:** `400` (not delivered / no driver / invalid rating / already rated), `403` (not your order), `404` (order not found).
+
+**Driver app:** Drivers see **average rating** (and aggregate stats where returned); they do **not** receive per-customer review text in the public driver profile payload. **Admin dashboard** can list full rating rows (order id, stars, notes, date) on the driver profile API.
+
+---
+
 ## Payment (Card / Online)
 
 Online card payments are processed via **Madfoat (PayTabs)**. The flow is:
 
-1. Client calls **POST /api/payment/initiate** → receives a `redirectUrl`.
+1. Client calls **POST /api/payment/initiate** with **`checkout`** (same as POST /api/checkout) → server creates order (`Pending payment`, `paymentType: Card`) → receives **`data.checkout`** + **`data.payment`** (including `redirectUrl` when needed).
 2. Client opens the `redirectUrl` in a browser/WebView for the customer to enter card details (hosted payment page).
 3. After 3DS / card entry, Madfoat sends a **server-to-server callback** to `POST /api/payment/callback` with the result.
 4. The customer's browser is redirected to `GET /api/payment/return` which shows a success/failure page.
@@ -1574,7 +1625,9 @@ Returns the client key and profile ID for frontend managed-form integration (pay
 
 ### Initiate Payment
 
-Creates a payment transaction and returns either a direct result (if no 3DS needed) or a redirect URL for the hosted payment page.
+Creates the **order** (same rules as **POST /api/checkout**) and starts a **card** payment with Madfoat. **`paymentType` is always set to `Card` on the server** — do not send it in `checkout`. The amount charged is always the **saved order `totalAmount`** (not a separate `amount` field).
+
+The order is created first with status **`Pending payment`**. After a successful payment (immediate or via callback), status becomes **`Waiting confirmation`**. If Madfoat rejects the payment request, the order is **rolled back** (deleted).
 
 **Endpoint:** `POST /api/payment/initiate`
 
@@ -1584,76 +1637,76 @@ Creates a payment transaction and returns either a direct result (if no 3DS need
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `amount` | number | Yes | Total amount to charge (must be > 0) |
-| `orderId` | number | No | Order ID to link payment to an existing order |
-| `currency` | string | No | 3-char currency code (default: `JOD`) |
-| `description` | string | No | Cart description shown on payment page |
-| `customerName` | string | No | Customer name (pre-fills payment page) |
-| `customerEmail` | string | No | Customer email |
-| `customerPhone` | string | No | Customer phone |
-| `customerAddress` | string | No | Street address |
+| `checkout` | object | **Yes** | Same fields as [Create Order](#create-order): `items`, `phoneNumber`, `totalAmount`, optional `name`, `addressName`, `addressLong`, `addressLat`, `storeId`, `promoCode`, `discount`, `notes`, `nearby`, `weightKg`, `fcmToken`, etc. **Do not send `paymentType`.** |
+| `currency` | string | No | PayTabs 3-char currency (default: `JOD`) |
+| `description` | string | No | Cart description on payment page (default: `Arheb Order #<id>`) |
+| `customerName` | string | No | Overrides / supplements PayTabs customer (else uses order name) |
+| `customerEmail` | string | No | PayTabs customer email |
+| `customerPhone` | string | No | Overrides phone on PayTabs form (else uses order `phoneNumber`) |
+| `customerAddress` | string | No | Street |
 | `customerCity` | string | No | City |
-| `customerCountry` | string | No | 2-char country code (e.g. `JO`) |
+| `customerCountry` | string | No | Country code (e.g. `JO`) |
 
 **Example Request:**
 
 ```json
 {
-  "amount": 15.5,
-  "orderId": 42,
+  "checkout": {
+    "items": [
+      { "id": "1", "name": "وجبة فردية", "price": 4.5, "quantity": 2 }
+    ],
+    "phoneNumber": "+962791111111",
+    "name": "Ahmad",
+    "addressName": "Home",
+    "addressLong": 35.91,
+    "addressLat": 31.95,
+    "totalAmount": 15.5,
+    "storeId": "1",
+    "weightKg": 0
+  },
   "currency": "JOD",
-  "description": "Arheb Order #42",
-  "customerName": "Ahmad",
   "customerEmail": "ahmad@example.com",
-  "customerPhone": "+962791111111",
   "customerCity": "Amman",
   "customerCountry": "JO"
 }
 ```
 
-**Redirect Response (200) — most common:**
+**Success Response (201):** Combined **checkout** payload (same shape as **POST /api/checkout** `data`) and **payment** block. The created order includes **`paymentTranRef`** and **`paymentCartId`** once PayTabs returns a reference.
 
 ```json
 {
   "success": true,
-  "message": "Redirect customer to complete payment",
+  "message": "Order created; redirect customer to complete card payment",
   "data": {
-    "tranRef": "TST2014900000688",
-    "cartId": "ORDER-42-1712160000000",
-    "status": "pending_redirect",
-    "redirectUrl": "https://madfoat-secure.paytabs.com/payment/page/REF/redirect",
-    "redirectMethod": "GET"
-  }
-}
-```
-
-The client must open `redirectUrl` in a browser or WebView. After the customer completes payment, Madfoat will call the server callback and redirect the browser to the return URL.
-
-**Direct Success Response (200) — when no 3DS required:**
-
-```json
-{
-  "success": true,
-  "message": "Payment completed successfully",
-  "data": {
-    "tranRef": "TST2014900000688",
-    "cartId": "ORDER-42-1712160000000",
-    "status": "completed",
-    "paymentResult": {
-      "response_status": "A",
-      "response_code": "831000",
-      "response_message": "Authorised",
-      "acquirer_message": "ACCEPT",
-      "transaction_time": "2026-04-03T14:35:38+03:00"
+    "checkout": {
+      "orderId": 42,
+      "order": {
+        "id": 42,
+        "status": "Pending payment",
+        "paymentType": "Card",
+        "paymentTranRef": "TST2014900000688",
+        "paymentCartId": "ORDER-42-1712160000000",
+        "totalAmount": 15.5,
+        "items": []
+      }
     },
-    "paymentInfo": {
-      "card_type": "Credit",
-      "card_scheme": "Visa",
-      "payment_description": "4000 00## #### 0002"
+    "payment": {
+      "tranRef": "TST2014900000688",
+      "cartId": "ORDER-42-1712160000000",
+      "cartAmount": 15.5,
+      "cartCurrency": "JOD",
+      "status": "pending_redirect",
+      "redirectUrl": "https://madfoat-secure.paytabs.com/payment/page/REF/redirect",
+      "redirectMethod": "GET"
     }
-  }
+  },
+  "timestamp": "2026-04-03T12:00:00.000Z"
 }
 ```
+
+Open `data.payment.redirectUrl` in a browser or WebView when `status` is `pending_redirect`. After the customer pays, Madfoat calls **`POST /api/payment/callback`** and the order moves to **`Waiting confirmation`**.
+
+**Direct success (201)** when PayTabs authorises without redirect: `data.payment.status` is `completed` and `data.checkout.order.status` is `Waiting confirmation`.
 
 **Error Response (400/500):**
 
@@ -1675,19 +1728,26 @@ const response = await fetch('https://arheb-backend.onrender.com/api/payment/ini
     'Authorization': 'Bearer your-jwt-token-here'
   },
   body: JSON.stringify({
-    amount: 15.5,
-    orderId: 42,
-    customerName: 'Ahmad',
+    checkout: {
+      items: [{ id: '1', name: 'Meal', price: 4.5, quantity: 2 }],
+      phoneNumber: '+962791111111',
+      totalAmount: 15.5,
+      addressLong: 35.91,
+      addressLat: 31.95,
+      storeId: '1',
+      weightKg: 0
+    },
     customerEmail: 'ahmad@example.com',
-    customerPhone: '+962791111111',
     customerCountry: 'JO'
   })
 });
 
 const data = await response.json();
-if (data.data.redirectUrl) {
-  // Open in browser/WebView for customer to complete payment
-  window.open(data.data.redirectUrl);
+const pay = data.data?.payment;
+const orderId = data.data?.checkout?.orderId;
+const tranRef = pay?.tranRef;
+if (pay?.redirectUrl) {
+  window.open(pay.redirectUrl);
 }
 ```
 
@@ -2353,7 +2413,7 @@ console.log(data.data.popup);
 
 ## Arheb Box
 
-Requests are stored in `arheb_box_requests` with **sender/receiver** contacts, pickup & dropoff (lat/lng + address + `mapsUrl`), **payment** (`paymentMethod`, `whoPays`: `sender` | `receiver`), **trip amount** (`amount` in JOD), **distance** and **minimum price** (`distanceKm`, `minAmountJod`). Pricing: **1 JOD per km**, **minimum 2 JOD** (e.g. 3 km → at least 3 JOD; 0.5 km → at least 2 JOD). The client must call **quote** first, then send an `amount` ≥ `minAmountJod`. After a driver is assigned, **customer** `GET /api/arheb-box/:id` and list/detail responses include **`driverPhone`**.
+Requests are stored in `arheb_box_requests` with **sender/receiver** contacts, pickup & dropoff (lat/lng + address + `mapsUrl`), **payment** (`paymentMethod`, `whoPays`: `sender` | `receiver`), **trip amount** (`amount` in JOD), **distance** and **minimum price** (`distanceKm`, `minAmountJod`). Pricing: **1 JOD per km**, **minimum 2 JOD** (e.g. 3 km → at least 3 JOD; 0.5 km → at least 2 JOD), **+ 0.15 JOD/kg** weight component where applicable, with the **computed delivery fee capped at 3 JOD** (same basis as store checkout / quote-fees). The client must call **quote** first, then send an `amount` ≥ `minAmountJod`. After a driver is assigned, **customer** `GET /api/arheb-box/:id` and list/detail responses include **`driverPhone`**.
 
 ### Arheb Box quote (distance & minimum amount)
 
@@ -2707,16 +2767,60 @@ Order list and order detail responses include **`driverId`** and **`driverName`*
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/admin/drivers` | List all drivers (id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, createdAt) |
+| GET | `/api/admin/drivers` | List all drivers (`id`, `name`, `mobile`, `email`, `vehicleType`, `vehicleNumber`, `licenseNumber`, `photo`, `latitude`, `longitude`, **`rating`**, **`ratingCount`**, `isVerified`, `isBlocked`, `createdAt`). |
 | POST | `/api/admin/drivers` | Add driver. Body: `name`, `mobile` (required); `email`, `vehicleType`, `vehicleNumber`, `licenseNumber` (optional). No OTP. |
 | PATCH | `/api/admin/drivers/:id` | Update driver and/or block. Body: any of `name`, `mobile`, `email`, `vehicleType`, `vehicleNumber`, `licenseNumber`, `isBlocked` (boolean). |
 | DELETE | `/api/admin/drivers/:id` | Remove driver (unassigns from orders then deletes). |
 
 ---
 
+### Admin Driver Commission
+
+**Access:** SuperAdmin and Admin only.
+
+Global settings for how much of each order’s **delivery fee** is recorded as the driver’s **earnings** when a driver is assigned. Default: **`percent`** with value **`0.65`** (65% of the delivery fee). Alternative: **`fixed`** — a flat amount in **JOD** per assigned order (capped so it never exceeds that order’s delivery fee).
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/admin/settings/driver-commission` | Returns `{ commissionType: "percent" \| "fixed", commissionValue: number }`. |
+| PATCH | `/api/admin/settings/driver-commission` | Body: `commissionType` and/or `commissionValue`. For **percent**, use a decimal **0–1** (e.g. `0.65`) or **0–100** (e.g. `65`) — both are accepted. |
+
+On **accept** (`POST /api/driver/orders/accept`), the server snapshots **`driverCommissionType`**, **`driverCommissionValue`**, and **`driverEarnings`** on the order row so later changes to global settings do not rewrite past assignments.
+
+---
+
+### Admin Driver Profile (detail)
+
+**Access:** SuperAdmin and Admin only.
+
+**Endpoint:** `GET /api/admin/drivers/:id/profile`
+
+**Query parameters (all optional):**
+
+| Param | Description |
+|--------|-------------|
+| `status` | Filter orders by exact DB status (e.g. `Delivered`, `On the way`). Omit or use `all` for no status filter. |
+| `dateFrom` | `YYYY-MM-DD` — filter orders by `date(createdAt) >= dateFrom` |
+| `dateTo` | `YYYY-MM-DD` — filter orders by `date(createdAt) <= dateTo` |
+| `page`, `perPage` | Pagination for the **orders** list (default `perPage` 25) |
+
+**Response `data` highlights:**
+
+- **`driver`**: profile fields plus **`rating`** and **`ratingCount`** (customer driver ratings).
+- **`globalCommission`**: current global commission settings (same as GET driver-commission).
+- **`stats`**: delivered / active / cancelled counts (all time, not filtered).
+- **`filters`**: echo of filter + pagination metadata (`totalOrders`, etc.).
+- **`earningsForFilteredDelivered`**: among **Delivered** orders matching filters — **`totalProfit`** (sum of driver earnings), **`totalDeliveryFees`**, **`orderCount`**.
+- **`orders`**: each row includes **`driverShare`**: `{ commissionType, commissionValue, earningsJod }` (from snapshot or recomputed for legacy rows).
+- **`ratings`**: up to 200 rows from **`driver_ratings`** (`orderId`, `userId`, `rating`, `notes`, `createdAt`) — **admin-only** visibility.
+
+---
+
 ## Driver API
 
 Drivers are **added, removed, and blocked only by SuperAdmin and Admin** (see [Admin API – Drivers](#admin-drivers)). There is no public driver registration. Drivers authenticate with **OTP-based login only** (Send OTP → Login with mobile + OTP). **Blocked drivers** cannot log in and cannot access any driver data (home, stats, orders, accept, complete). All protected driver endpoints require a **Driver JWT** in the `Authorization` header as `Bearer <token>`, obtained from **Driver Login**.
+
+When a driver **accepts** an order, the backend stores a **commission snapshot** on the order and exposes it on driver-facing order payloads as **`driverShare`** (see [Driver order object (fields)](#driver-order-object-fields)). **Profit** stats use the driver’s share (**`driverEarnings`**), not the full delivery fee.
 
 **Base path:** `/api/driver`
 
@@ -2797,7 +2901,7 @@ Authenticates a driver by mobile and OTP code. Returns driver profile and JWT fo
 
 ### Driver Home
 
-Returns the driver's home dashboard: profile, stats (today/total earnings and orders), current order (one actively delivering), **available store orders** (unassigned `Preparing`), **Arheb Box jobs awaiting pickup** (`arhebBoxAvailable`: assigned to this driver, status `assigned` — accept then complete via Arheb Box APIs), and in-progress store orders.
+Returns the driver's home dashboard: profile, stats (**today/total profit** = driver share of delivery fees, plus delivery-fee totals), current order (one actively delivering), **available store orders** (unassigned `Preparing`), **Arheb Box jobs awaiting pickup** (`arhebBoxAvailable`: assigned to this driver, status `assigned` — accept then complete via Arheb Box APIs), and in-progress store orders.
 
 **Endpoint:** `GET /api/driver/home`
 
@@ -2821,9 +2925,13 @@ Returns the driver's home dashboard: profile, stats (today/total earnings and or
       "rating": 4.8
     },
     "stats": {
-      "todayEarnings": 125.5,
+      "todayProfit": 12.5,
+      "totalProfit": 340.0,
+      "todayDeliveryFees": 18.0,
+      "totalDeliveryFees": 520.0,
+      "todayEarnings": 12.5,
+      "totalEarnings": 340.0,
       "todayOrders": 8,
-      "totalEarnings": 3450.75,
       "totalOrders": 245,
       "rating": 4.8
     },
@@ -2832,14 +2940,19 @@ Returns the driver's home dashboard: profile, stats (today/total earnings and or
       {
         "id": "20",
         "orderNumber": "ORD-0020",
+        "storeId": "1",
+        "storeName": "Example Store",
         "products": [],
         "totalPrice": 50.0,
         "deliveryFee": 2.0,
+        "profitJod": 1.3,
+        "customerName": "Sara",
         "address": "123 Main St",
         "addressName": "Home",
         "paymentMethod": "cash",
         "status": "ready",
         "orderDate": "2024-01-15T13:00:00Z",
+        "createdAt": "2024-01-15T13:00:00Z",
         "driver": null,
         "driver_latitude": null,
         "driver_longitude": null
@@ -2853,11 +2966,15 @@ Returns the driver's home dashboard: profile, stats (today/total earnings and or
 
 `arhebBoxAvailable` is an array of enriched Arheb Box requests (same shape as driver Arheb Box list) for deliveries admin-assigned to this driver that still need **accept** → **complete**.
 
+- **`todayProfit` / `totalProfit`**: sum of **`driverEarnings`** (or computed share) on **Delivered** orders (today vs all time).
+- **`todayDeliveryFees` / `totalDeliveryFees`**: sum of **`deliveryFee`** on those same sets (informational).
+- **`todayEarnings` / `totalEarnings`**: aliases for **`todayProfit` / `totalProfit`** (backward compatible).
+
 ---
 
 ### Driver Stats
 
-Returns earnings and order stats for the driver (optionally filtered by period).
+Returns earnings and order stats for the driver (optionally filtered by period). **`stats.earnings`** and **`stats.profit`** are the driver’s **share** (same number). **`totalReviews`** is the driver’s **`ratingCount`**.
 
 **Endpoint:** `GET /api/driver/stats?period=today`
 
@@ -2873,14 +2990,15 @@ Returns earnings and order stats for the driver (optionally filtered by period).
   "data": {
     "period": "today",
     "stats": {
-      "earnings": 125.5,
+      "profit": 12.5,
+      "earnings": 12.5,
       "earningsGrowth": 15,
       "totalOrders": 8,
       "completedOrders": 7,
       "cancelledOrders": 1,
       "avgDeliveryTime": 25,
       "rating": 4.8,
-      "totalReviews": 245
+      "totalReviews": 42
     }
   }
 }
@@ -2915,25 +3033,39 @@ Returns a paginated list of orders for the driver. Filter: `all` (orders assigne
       {
         "id": "20",
         "orderNumber": "ORD-0020",
+        "storeId": "1",
+        "storeName": "Example Store",
         "totalPrice": 50.0,
         "deliveryFee": 2.0,
+        "profitJod": 1.3,
+        "customerName": "Sara",
         "address": "123 Main St",
         "status": "delivered",
         "orderDate": "2024-01-10T12:00:00Z",
+        "createdAt": "2024-01-10T12:00:00Z",
         "driver": { "id": "1", "name": "Ahmed Driver", "mobile": "0790000000", "rating": 4.8 },
         "driver_latitude": 29.532,
-        "driver_longitude": 35.0063
+        "driver_longitude": 35.0063,
+        "driverShare": {
+          "commissionType": "percent",
+          "commissionValue": 0.65,
+          "earningsJod": 1.3
+        }
       }
     ]
   }
 }
 ```
 
+Each order includes **`driverShare`** when the response is built with commission resolution (assigned orders). See [Driver order object (fields)](#driver-order-object-fields).
+
 ---
 
 ### Driver Order Detail
 
 Returns full details for a single order. Driver can only access orders that are unassigned or assigned to them.
+
+Every driver order object includes **store**, **customer**, **delivery fee**, **driver profit**, and **timestamps** for the order-details screen — see [Driver order object (fields)](#driver-order-object-fields).
 
 **Endpoint:** `GET /api/driver/orders/:orderId`
 
@@ -2950,18 +3082,31 @@ Returns full details for a single order. Driver can only access orders that are 
     "order": {
       "id": "20",
       "orderNumber": "ORD-0020",
+      "storeId": "1",
+      "storeName": "Example Store",
+      "storeAddress": "Amman",
+      "storeMapsUrl": "https://...",
       "products": [...],
       "totalPrice": 50.0,
       "deliveryFee": 2.0,
+      "profitJod": 1.3,
       "address": "123 Main St",
       "addressName": "Home",
       "paymentMethod": "cash",
       "status": "delivering",
       "orderDate": "2024-01-10T12:00:00Z",
+      "createdAt": "2024-01-10T12:00:00Z",
+      "customerName": "Sara",
+      "customerPhone": "+962790000000",
       "notes": "Leave at the door",
       "driver": { "id": "1", "name": "Ahmed Driver", "mobile": "0790000000", "latitude": 29.532, "longitude": 35.0063, "rating": 4.8 },
       "driver_latitude": 29.532,
-      "driver_longitude": 35.0063
+      "driver_longitude": 35.0063,
+      "driverShare": {
+        "commissionType": "percent",
+        "commissionValue": 0.65,
+        "earningsJod": 1.3
+      }
     }
   }
 }
@@ -2973,7 +3118,7 @@ Returns full details for a single order. Driver can only access orders that are 
 
 ### Driver Accept Order
 
-Assigns an order to the authenticated driver and sets its status to "On the way".
+Assigns an order to the authenticated driver and sets its status to "On the way". Persists **commission snapshot** fields on the order (`driverCommissionType`, `driverCommissionValue`, `driverEarnings`) from current [Admin Driver Commission](#admin-driver-commission) settings.
 
 **Endpoint:** `POST /api/driver/orders/accept`
 
@@ -3071,6 +3216,68 @@ Marks an **Arheb Box** request **delivered** from the driver app. **Bearer** mus
 
 ---
 
+### Driver order object (fields)
+
+On driver-facing order objects (`GET /api/driver/home`, `GET /api/driver/orders`, `GET /api/driver/orders/assigned`, `GET /api/driver/orders/:orderId`, `POST /api/driver/orders/accept`, complete-order responses, etc.), each order includes:
+
+| Field | Description |
+|--------|-------------|
+| **`storeId`** | Store id as string, or `null` if missing. |
+| **`storeName`** | Resolved from stores listing (`nameEn` / `name` / `nameAr`), or **`null`** if the store is not found in the catalog. |
+| **`storeAddress`**, **`storeMapsUrl`** | Optional store fields when the store is known; otherwise `null`. |
+| **`customerName`** | Customer display name from the order. |
+| **`customerPhone`** | Customer phone on the order. |
+| **`deliveryFee`** | Delivery fee for the order (**JOD**, 2 decimal places). |
+| **`profitJod`** | Driver’s earnings for this order (**JOD**) — duplicate of **`driverShare.earningsJod`** for convenience in the UI (`null` only if commission could not be resolved). |
+| **`orderDate`**, **`createdAt`** | Order creation time (same value; ISO string from DB). |
+| **`driverShare`** | Commission breakdown (see below). |
+
+**Commission object `driverShare`:**
+
+```json
+"driverShare": {
+  "commissionType": "percent",
+  "commissionValue": 0.65,
+  "earningsJod": 1.3
+}
+```
+
+- **`commissionType`**: `"percent"` (share of `deliveryFee`) or `"fixed"` (flat JOD per order).
+- **`commissionValue`**: For percent, **0–1** (e.g. `0.65` = 65%). For fixed, amount in **JOD**.
+- **`earningsJod`**: Driver’s earnings for that order (snapshot at accept when columns are set; otherwise computed from current global settings for legacy rows).
+
+---
+
+### Driver Assigned Orders
+
+Explicit list of **all orders assigned to this driver** (same underlying data as `GET /api/driver/orders?filter=all`), with pagination.
+
+**Endpoint:** `GET /api/driver/orders/assigned?page=1&perPage=20`
+
+**Authentication:** Required (Driver Bearer token)
+
+**Query:** `page`, `perPage` (same limits as main orders list).
+
+---
+
+### Driver Earnings (Today & Summary)
+
+**Today (delivered orders created today):**
+
+**Endpoint:** `GET /api/driver/earnings/today`
+
+**Response `data`:** `date`, `orderCount`, `totalDeliveryFees`, **`totalProfit`** (sum of driver earnings).
+
+**Range summary (delivered only, optional filter by assignment date):**
+
+**Endpoint:** `GET /api/driver/earnings/summary?dateFrom=YYYY-MM-DD&dateTo=YYYY-MM-DD`
+
+Both `dateFrom` and `dateTo` are optional (inclusive on `date(createdAt)`).
+
+**Response `data`:** `dateFrom`, `dateTo`, `orderCount`, `totalDeliveryFees`, **`totalProfit`**.
+
+---
+
 ### Driver API Summary
 
 | Method | Endpoint | Auth | Description |
@@ -3078,8 +3285,11 @@ Marks an **Arheb Box** request **delivered** from the driver app. **Bearer** mus
 | POST | `/api/driver/send-otp` | No | Send OTP (mock; returns verificationId) |
 | POST | `/api/driver/login` | No | Login with mobile + otpCode; returns driver + token (blocked drivers get 403) |
 | GET | `/api/driver/home` | Yes | Driver dashboard (blocked drivers get 403) |
-| GET | `/api/driver/stats` | Yes | Stats (earnings, orders, period) |
+| GET | `/api/driver/stats` | Yes | Stats (profit/earnings, orders, period, rating reviews count) |
 | GET | `/api/driver/orders` | Yes | List orders (filter, page, perPage) |
+| GET | `/api/driver/orders/assigned` | Yes | All assigned orders (paginated) |
+| GET | `/api/driver/earnings/today` | Yes | Today delivered: profit + delivery fee totals |
+| GET | `/api/driver/earnings/summary` | Yes | Delivered in date range: profit + delivery fee totals |
 | GET | `/api/driver/orders/:orderId` | Yes | Order detail |
 | POST | `/api/driver/orders/accept` | Yes | Accept order (assign to driver) |
 | POST | `/api/driver/orders/:orderId/complete` | Yes | Mark store order delivered (Bearer verifies driver) |
@@ -3131,7 +3341,8 @@ This interactive interface allows you to:
 - ✅ Create and manage orders
 - ✅ Test real-time order tracking (WebSocket) with map visualization
 - ✅ Validate promo codes
-- ✅ **Driver API**: Send OTP, Login (token stored), Home, Stats, Orders list/detail, Accept order, Complete order. **Admin**: List/Add/Block/Remove drivers.
+- ✅ **Driver API**: Send OTP, Login (token stored), Home, Stats, Orders list/detail/assigned, Earnings today/summary, Accept order, Complete order. **Admin**: List/Add/Block/Remove drivers, driver commission settings, driver profile (filters + ratings).
+- ✅ **Customer**: Rate driver **POST /api/orders/:orderId/rate-driver** (after delivery).
 - ✅ **Admin**: Order counts (optional storeIds), Reject order (cancel when Waiting confirmation), Pause history (date range + optional storeIds), List notifications (broadcast history).
 - ✅ Test contact endpoints (admin)
 
@@ -3219,7 +3430,7 @@ For issues or questions, please contact: `contact@arheb.app`
 | POST | `/api/admin/notifications/broadcast` | Admin / SuperAdmin | Sends FCM to all users. Body: `{ title, body, imageUrl? }`. Each broadcast is **saved** to the `Notifications` table for later retrieval via GET `/api/admin/notifications`. |
 | GET | `/api/profile/notifications` | User (Bearer) | In-app notification inbox: paginated list (`page`, `perPage`) of notifications **sent to this user only**. Persisted in `user_notifications` when FCM is sent (per-user pushes and broadcast). Each item includes `data` (FCM payload: `orderId`, `deepLink`, `type`, …). |
 
-| POST | `/api/payment/initiate` | User (Bearer) | Initiate online card payment via Madfoat (PayTabs). Returns `redirectUrl` for hosted payment page or direct result. Links to `orderId` if provided. |
+| POST | `/api/payment/initiate` | User (Bearer) | Creates order from **`checkout`** body (card only), then Madfoat session. Returns **201** with `data.checkout` (same shape as POST /api/checkout) and `data.payment` (`tranRef`, `redirectUrl`, etc.). Saves `paymentTranRef` / `paymentCartId` on the order. |
 | GET | `/api/payment/client-key` | None | Returns client key and profile ID for managed-form (paylib.js) frontend integration. |
 | GET | `/api/payment/query/:tranRef` | User (Bearer) | Query transaction status from Madfoat by transaction reference. |
 | POST | `/api/payment/refund` | User (Bearer) | Full or partial refund of a completed transaction. Body: `{ tranRef, amount?, description? }`. |
@@ -3335,6 +3546,15 @@ For issues or questions, please contact: `contact@arheb.app`
   - **POST** `/api/driver/arheb-box/:id/accept` – driver accepts; status → **in_progress**, FCM sent to user.  
   - **POST** `/api/driver/arheb-box/:id/complete` – Bearer + request id; only assigned driver; **in_progress** → **delivered**, FCM to sender.  
   - **POST** `/api/driver/orders/:orderId/complete` or **POST** `/api/driver/orders/complete` with `{ orderId }` – store order **On the way** → **Delivered** (Bearer verifies driver).
+
+### Driver commission, earnings APIs, customer driver ratings, delivery fee cap
+
+- **Delivery fee cap:** Store checkout and **POST /api/checkout/quote-fees** use the same helper as Arheb Box: **route minimum (1 JOD/km, floor 2 JOD) + 0.15 JOD/kg**, rounded to 2 decimals, **capped at 3 JOD** maximum.
+- **Admin:** **GET/PATCH** `/api/admin/settings/driver-commission` — global **`commissionType`** (`percent` \| `fixed`) and **`commissionValue`** (percent as 0–1 or 0–100; fixed as JOD). Default **percent 0.65**. Dashboard: **App info** page (`/dashboard/info/`).
+- **Order snapshot:** On **POST /api/driver/orders/accept**, the order stores **`driverCommissionType`**, **`driverCommissionValue`**, **`driverEarnings`**.
+- **Driver app:** Order payloads include **`storeName`**, **`customerName`**, **`deliveryFee`**, **`profitJod`** (and **`driverShare`**), **`orderDate`** / **`createdAt`**, plus **`driverShare`** `{ commissionType, commissionValue, earningsJod }`. **GET /api/driver/home** and **GET /api/driver/stats** use **profit** (driver share), not raw delivery fee. **GET /api/driver/orders/assigned**, **GET /api/driver/earnings/today**, **GET /api/driver/earnings/summary** document earnings for drivers.
+- **Customer:** **POST /api/orders/:orderId/rate-driver** — rate the driver 1–5 + optional notes; one rating per order; updates **`drivers.rating`** and **`ratingCount`**. See [Rate Driver (Customer)](#rate-driver-customer).
+- **Admin dashboard:** **GET /api/admin/drivers/:id/profile** — filters, paginated orders with **`driverShare`**, **`earningsForFilteredDelivered`**, full **`ratings`** list. UI: **Drivers** → **Profile** → `/dashboard/drivers/profile/?id=` (static export–friendly URL).
 
 ---
 

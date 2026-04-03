@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 const { verifyAdminToken } = require('../admin/auth');
 const { setOrderTrackingIo, emitOrderEvent } = require('./trackingEmitter');
 const { mapOrderItemsRows } = require('../utils/orderItemApi');
+const { ensureDriverRatingsTable, round2 } = require('../utils/driverCommission');
 
 // Store active order tracking sessions
 // Format: { orderId: { driverSocket, customerSocket, adminSockets: [], lastLocation } }
@@ -347,6 +348,69 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
       });
     } catch (error) {
       console.error('Get order error:', error);
+      return res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  });
+
+  // POST /api/orders/:orderId/rate-driver — customer rates the assigned driver (once per order)
+  app.post('/api/orders/:orderId/rate-driver', authenticateRequest, (req, res) => {
+    try {
+      ensureDriverRatingsTable(db);
+      const orderId = parseInt(req.params.orderId, 10);
+      const { rating, notes } = req.body || {};
+      if (isNaN(orderId)) {
+        return res.status(400).json({ success: false, message: 'Invalid order ID' });
+      }
+      const r = parseInt(rating, 10);
+      if (!Number.isInteger(r) || r < 1 || r > 5) {
+        return res.status(400).json({ success: false, message: 'rating must be an integer 1–5' });
+      }
+      const order = findOrderById.get(orderId);
+      if (!order) {
+        return res.status(404).json({ success: false, message: 'Order not found' });
+      }
+      const uid = req.user.userId;
+      const phone = req.user.phoneNumber;
+      const owns = order.userId === uid || order.phoneNumber === phone;
+      if (!owns) {
+        return res.status(403).json({ success: false, message: 'Access denied' });
+      }
+      if (String(order.status) !== 'Delivered' || order.driverId == null) {
+        return res.status(400).json({
+          success: false,
+          message: 'Order must be delivered with an assigned driver before rating',
+        });
+      }
+      const existing = db.prepare('SELECT id FROM driver_ratings WHERE orderId = ?').get(orderId);
+      if (existing) {
+        return res.status(400).json({ success: false, message: 'This order was already rated' });
+      }
+      const notesStr =
+        notes != null && typeof notes === 'string' ? notes.trim().slice(0, 2000) : null;
+      const userIdForRow = String(uid || phone || '');
+      try {
+        db.prepare(
+          'INSERT INTO driver_ratings (orderId, userId, driverId, rating, notes) VALUES (?, ?, ?, ?, ?)'
+        ).run(orderId, userIdForRow, order.driverId, r, notesStr);
+      } catch (insertErr) {
+        if (insertErr && String(insertErr.message || '').includes('UNIQUE')) {
+          return res.status(400).json({ success: false, message: 'This order was already rated' });
+        }
+        throw insertErr;
+      }
+      const agg = db
+        .prepare('SELECT AVG(rating) AS a, COUNT(*) AS c FROM driver_ratings WHERE driverId = ?')
+        .get(order.driverId);
+      const newAvg = round2(Number(agg.a));
+      const newCount = Number(agg.c) || 0;
+      db.prepare('UPDATE drivers SET rating = ?, ratingCount = ? WHERE id = ?').run(newAvg, newCount, order.driverId);
+      return res.status(201).json({
+        success: true,
+        message: 'Thank you for your feedback',
+        data: { rating: r, driverRatingAvg: newAvg },
+      });
+    } catch (error) {
+      console.error('Rate driver error:', error);
       return res.status(500).json({ success: false, message: 'Internal server error' });
     }
   });

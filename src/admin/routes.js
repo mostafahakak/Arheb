@@ -34,6 +34,14 @@ const {
   normalizeOpeningHoursFromBody,
   parseFlexibleTimeTo24h,
 } = require('../utils/openingHoursJordan');
+const {
+  getDriverCommissionSettings,
+  setDriverCommissionSettings,
+  resolveOrderDriverShare,
+  ensureDriverCommissionSettingsTable,
+  ensureOrderDriverShareColumns,
+  ensureDriverRatingsTable,
+} = require('../utils/driverCommission');
 
 const storesResponsePath = getJsonPath('stores_listing_response.json');
 const productsResponsePath = getJsonPath('products_listing_response.json');
@@ -2212,11 +2220,61 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     }
   });
 
+  app.get('/api/admin/settings/driver-commission', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      ensureDriverCommissionSettingsTable(db);
+      const s = getDriverCommissionSettings(db);
+      return res.status(200).json({
+        success: true,
+        data: {
+          commissionType: s.type,
+          commissionValue: s.value,
+        },
+      });
+    } catch (e) {
+      console.error('Get driver commission settings error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to load settings' });
+    }
+  });
+
+  app.patch('/api/admin/settings/driver-commission', auth, requireAdminOrSuper, (req, res) => {
+    const { commissionType, commissionValue } = req.body || {};
+    if (commissionType === undefined && commissionValue === undefined) {
+      return res.status(400).json({ success: false, message: 'commissionType and/or commissionValue required' });
+    }
+    try {
+      ensureDriverCommissionSettingsTable(db);
+      const cur = getDriverCommissionSettings(db);
+      let nextType = cur.type;
+      if (commissionType !== undefined && commissionType !== null && String(commissionType).trim() !== '') {
+        const t = String(commissionType).toLowerCase();
+        nextType = t === 'fixed' ? 'fixed' : 'percent';
+      }
+      const nextVal = commissionValue !== undefined ? commissionValue : cur.value;
+      const updated = setDriverCommissionSettings(db, nextType, nextVal);
+      return res.status(200).json({
+        success: true,
+        message: 'Driver commission updated',
+        data: {
+          commissionType: updated.type,
+          commissionValue: updated.value,
+        },
+      });
+    } catch (e) {
+      if (e.code === 'VALIDATION') {
+        return res.status(400).json({ success: false, message: e.message });
+      }
+      console.error('Patch driver commission error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to update settings' });
+    }
+  });
+
   // ——— Drivers (SuperAdmin / Admin only: add, remove, block) ———
   app.get('/api/admin/drivers', auth, requireAdminOrSuper, (req, res) => {
     try {
+      ensureDriverRatingsTable(db);
       const rows = db.prepare(
-        'SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, photo, latitude, longitude, rating, isVerified, isBlocked, createdAt FROM drivers ORDER BY id'
+        'SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, photo, latitude, longitude, rating, ratingCount, isVerified, isBlocked, createdAt FROM drivers ORDER BY id'
       ).all();
       const drivers = rows.map((r) => ({
         id: r.id,
@@ -2230,6 +2288,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
         latitude: r.latitude,
         longitude: r.longitude,
         rating: r.rating ?? 5,
+        ratingCount: r.ratingCount != null ? Number(r.ratingCount) : 0,
         isVerified: Boolean(r.isVerified),
         isBlocked: Boolean(r.isBlocked),
         createdAt: r.createdAt,
@@ -2244,15 +2303,25 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     }
   });
 
-  // Driver profile/stats from orders table (delivered, active, cancelled)
+  // Driver profile: orders (filterable), earnings totals, customer ratings (admin sees all)
   app.get('/api/admin/drivers/:id/profile', auth, requireAdminOrSuper, (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid driver id' });
     try {
+      ensureOrderDriverShareColumns(db);
+      ensureDriverRatingsTable(db);
       const driver = db
-        .prepare('SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, createdAt FROM drivers WHERE id = ?')
+        .prepare(
+          'SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, createdAt, rating, ratingCount FROM drivers WHERE id = ?'
+        )
         .get(id);
       if (!driver) return res.status(404).json({ success: false, message: 'Driver not found' });
+
+      const statusFilter = req.query.status ? String(req.query.status).trim() : '';
+      const dateFrom = req.query.dateFrom ? String(req.query.dateFrom).slice(0, 10) : '';
+      const dateTo = req.query.dateTo ? String(req.query.dateTo).slice(0, 10) : '';
+      const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+      const perPage = Math.min(100, Math.max(1, parseInt(req.query.perPage, 10) || 25));
 
       const counts = db
         .prepare(`
@@ -2265,9 +2334,53 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
         `)
         .get(id) || {};
 
-      const latestOrders = db
-        .prepare('SELECT id, status, totalAmount, createdAt, storeId FROM orders WHERE driverId = ? ORDER BY createdAt DESC, id DESC LIMIT 20')
+      let orderRows = db.prepare('SELECT * FROM orders WHERE driverId = ? ORDER BY createdAt DESC, id DESC').all(id);
+      if (statusFilter && statusFilter.toLowerCase() !== 'all') {
+        orderRows = orderRows.filter((o) => String(o.status || '') === statusFilter);
+      }
+      if (dateFrom) {
+        orderRows = orderRows.filter((o) => String(o.createdAt || '').slice(0, 10) >= dateFrom);
+      }
+      if (dateTo) {
+        orderRows = orderRows.filter((o) => String(o.createdAt || '').slice(0, 10) <= dateTo);
+      }
+
+      const deliveredFiltered = orderRows.filter((o) => String(o.status || '') === 'Delivered');
+      let totalProfit = 0;
+      let totalDeliveryFees = 0;
+      for (const o of deliveredFiltered) {
+        const share = resolveOrderDriverShare(db, o);
+        totalProfit += share.earningsJod;
+        totalDeliveryFees += Number(o.deliveryFee) || 0;
+      }
+
+      const totalOrders = orderRows.length;
+      const offset = (page - 1) * perPage;
+      const slice = orderRows.slice(offset, offset + perPage);
+      const ordersPayload = slice.map((o) => {
+        const share = resolveOrderDriverShare(db, o);
+        return {
+          id: o.id,
+          status: o.status,
+          totalAmount: o.totalAmount,
+          deliveryFee: o.deliveryFee,
+          createdAt: o.createdAt,
+          storeId: o.storeId,
+          driverShare: {
+            commissionType: share.commissionType,
+            commissionValue: share.commissionValue,
+            earningsJod: share.earningsJod,
+          },
+        };
+      });
+
+      const ratings = db
+        .prepare(
+          'SELECT id, orderId, userId, rating, notes, createdAt FROM driver_ratings WHERE driverId = ? ORDER BY createdAt DESC, id DESC LIMIT 200'
+        )
         .all(id);
+
+      const commission = getDriverCommissionSettings(db);
 
       return res.status(200).json({
         success: true,
@@ -2282,6 +2395,12 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
             licenseNumber: driver.licenseNumber,
             isBlocked: Boolean(driver.isBlocked),
             createdAt: driver.createdAt,
+            rating: driver.rating ?? 5,
+            ratingCount: driver.ratingCount != null ? Number(driver.ratingCount) : 0,
+          },
+          globalCommission: {
+            commissionType: commission.type,
+            commissionValue: commission.value,
           },
           stats: {
             delivered: counts.delivered || 0,
@@ -2289,7 +2408,21 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
             cancelled: counts.cancelled || 0,
             totalAssigned: (counts.delivered || 0) + (counts.active || 0) + (counts.cancelled || 0),
           },
-          recentOrders: latestOrders,
+          filters: {
+            status: statusFilter || 'all',
+            dateFrom: dateFrom || null,
+            dateTo: dateTo || null,
+            page,
+            perPage,
+            totalOrders,
+          },
+          earningsForFilteredDelivered: {
+            orderCount: deliveredFiltered.length,
+            totalDeliveryFees: Math.round((totalDeliveryFees + Number.EPSILON) * 100) / 100,
+            totalProfit: Math.round((totalProfit + Number.EPSILON) * 100) / 100,
+          },
+          orders: ordersPayload,
+          ratings,
         },
       });
     } catch (e) {

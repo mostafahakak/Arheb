@@ -5,6 +5,14 @@ const { jordanMobileLookupKeys, normalizeOtpDigits } = require('../utils/jordanM
 const { getJsonPath } = require('../config/jsonPaths');
 const fcm = require('../fcm');
 const enrichArhebBoxRow = require('../arhebBox').enrichArhebBoxRow;
+const {
+  ensureDriverCommissionSettingsTable,
+  ensureOrderDriverShareColumns,
+  ensureDriverRatingsTable,
+  syncAllDriverRatingsFromTable,
+  resolveOrderDriverShare,
+  assignDriverToOrder,
+} = require('../utils/driverCommission');
 
 function emitOrderStatus(orderId, status) {
   try {
@@ -26,8 +34,17 @@ function loadStores() {
   }
 }
 
+function sumDriverEarningsForOrders(db, orderRows) {
+  return orderRows.reduce((s, o) => {
+    const share = resolveOrderDriverShare(db, o);
+    const e = share.earningsJod;
+    return s + (Number.isFinite(e) ? e : 0);
+  }, 0);
+}
+
 // Map DB order + items + driver to API shape; optional store adds storeAddress, storeMapsUrl, etc.
-function orderToDriverApi(order, items = [], driverRow = null, store = null) {
+// Pass db to include driverShare (commission snapshot + earnings in JOD).
+function orderToDriverApi(order, items = [], driverRow = null, store = null, db = null) {
   const address = order.nearby || [order.addressName, order.addressLong, order.addressLat].filter(Boolean).join(', ') || '';
   const driver = driverRow ? {
     id: String(driverRow.id),
@@ -64,19 +81,27 @@ function orderToDriverApi(order, items = [], driverRow = null, store = null) {
       : (order.addressName || address)
         ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(order.addressName || address)}`
         : null;
+  const deliveryFeeNum = Math.round(((Number(order.deliveryFee) || 0) + Number.EPSILON) * 100) / 100;
+  const createdAt = order.createdAt || null;
+  const storeName = store ? store.nameEn || store.name || store.nameAr || null : null;
   const out = {
     id: String(order.id),
     orderNumber: `ORD-${String(order.id).padStart(4, '0')}`,
+    storeId: order.storeId != null ? String(order.storeId) : null,
+    storeName,
     products: productList,
     totalPrice: order.totalAmount ?? 0,
-    deliveryFee: order.deliveryFee ?? 0,
+    deliveryFee: deliveryFeeNum,
+    /** Driver earnings (JOD) for this order — same as `driverShare.earningsJod` when commission is resolved. */
+    profitJod: null,
     discountAmount: order.discount ?? 0,
     address,
     addressName: order.addressName || null,
     buildingNumber: null,
     paymentMethod: order.paymentType || 'cash',
     status: mapOrderStatus(order.status),
-    orderDate: order.createdAt || null,
+    orderDate: createdAt,
+    createdAt,
     notes: order.notes || null,
     customerName: order.name || null,
     customerPhone: order.phoneNumber || null,
@@ -88,10 +113,16 @@ function orderToDriverApi(order, items = [], driverRow = null, store = null) {
     clientMapsUrl,
     deliveryProofImage: order.deliveryProofImage || null,
   };
-  if (store) {
-    out.storeName = store.nameEn || store.name || store.nameAr || null;
-    out.storeAddress = store.addressEn || store.address || store.addressAr || null;
-    out.storeMapsUrl = store.mapsUrl || null;
+  out.storeAddress = store ? store.addressEn || store.address || store.addressAr || null : null;
+  out.storeMapsUrl = store ? store.mapsUrl || null : null;
+  if (db && order) {
+    const share = resolveOrderDriverShare(db, order);
+    out.driverShare = {
+      commissionType: share.commissionType,
+      commissionValue: share.commissionValue,
+      earningsJod: share.earningsJod,
+    };
+    out.profitJod = share.earningsJod;
   }
   return out;
 }
@@ -173,6 +204,11 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
   try { db.exec(`ALTER TABLE drivers ADD COLUMN deleted INTEGER DEFAULT 0`); } catch (e) { /* exists */ }
   try { db.exec(`ALTER TABLE drivers ADD COLUMN deletedAt TEXT`); } catch (e) { /* exists */ }
 
+  ensureDriverCommissionSettingsTable(db);
+  ensureOrderDriverShareColumns(db);
+  ensureDriverRatingsTable(db);
+  syncAllDriverRatingsFromTable(db);
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS driver_otp_pending (
       mobile TEXT PRIMARY KEY,
@@ -219,7 +255,6 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
   }
   const findOrderById = db.prepare('SELECT * FROM orders WHERE id = ?');
   const findOrderItems = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
-  const updateOrderDriver = db.prepare('UPDATE orders SET driverId = ?, driverName = ?, status = ? WHERE id = ?');
   const updateOrderStatus = db.prepare('UPDATE orders SET status = ? WHERE id = ?');
   let findDriverRequestsByDriver, updateDriverRequestStatus, rejectOtherRequestsForOrder;
   try {
@@ -388,8 +423,10 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     const todayStr = todayStart.toISOString().slice(0, 10);
     const todayOrders = db.prepare('SELECT * FROM orders WHERE driverId = ? AND status = ? AND date(createdAt) = ?').all(driverId, 'Delivered', todayStr);
     const allDelivered = db.prepare('SELECT * FROM orders WHERE driverId = ? AND status = ?').all(driverId, 'Delivered');
-    const todayEarnings = todayOrders.reduce((s, o) => s + (o.deliveryFee || 0), 0);
-    const totalEarnings = allDelivered.reduce((s, o) => s + (o.deliveryFee || 0), 0);
+    const todayProfit = sumDriverEarningsForOrders(db, todayOrders);
+    const totalProfit = sumDriverEarningsForOrders(db, allDelivered);
+    const todayDeliveryFees = todayOrders.reduce((s, o) => s + (Number(o.deliveryFee) || 0), 0);
+    const totalDeliveryFees = allDelivered.reduce((s, o) => s + (Number(o.deliveryFee) || 0), 0);
 
     const driverDto = {
       id: String(req.driver.id),
@@ -403,9 +440,14 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
       rating: req.driver.rating ?? 5,
     };
     const stats = {
-      todayEarnings,
+      todayProfit,
+      totalProfit,
+      todayDeliveryFees,
+      totalDeliveryFees,
+      /** @deprecated full delivery fee totals; prefer todayProfit/totalProfit */
+      todayEarnings: todayProfit,
+      totalEarnings: totalProfit,
       todayOrders: todayOrders.length,
-      totalEarnings,
       totalOrders: allDelivered.length,
       rating: req.driver.rating ?? 5,
     };
@@ -416,7 +458,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
       const items = findOrderItems.all(order.id);
       const dr = order.driverId ? findDriverById.get(order.driverId) : null;
       const store = order.storeId ? storeById[order.storeId] : null;
-      return orderToDriverApi(order, items, dr, store);
+      return orderToDriverApi(order, items, dr, store, db);
     };
 
     return res.status(200).json({
@@ -470,21 +512,23 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     }
     const completed = orders.filter((o) => mapOrderStatus(o.status) === 'delivered');
     const cancelled = orders.filter((o) => mapOrderStatus(o.status) === 'cancelled');
-    const earnings = completed.reduce((s, o) => s + (o.deliveryFee || 0), 0);
+    const profit = sumDriverEarningsForOrders(db, completed);
+    const ratingCount = req.driver.ratingCount != null ? Number(req.driver.ratingCount) : 0;
     return res.status(200).json({
       success: true,
       message: 'Stats loaded successfully',
       data: {
         period,
         stats: {
-          earnings,
+          profit,
+          earnings: profit,
           earningsGrowth: 15,
           totalOrders: orders.length,
           completedOrders: completed.length,
           cancelledOrders: cancelled.length,
           avgDeliveryTime: 25,
           rating: req.driver.rating ?? 5,
-          totalReviews: 0,
+          totalReviews: ratingCount,
         },
       },
     });
@@ -517,7 +561,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     const list = slice.map((o) => {
       const items = findOrderItems.all(o.id);
       const store = o.storeId ? storeById[o.storeId] : null;
-      return orderToDriverApi(o, items, findDriverByIdRun(o.driverId), store);
+      return orderToDriverApi(o, items, findDriverByIdRun(o.driverId), store, db);
     });
 
     let arhebBoxAvailable = [];
@@ -563,13 +607,84 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
         requestId: r.id,
         orderId: r.orderId,
         createdAt: r.createdAt,
-        order: orderToDriverApi(order, items, null, store),
+        order: orderToDriverApi(order, items, null, store, db),
       };
     }).filter(Boolean);
     return res.status(200).json({
       success: true,
       message: 'Requests loaded',
       data: { requests },
+    });
+  });
+
+  // GET /api/driver/orders/assigned — all orders assigned to this driver (same as filter=all; explicit route before :orderId)
+  app.get('/api/driver/orders/assigned', driverAuth, (req, res) => {
+    const driverId = req.driver.id;
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const perPage = Math.min(50, Math.max(1, parseInt(req.query.perPage, 10) || 20));
+    const orders = db.prepare('SELECT * FROM orders WHERE driverId = ? ORDER BY id DESC').all(driverId);
+    const total = orders.length;
+    const offset = (page - 1) * perPage;
+    const slice = orders.slice(offset, offset + perPage);
+    const storesList = loadStores();
+    const storeById = Object.fromEntries(storesList.map((s) => [s.id, s]));
+    const list = slice.map((o) => {
+      const items = findOrderItems.all(o.id);
+      const store = o.storeId ? storeById[o.storeId] : null;
+      return orderToDriverApi(o, items, findDriverById.get(o.driverId), store, db);
+    });
+    return res.status(200).json({
+      success: true,
+      message: 'Assigned orders loaded',
+      data: { page, perPage, total, orders: list },
+    });
+  });
+
+  // GET /api/driver/earnings/today — delivered today only
+  app.get('/api/driver/earnings/today', driverAuth, (req, res) => {
+    const driverId = req.driver.id;
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayStr = todayStart.toISOString().slice(0, 10);
+    const rows = db
+      .prepare('SELECT * FROM orders WHERE driverId = ? AND status = ? AND date(createdAt) = ?')
+      .all(driverId, 'Delivered', todayStr);
+    const profit = sumDriverEarningsForOrders(db, rows);
+    const deliveryFees = rows.reduce((s, o) => s + (Number(o.deliveryFee) || 0), 0);
+    return res.status(200).json({
+      success: true,
+      data: {
+        date: todayStr,
+        orderCount: rows.length,
+        totalDeliveryFees: Math.round((deliveryFees + Number.EPSILON) * 100) / 100,
+        totalProfit: profit,
+      },
+    });
+  });
+
+  // GET /api/driver/earnings/summary?dateFrom=YYYY-MM-DD&dateTo=YYYY-MM-DD (inclusive on date(createdAt), delivered only)
+  app.get('/api/driver/earnings/summary', driverAuth, (req, res) => {
+    const driverId = req.driver.id;
+    const dateFrom = req.query.dateFrom ? String(req.query.dateFrom).slice(0, 10) : null;
+    const dateTo = req.query.dateTo ? String(req.query.dateTo).slice(0, 10) : null;
+    let rows = db.prepare('SELECT * FROM orders WHERE driverId = ? AND status = ?').all(driverId, 'Delivered');
+    if (dateFrom) {
+      rows = rows.filter((o) => String(o.createdAt || '').slice(0, 10) >= dateFrom);
+    }
+    if (dateTo) {
+      rows = rows.filter((o) => String(o.createdAt || '').slice(0, 10) <= dateTo);
+    }
+    const profit = sumDriverEarningsForOrders(db, rows);
+    const deliveryFees = rows.reduce((s, o) => s + (Number(o.deliveryFee) || 0), 0);
+    return res.status(200).json({
+      success: true,
+      data: {
+        dateFrom,
+        dateTo,
+        orderCount: rows.length,
+        totalDeliveryFees: Math.round((deliveryFees + Number.EPSILON) * 100) / 100,
+        totalProfit: profit,
+      },
     });
   });
 
@@ -589,7 +704,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     return res.status(200).json({
       success: true,
       message: 'Order loaded successfully',
-      data: { order: orderToDriverApi(order, items, driverRow, store) },
+      data: { order: orderToDriverApi(order, items, driverRow, store, db) },
     });
   });
 
@@ -612,7 +727,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     }
     const driverRowForAccept = findDriverById.get(driverId);
     const driverName = driverRowForAccept ? driverRowForAccept.name : null;
-    updateOrderDriver.run(driverId, driverName, 'On the way', orderId);
+    assignDriverToOrder(db, orderId, driverId, driverName, 'On the way');
     emitOrderStatus(orderId, 'On the way');
     fcm.sendToUserByPhone(
       db,
@@ -637,7 +752,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     return res.status(200).json({
       success: true,
       message: 'Order accepted successfully',
-      data: { order: orderToDriverApi(updated, items, driverRow, store) },
+      data: { order: orderToDriverApi(updated, items, driverRow, store, db) },
     });
   });
 
@@ -662,7 +777,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
       return res.status(200).json({
         success: true,
         message: 'Order was already delivered',
-        data: { order: orderToDriverApi(order, items, driverRow, store) },
+        data: { order: orderToDriverApi(order, items, driverRow, store, db) },
       });
     }
     if (st !== 'On the way') {
@@ -707,7 +822,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     return res.status(200).json({
       success: true,
       message: 'Order marked as delivered successfully',
-      data: { order: orderToDriverApi(updated, items, driverRow, store) },
+      data: { order: orderToDriverApi(updated, items, driverRow, store, db) },
     });
   }
 

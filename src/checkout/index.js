@@ -199,6 +199,8 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   } catch (e) {
     // Column already exists
   }
+  try { db.exec(`ALTER TABLE orders ADD COLUMN paymentTranRef TEXT`); } catch (e) { /* exists */ }
+  try { db.exec(`ALTER TABLE orders ADD COLUMN paymentCartId TEXT`); } catch (e) { /* exists */ }
 
   const findUserByPhone = db.prepare('SELECT * FROM users WHERE phoneNumber = ?');
   const findOrderById = db.prepare('SELECT * FROM orders WHERE id = ?');
@@ -214,6 +216,357 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
     SET rate = @newRate, numberOfReviews = @numberOfReviews 
     WHERE id = @storeId
   `);
+
+  const createOrder = db.transaction((orderData) => {
+    const insertOrder = db.prepare(`
+          INSERT INTO orders (
+            userId,
+            phoneNumber,
+            name,
+            addressName,
+            addressLong,
+            addressLat,
+            discount,
+            deliveryFee,
+            serviceFee,
+            feesTax,
+            weightKg,
+            totalAmount,
+            status,
+            paymentType,
+            promoCode,
+            orderRating,
+            storeId,
+            nearby,
+            notes,
+            paymentVerificationImage,
+            paymentTranRef,
+            paymentCartId
+          ) VALUES (
+            @userId,
+            @phoneNumber,
+            @name,
+            @addressName,
+            @addressLong,
+            @addressLat,
+            @discount,
+            @deliveryFee,
+            @serviceFee,
+            @feesTax,
+            @weightKg,
+            @totalAmount,
+            @status,
+            @paymentType,
+            @promoCode,
+            @orderRating,
+            @storeId,
+            @nearby,
+            @notes,
+            @paymentVerificationImage,
+            @paymentTranRef,
+            @paymentCartId
+          )
+        `);
+
+    const orderResult = insertOrder.run({
+      userId: orderData.userId,
+      phoneNumber: orderData.phoneNumber,
+      name: orderData.name || null,
+      addressName: orderData.addressName || null,
+      addressLong: orderData.addressLong || null,
+      addressLat: orderData.addressLat || null,
+      discount: orderData.discount || 0,
+      deliveryFee: orderData.deliveryFee || 0,
+      serviceFee: orderData.serviceFee != null ? orderData.serviceFee : SERVICE_FEE_JOD,
+      feesTax: orderData.feesTax || 0,
+      weightKg: orderData.weightKg || 0,
+      totalAmount: orderData.totalAmount,
+      status: orderData.status,
+      paymentType: orderData.paymentType,
+      promoCode: orderData.promoCode,
+      orderRating: 0,
+      storeId: orderData.storeId,
+      nearby: orderData.nearby || null,
+      notes: orderData.notes || null,
+      paymentVerificationImage: orderData.paymentVerificationImage || null,
+      paymentTranRef: orderData.paymentTranRef ?? null,
+      paymentCartId: orderData.paymentCartId ?? null,
+    });
+
+    const orderId = orderResult.lastInsertRowid;
+
+    const insertOrderItem = db.prepare(`
+          INSERT INTO order_items (
+            orderId,
+            productId,
+            productName,
+            price,
+            quantity,
+            selectedAddOns
+          ) VALUES (
+            @orderId,
+            @productId,
+            @productName,
+            @price,
+            @quantity,
+            @selectedAddOns
+          )
+        `);
+
+    for (const item of orderData.items) {
+      const addOnsObj = item._normalizedAddOns || {};
+      const addOnsStr = Object.keys(addOnsObj).length ? JSON.stringify(addOnsObj) : null;
+      insertOrderItem.run({
+        orderId: orderId,
+        productId: item.id,
+        productName: item.name,
+        price: item.price,
+        quantity: item.quantity,
+        selectedAddOns: addOnsStr,
+      });
+    }
+
+    return orderId;
+  });
+
+  /**
+   * Shared order creation (used by POST /api/checkout and POST /api/payment/initiate).
+   * @param {string} userId - From JWT (userId or phone)
+   * @param {object} body - Same shape as POST /api/checkout body
+   * @param {{ forcePaymentType?: string, initialStatusOverride?: string }} options
+   */
+  function createOrderFromCheckoutBody(userId, body, options = {}) {
+    const {
+      items,
+      name,
+      phoneNumber,
+      addressName,
+      addressLong,
+      addressLat,
+      discount = 0,
+      totalAmount,
+      paymentType,
+      promoCode,
+      storeId,
+      nearby,
+      notes,
+      paymentVerificationImage,
+      fcmToken,
+      weightKg,
+    } = body || {};
+
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return { ok: false, statusCode: 400, message: 'Items array is required and must not be empty' };
+    }
+
+    const itemsCopy = items.map((item) => ({ ...item }));
+
+    for (const item of itemsCopy) {
+      if (!item.id || !item.name || item.price === undefined || !item.quantity) {
+        return { ok: false, statusCode: 400, message: 'Each item must have id, name, price, and quantity' };
+      }
+    }
+
+    for (const item of itemsCopy) {
+      const product = findProductById(item.id);
+      if (!product) {
+        return { ok: false, statusCode: 400, message: `Product not found: ${item.id}` };
+      }
+      const v = validateSelectedAddOnsAgainstProduct(product, item.selectedAddOns);
+      if (!v.ok) {
+        return { ok: false, statusCode: 400, message: v.message || 'Invalid add-ons' };
+      }
+      item._normalizedAddOns = v.normalized;
+    }
+
+    if (!phoneNumber) {
+      return { ok: false, statusCode: 400, message: 'phoneNumber is required' };
+    }
+
+    if (totalAmount === undefined || totalAmount === null) {
+      return { ok: false, statusCode: 400, message: 'totalAmount is required' };
+    }
+
+    let normalizedPaymentType;
+    if (options.forcePaymentType) {
+      normalizedPaymentType = String(options.forcePaymentType).trim();
+    } else {
+      if (!paymentType) {
+        return { ok: false, statusCode: 400, message: 'paymentType is required' };
+      }
+      normalizedPaymentType = String(paymentType).trim();
+      if (!normalizedPaymentType) {
+        return { ok: false, statusCode: 400, message: 'paymentType is required' };
+      }
+    }
+
+    const lowerPaymentType = normalizedPaymentType.toLowerCase();
+
+    if (paymentVerificationImage !== undefined && paymentVerificationImage !== null && typeof paymentVerificationImage !== 'string') {
+      return { ok: false, statusCode: 400, message: 'paymentVerificationImage must be a string (URL)' };
+    }
+
+    if (addressLong !== undefined && (typeof addressLong !== 'number' || isNaN(addressLong))) {
+      return { ok: false, statusCode: 400, message: 'addressLong must be a valid number' };
+    }
+
+    if (addressLat !== undefined && (typeof addressLat !== 'number' || isNaN(addressLat))) {
+      return { ok: false, statusCode: 400, message: 'addressLat must be a valid number' };
+    }
+
+    let finalDiscount = discount || 0;
+    let finalPromoCode = null;
+
+    if (promoCode) {
+      const promoCodeRecord = findPromoCodeByName.get(promoCode.trim());
+      if (!promoCodeRecord) {
+        return { ok: false, statusCode: 400, message: 'invalid promoCode' };
+      }
+      finalDiscount = promoCodeRecord.value;
+      finalPromoCode = promoCodeRecord.name;
+    } else {
+      if (discount !== undefined && discount !== null && (typeof discount !== 'number' || isNaN(discount))) {
+        return { ok: false, statusCode: 400, message: 'discount must be a valid number' };
+      }
+      if (discount !== undefined && discount !== null) {
+        finalDiscount = discount;
+      }
+    }
+
+    if (typeof totalAmount !== 'number' || isNaN(totalAmount)) {
+      return { ok: false, statusCode: 400, message: 'totalAmount must be a valid number' };
+    }
+
+    let finalStoreId = storeId;
+    if (!finalStoreId && itemsCopy.length > 0 && itemsCopy[0].id) {
+      finalStoreId = getStoreIdFromProduct(itemsCopy[0].id);
+    }
+
+    if (fcmToken != null && typeof fcmToken === 'string' && phoneNumber) {
+      const trimmed = fcmToken.trim();
+      if (trimmed) {
+        try {
+          db.prepare('UPDATE users SET fcmToken = ? WHERE phoneNumber = ?').run(trimmed, phoneNumber);
+        } catch (e) {
+          // ignore
+        }
+      }
+    }
+
+    let initialStatus;
+    if (options.initialStatusOverride) {
+      initialStatus = options.initialStatusOverride;
+    } else {
+      initialStatus = lowerPaymentType === 'cliq' ? 'Waiting cliq confirmation' : 'Waiting confirmation';
+    }
+
+    const weightKgNum = Math.max(0, safeNumber(weightKg, 0));
+    let computedDeliveryFee = calcArhebBoxDeliveryFeeJod(weightKgNum);
+    if (
+      finalStoreId != null &&
+      String(finalStoreId).trim() !== '' &&
+      typeof addressLat === 'number' &&
+      !Number.isNaN(addressLat) &&
+      typeof addressLong === 'number' &&
+      !Number.isNaN(addressLong)
+    ) {
+      const st = loadStoreFromJsonById(finalStoreId);
+      if (st) {
+        const storeLoc =
+          (st.latitude != null && st.longitude != null)
+            ? { latitude: Number(st.latitude), longitude: Number(st.longitude) }
+            : parseLatLongFromGoogleMapsUrl(st.mapsUrl);
+        if (storeLoc) {
+          const qOrder = quoteFromPickupDropoff(storeLoc, {
+            latitude: addressLat,
+            longitude: addressLong,
+          });
+          if (qOrder) {
+            computedDeliveryFee = calcDeliveryFeeFromDistanceAndWeight(qOrder.distanceKm, weightKgNum);
+          }
+        }
+      }
+    }
+    const computedServiceFee = SERVICE_FEE_JOD;
+    const computedFeesTax = calcFeesTaxJod(computedDeliveryFee, computedServiceFee);
+
+    let orderId;
+    try {
+      orderId = createOrder({
+        userId,
+        phoneNumber,
+        name: name || null,
+        addressName: addressName || null,
+        addressLong: addressLong || null,
+        addressLat: addressLat || null,
+        discount: finalDiscount,
+        deliveryFee: computedDeliveryFee,
+        serviceFee: computedServiceFee,
+        feesTax: computedFeesTax,
+        weightKg: round3(weightKgNum),
+        totalAmount,
+        status: initialStatus,
+        paymentType: normalizedPaymentType,
+        promoCode: finalPromoCode,
+        storeId: finalStoreId,
+        nearby: nearby || null,
+        notes: notes || null,
+        paymentVerificationImage: paymentVerificationImage || null,
+        items: itemsCopy,
+      });
+    } catch (e) {
+      console.error('createOrderFromCheckoutBody error:', e);
+      return { ok: false, statusCode: 500, message: 'Internal server error' };
+    }
+
+    const order = findOrderById.get(orderId);
+    const findOrderItemsCreated = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
+    const itemsOut = mapOrderItemsRows(findOrderItemsCreated.all(orderId));
+
+    const checkoutPayload = {
+      orderId,
+      order: {
+        id: order.id,
+        userId: order.userId,
+        phoneNumber: order.phoneNumber,
+        name: order.name,
+        addressName: order.addressName,
+        addressLong: order.addressLong,
+        addressLat: order.addressLat,
+        discount: order.discount,
+        deliveryFee: order.deliveryFee,
+        serviceFee: order.serviceFee != null ? order.serviceFee : SERVICE_FEE_JOD,
+        feesTax:
+          order.feesTax != null
+            ? order.feesTax
+            : calcFeesTaxJod(order.deliveryFee, order.serviceFee ?? SERVICE_FEE_JOD),
+        weightKg: order.weightKg != null ? order.weightKg : round3(weightKgNum),
+        totalAmount: order.totalAmount,
+        orderSummary: buildOrderSummary(order.totalAmount, order.deliveryFee, order.serviceFee ?? SERVICE_FEE_JOD),
+        invoice: buildInvoice(order.deliveryFee, order.serviceFee ?? SERVICE_FEE_JOD),
+        status: order.status,
+        paymentType: order.paymentType,
+        promoCode: order.promoCode || null,
+        orderRating: order.orderRating || 0,
+        nearby: order.nearby,
+        notes: order.notes,
+        storeId: order.storeId ?? null,
+        paymentTranRef: order.paymentTranRef ?? null,
+        paymentCartId: order.paymentCartId ?? null,
+        createdAt: order.createdAt,
+        items: itemsOut,
+      },
+    };
+
+    return {
+      ok: true,
+      orderId,
+      order,
+      itemsOut,
+      weightKgNum,
+      checkoutPayload,
+    };
+  }
 
   /**
    * Pre-checkout quote: delivery + service + tax (7% on delivery fee only).
@@ -287,374 +640,17 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   app.post('/api/checkout', authenticateRequest, (req, res) => {
     try {
       const userId = req.user.userId || req.user.phoneNumber;
-      const {
-        items,
-        name,
-        phoneNumber,
-        addressName,
-        addressLong,
-        addressLat,
-        discount = 0,
-        deliveryFee = 0,
-        totalAmount,
-        paymentType,
-        promoCode,
-        storeId,
-        nearby,
-        notes,
-        paymentVerificationImage,
-        fcmToken,
-        weightKg
-      } = req.body;
-
-      // Validation
-      if (!items || !Array.isArray(items) || items.length === 0) {
-        return res.status(400).json({
+      const result = createOrderFromCheckoutBody(userId, req.body, {});
+      if (!result.ok) {
+        return res.status(result.statusCode).json({
           success: false,
-          message: 'Items array is required and must not be empty'
+          message: result.message,
         });
       }
-
-      // Validate each item
-      for (const item of items) {
-        if (!item.id || !item.name || item.price === undefined || !item.quantity) {
-          return res.status(400).json({
-            success: false,
-            message: 'Each item must have id, name, price, and quantity'
-          });
-        }
-      }
-
-      // Validate add-ons against product JSON (addOnGroups / selectedAddOns)
-      for (const item of items) {
-        const product = findProductById(item.id);
-        if (!product) {
-          return res.status(400).json({
-            success: false,
-            message: `Product not found: ${item.id}`,
-          });
-        }
-        const v = validateSelectedAddOnsAgainstProduct(product, item.selectedAddOns);
-        if (!v.ok) {
-          return res.status(400).json({
-            success: false,
-            message: v.message || 'Invalid add-ons',
-          });
-        }
-        item._normalizedAddOns = v.normalized;
-      }
-
-      if (!phoneNumber) {
-        return res.status(400).json({
-          success: false,
-          message: 'phoneNumber is required'
-        });
-      }
-
-      if (totalAmount === undefined || totalAmount === null) {
-        return res.status(400).json({
-          success: false,
-          message: 'totalAmount is required'
-        });
-      }
-
-      if (!paymentType) {
-        return res.status(400).json({
-          success: false,
-          message: 'paymentType is required'
-        });
-      }
-
-      let normalizedPaymentType = String(paymentType).trim();
-      if (!normalizedPaymentType) {
-        return res.status(400).json({
-          success: false,
-          message: 'paymentType is required'
-        });
-      }
-      const lowerPaymentType = normalizedPaymentType.toLowerCase();
-
-      if (paymentVerificationImage !== undefined && paymentVerificationImage !== null && typeof paymentVerificationImage !== 'string') {
-        return res.status(400).json({
-          success: false,
-          message: 'paymentVerificationImage must be a string (URL)'
-        });
-      }
-
-      // Validate coordinates if provided
-      if (addressLong !== undefined && (typeof addressLong !== 'number' || isNaN(addressLong))) {
-        return res.status(400).json({
-          success: false,
-          message: 'addressLong must be a valid number'
-        });
-      }
-
-      if (addressLat !== undefined && (typeof addressLat !== 'number' || isNaN(addressLat))) {
-        return res.status(400).json({
-          success: false,
-          message: 'addressLat must be a valid number'
-        });
-      }
-
-      // Validate and process promo code if provided
-      let finalDiscount = discount || 0;
-      let finalPromoCode = null;
-
-      if (promoCode) {
-        const promoCodeRecord = findPromoCodeByName.get(promoCode.trim());
-        if (!promoCodeRecord) {
-          return res.status(400).json({
-            success: false,
-            message: 'invalid promoCode'
-          });
-        }
-        // Use promo code value as discount
-        finalDiscount = promoCodeRecord.value;
-        finalPromoCode = promoCodeRecord.name;
-      } else {
-        // Only validate discount if no promo code provided
-        if (discount !== undefined && discount !== null && (typeof discount !== 'number' || isNaN(discount))) {
-          return res.status(400).json({
-            success: false,
-            message: 'discount must be a valid number'
-          });
-        }
-        if (discount !== undefined && discount !== null) {
-          finalDiscount = discount;
-        }
-      }
-
-      // deliveryFee is computed on server (weight-based). We accept client deliveryFee for backward compatibility but ignore it.
-
-      if (typeof totalAmount !== 'number' || isNaN(totalAmount)) {
-        return res.status(400).json({
-          success: false,
-          message: 'totalAmount must be a valid number'
-        });
-      }
-
-      // Get storeId from first product if not provided
-      let finalStoreId = storeId;
-      if (!finalStoreId && items.length > 0 && items[0].id) {
-        finalStoreId = getStoreIdFromProduct(items[0].id);
-      }
-
-      // Optionally update user FCM token for order status push notifications
-      if (fcmToken != null && typeof fcmToken === 'string' && phoneNumber) {
-        const trimmed = fcmToken.trim();
-        if (trimmed) {
-          try {
-            db.prepare('UPDATE users SET fcmToken = ? WHERE phoneNumber = ?').run(trimmed, phoneNumber);
-          } catch (e) {
-            // ignore
-          }
-        }
-      }
-
-      // Use transaction to ensure both order and items are created atomically
-      const createOrder = db.transaction((orderData) => {
-        // Insert order
-        const insertOrder = db.prepare(`
-          INSERT INTO orders (
-            userId,
-            phoneNumber,
-            name,
-            addressName,
-            addressLong,
-            addressLat,
-            discount,
-            deliveryFee,
-            serviceFee,
-            feesTax,
-            weightKg,
-            totalAmount,
-            status,
-            paymentType,
-            promoCode,
-            orderRating,
-            storeId,
-            nearby,
-            notes,
-            paymentVerificationImage
-          ) VALUES (
-            @userId,
-            @phoneNumber,
-            @name,
-            @addressName,
-            @addressLong,
-            @addressLat,
-            @discount,
-            @deliveryFee,
-            @serviceFee,
-            @feesTax,
-            @weightKg,
-            @totalAmount,
-            @status,
-            @paymentType,
-            @promoCode,
-            @orderRating,
-            @storeId,
-            @nearby,
-            @notes,
-            @paymentVerificationImage
-          )
-        `);
-
-        const orderResult = insertOrder.run({
-          userId: orderData.userId,
-          phoneNumber: orderData.phoneNumber,
-          name: orderData.name || null,
-          addressName: orderData.addressName || null,
-          addressLong: orderData.addressLong || null,
-          addressLat: orderData.addressLat || null,
-          discount: orderData.discount || 0,
-          deliveryFee: orderData.deliveryFee || 0,
-          serviceFee: orderData.serviceFee != null ? orderData.serviceFee : SERVICE_FEE_JOD,
-          feesTax: orderData.feesTax || 0,
-          weightKg: orderData.weightKg || 0,
-          totalAmount: orderData.totalAmount,
-          status: orderData.status,
-          paymentType: orderData.paymentType,
-          promoCode: orderData.promoCode,
-          orderRating: 0,
-          storeId: orderData.storeId,
-          nearby: orderData.nearby || null,
-          notes: orderData.notes || null,
-          paymentVerificationImage: orderData.paymentVerificationImage || null
-        });
-
-        const orderId = orderResult.lastInsertRowid;
-
-        // Insert order items
-        const insertOrderItem = db.prepare(`
-          INSERT INTO order_items (
-            orderId,
-            productId,
-            productName,
-            price,
-            quantity,
-            selectedAddOns
-          ) VALUES (
-            @orderId,
-            @productId,
-            @productName,
-            @price,
-            @quantity,
-            @selectedAddOns
-          )
-        `);
-
-        for (const item of orderData.items) {
-          const addOnsObj = item._normalizedAddOns || {};
-          const addOnsStr = Object.keys(addOnsObj).length ? JSON.stringify(addOnsObj) : null;
-          insertOrderItem.run({
-            orderId: orderId,
-            productId: item.id,
-            productName: item.name,
-            price: item.price,
-            quantity: item.quantity,
-            selectedAddOns: addOnsStr,
-          });
-        }
-
-        return orderId;
-      });
-
-      const initialStatus =
-        lowerPaymentType === 'cliq' ? 'Waiting cliq confirmation' : 'Waiting confirmation';
-
-      const weightKgNum = Math.max(0, safeNumber(weightKg, 0));
-      let computedDeliveryFee = calcArhebBoxDeliveryFeeJod(weightKgNum);
-      if (
-        finalStoreId != null &&
-        String(finalStoreId).trim() !== '' &&
-        typeof addressLat === 'number' &&
-        !Number.isNaN(addressLat) &&
-        typeof addressLong === 'number' &&
-        !Number.isNaN(addressLong)
-      ) {
-        const st = loadStoreFromJsonById(finalStoreId);
-        if (st) {
-          const storeLoc =
-            (st.latitude != null && st.longitude != null)
-              ? { latitude: Number(st.latitude), longitude: Number(st.longitude) }
-              : parseLatLongFromGoogleMapsUrl(st.mapsUrl);
-          if (storeLoc) {
-            const qOrder = quoteFromPickupDropoff(storeLoc, {
-              latitude: addressLat,
-              longitude: addressLong,
-            });
-            if (qOrder) {
-              computedDeliveryFee = calcDeliveryFeeFromDistanceAndWeight(qOrder.distanceKm, weightKgNum);
-            }
-          }
-        }
-      }
-      const computedServiceFee = SERVICE_FEE_JOD;
-      const computedFeesTax = calcFeesTaxJod(computedDeliveryFee, computedServiceFee);
-
-      const orderId = createOrder({
-        userId,
-        phoneNumber,
-        name: name || null,
-        addressName: addressName || null,
-        addressLong: addressLong || null,
-        addressLat: addressLat || null,
-        discount: finalDiscount,
-        deliveryFee: computedDeliveryFee,
-        serviceFee: computedServiceFee,
-        feesTax: computedFeesTax,
-        weightKg: round3(weightKgNum),
-        totalAmount,
-        status: initialStatus,
-        paymentType: normalizedPaymentType,
-        promoCode: finalPromoCode,
-        storeId: finalStoreId,
-        nearby: nearby || null,
-        notes: notes || null,
-        paymentVerificationImage: paymentVerificationImage || null,
-        items
-      });
-
-      // Fetch the created order
-      const order = findOrderById.get(orderId);
-      const findOrderItemsCreated = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
-      const itemsOut = mapOrderItemsRows(findOrderItemsCreated.all(orderId));
-
       return res.status(201).json({
         success: true,
         message: 'Order created successfully',
-        data: {
-          orderId: orderId,
-          order: {
-            id: order.id,
-            userId: order.userId,
-            phoneNumber: order.phoneNumber,
-            name: order.name,
-            addressName: order.addressName,
-            addressLong: order.addressLong,
-            addressLat: order.addressLat,
-            discount: order.discount,
-            deliveryFee: order.deliveryFee,
-            serviceFee: order.serviceFee != null ? order.serviceFee : SERVICE_FEE_JOD,
-            feesTax:
-              order.feesTax != null
-                ? order.feesTax
-                : calcFeesTaxJod(order.deliveryFee, order.serviceFee ?? SERVICE_FEE_JOD),
-            weightKg: order.weightKg != null ? order.weightKg : round3(weightKgNum),
-            totalAmount: order.totalAmount,
-            orderSummary: buildOrderSummary(order.totalAmount, order.deliveryFee, order.serviceFee ?? SERVICE_FEE_JOD),
-            invoice: buildInvoice(order.deliveryFee, order.serviceFee ?? SERVICE_FEE_JOD),
-            status: order.status,
-            paymentType: order.paymentType,
-            promoCode: order.promoCode || null,
-            orderRating: order.orderRating || 0,
-            nearby: order.nearby,
-            notes: order.notes,
-            createdAt: order.createdAt,
-            items: itemsOut,
-          },
-        },
+        data: result.checkoutPayload,
         timestamp: new Date().toISOString(),
       });
     } catch (error) {
@@ -709,6 +705,8 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
           nearby: order.nearby,
           notes: order.notes,
           paymentVerificationImage: order.paymentVerificationImage || null,
+          paymentTranRef: order.paymentTranRef ?? null,
+          paymentCartId: order.paymentCartId ?? null,
           createdAt: order.createdAt,
           items: mapOrderItemsRows(items),
         };
@@ -813,6 +811,8 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
             nearby: order.nearby,
             notes: order.notes,
             paymentVerificationImage: order.paymentVerificationImage || null,
+            paymentTranRef: order.paymentTranRef ?? null,
+            paymentCartId: order.paymentCartId ?? null,
             createdAt: order.createdAt,
             items: items.map(item => ({
               id: item.productId,
@@ -987,4 +987,6 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       });
     }
   });
+
+  attachCheckoutRoutes.createOrderFromCheckoutBody = createOrderFromCheckoutBody;
 };

@@ -1,9 +1,19 @@
 const crypto = require('crypto');
 const axios = require('axios');
 const express = require('express');
+const attachCheckoutRoutes = require('../checkout');
 
 const PAYTABS_API_URL = 'https://madfoat-secure.paytabs.com';
 const PROFILE_ID = 47145;
+
+function deleteOrderCascade(db, orderId) {
+  try {
+    db.prepare('DELETE FROM order_items WHERE orderId = ?').run(orderId);
+    db.prepare('DELETE FROM orders WHERE id = ?').run(orderId);
+  } catch (e) {
+    console.error('deleteOrderCascade error:', e);
+  }
+}
 
 module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
   const SERVER_KEY = process.env.PAYTABS_SERVER_KEY || '';
@@ -45,12 +55,18 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
     };
   }
 
-  // --- Initiate payment (creates a hosted payment page) ---
+  const findOrderById = db.prepare('SELECT * FROM orders WHERE id = ?');
+
+  // --- Initiate payment: creates order (checkout) + Madfoat session; paymentType is always Card ---
   app.post('/api/payment/initiate', authenticateRequest, async (req, res) => {
+    const createOrderFromCheckoutBody = attachCheckoutRoutes.createOrderFromCheckoutBody;
+    if (typeof createOrderFromCheckoutBody !== 'function') {
+      return res.status(503).json({ success: false, message: 'Checkout module is not ready' });
+    }
+
     try {
       const {
-        orderId,
-        amount,
+        checkout,
         currency,
         description,
         customerName,
@@ -61,16 +77,37 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
         customerCountry,
       } = req.body || {};
 
-      if (!amount || typeof amount !== 'number' || amount <= 0) {
-        return res.status(400).json({ success: false, message: 'amount is required and must be > 0' });
+      if (!checkout || typeof checkout !== 'object') {
+        return res.status(400).json({
+          success: false,
+          message:
+            'checkout is required: same fields as POST /api/checkout (items, phoneNumber, totalAmount, address, etc.). Do not send paymentType; it is set to Card automatically.',
+        });
       }
 
-      const cartId = orderId
-        ? `ORDER-${orderId}-${Date.now()}`
-        : `CART-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const checkoutBody = { ...checkout };
+      delete checkoutBody.paymentType;
 
+      const userId = req.user.userId || req.user.phoneNumber;
+      const coResult = createOrderFromCheckoutBody(userId, checkoutBody, {
+        forcePaymentType: 'Card',
+        initialStatusOverride: 'Pending payment',
+      });
+
+      if (!coResult.ok) {
+        return res.status(coResult.statusCode).json({ success: false, message: coResult.message });
+      }
+
+      const { orderId, order, checkoutPayload } = coResult;
+      const amount = Number(order.totalAmount);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        deleteOrderCascade(db, orderId);
+        return res.status(400).json({ success: false, message: 'Invalid order totalAmount' });
+      }
+
+      const cartId = `ORDER-${orderId}-${Date.now()}`;
       const cartCurrency = currency || CART_CURRENCY;
-      const cartDescription = description || `Arheb Order ${orderId || cartId}`;
+      const cartDescription = description || `Arheb Order #${orderId}`;
 
       const callbackUrl = BASE_URL ? `${BASE_URL}/api/payment/callback` : '';
       const returnUrl = BASE_URL ? `${BASE_URL}/api/payment/return` : '';
@@ -89,29 +126,61 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
       if (callbackUrl) payload.callback = callbackUrl;
       if (returnUrl) payload.return = returnUrl;
 
-      if (customerName || customerEmail || customerPhone) {
+      const cName = customerName || order.name || undefined;
+      const cEmail = customerEmail || undefined;
+      const cPhone = customerPhone || order.phoneNumber || undefined;
+      if (cName || cEmail || cPhone || customerAddress || customerCity || customerCountry) {
         payload.customer_details = {};
-        if (customerName) payload.customer_details.name = customerName;
-        if (customerEmail) payload.customer_details.email = customerEmail;
-        if (customerPhone) payload.customer_details.phone = customerPhone;
+        if (cName) payload.customer_details.name = cName;
+        if (cEmail) payload.customer_details.email = cEmail;
+        if (cPhone) payload.customer_details.phone = cPhone;
         if (customerAddress) payload.customer_details.street1 = customerAddress;
         if (customerCity) payload.customer_details.city = customerCity;
         if (customerCountry) payload.customer_details.country = customerCountry;
       }
 
-      const response = await axios.post(`${PAYTABS_API_URL}/payment/request`, payload, {
-        headers: paytabsHeaders(),
-        timeout: 30000,
-      });
+      let data;
+      try {
+        const response = await axios.post(`${PAYTABS_API_URL}/payment/request`, payload, {
+          headers: paytabsHeaders(),
+          timeout: 30000,
+        });
+        data = response.data;
+      } catch (error) {
+        deleteOrderCascade(db, orderId);
+        const errData = error.response?.data;
+        console.error('Payment initiate error:', errData || error.message);
+        return res.status(error.response?.status || 500).json({
+          success: false,
+          message: errData?.message || error.message || 'Payment request failed',
+          code: errData?.code || null,
+        });
+      }
 
-      const data = response.data;
+      const tranRef = data.tran_ref || null;
+
+      try {
+        db.prepare('UPDATE orders SET paymentTranRef = ?, paymentCartId = ? WHERE id = ?').run(tranRef, cartId, orderId);
+      } catch (e) {
+        console.error('Failed to save payment refs on order:', e);
+      }
+
+      const orderRow = findOrderById.get(orderId);
+      const checkoutOut = {
+        ...checkoutPayload,
+        order: {
+          ...checkoutPayload.order,
+          paymentTranRef: orderRow?.paymentTranRef ?? tranRef,
+          paymentCartId: orderRow?.paymentCartId ?? cartId,
+        },
+      };
 
       db.prepare(`
         INSERT INTO payment_transactions (orderId, tranRef, cartId, cartAmount, cartCurrency, tranType, status, redirectUrl, rawResponse)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        orderId || null,
-        data.tran_ref || null,
+        orderId,
+        tranRef,
         cartId,
         amount,
         cartCurrency,
@@ -121,55 +190,70 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
         JSON.stringify(data),
       );
 
+      const paymentBlock = {
+        tranRef,
+        cartId,
+        cartAmount: amount,
+        cartCurrency,
+      };
+
       if (data.payment_result && data.payment_result.response_status === 'A') {
-        if (orderId) {
-          try {
-            db.prepare("UPDATE orders SET paymentType = 'card_paid', status = 'Waiting confirmation' WHERE id = ?").run(orderId);
-          } catch (e) { /* ignore */ }
-        }
-        return res.status(200).json({
+        try {
+          db.prepare("UPDATE orders SET status = 'Waiting confirmation' WHERE id = ?").run(orderId);
+        } catch (e) { /* ignore */ }
+        const o2 = findOrderById.get(orderId);
+        checkoutOut.order = { ...checkoutOut.order, status: o2?.status ?? 'Waiting confirmation' };
+        return res.status(201).json({
           success: true,
-          message: 'Payment completed successfully',
+          message: 'Order created and payment completed successfully',
           data: {
-            tranRef: data.tran_ref,
-            cartId,
-            status: 'completed',
-            paymentResult: data.payment_result,
-            paymentInfo: data.payment_info,
+            checkout: checkoutOut,
+            payment: {
+              ...paymentBlock,
+              status: 'completed',
+              paymentResult: data.payment_result,
+              paymentInfo: data.payment_info,
+            },
           },
+          timestamp: new Date().toISOString(),
         });
       }
 
       if (data.redirect_url) {
-        return res.status(200).json({
+        return res.status(201).json({
           success: true,
-          message: 'Redirect customer to complete payment',
+          message: 'Order created; redirect customer to complete card payment',
           data: {
-            tranRef: data.tran_ref,
-            cartId,
-            status: 'pending_redirect',
-            redirectUrl: data.redirect_url,
-            redirectMethod: 'GET',
+            checkout: checkoutOut,
+            payment: {
+              ...paymentBlock,
+              status: 'pending_redirect',
+              redirectUrl: data.redirect_url,
+              redirectMethod: 'GET',
+            },
           },
+          timestamp: new Date().toISOString(),
         });
       }
 
-      return res.status(200).json({
+      return res.status(201).json({
         success: true,
-        message: 'Payment request submitted',
+        message: 'Order created; payment request submitted',
         data: {
-          tranRef: data.tran_ref,
-          cartId,
-          rawResponse: data,
+          checkout: checkoutOut,
+          payment: {
+            ...paymentBlock,
+            status: 'initiated',
+            rawResponse: data,
+          },
         },
+        timestamp: new Date().toISOString(),
       });
     } catch (error) {
-      const errData = error.response?.data;
-      console.error('Payment initiate error:', errData || error.message);
-      return res.status(error.response?.status || 500).json({
+      console.error('Payment initiate error:', error);
+      return res.status(500).json({
         success: false,
-        message: errData?.message || error.message || 'Payment request failed',
-        code: errData?.code || null,
+        message: error.message || 'Internal server error',
       });
     }
   });
@@ -209,7 +293,9 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
 
         if (status === 'completed' && existing.orderId) {
           try {
-            db.prepare("UPDATE orders SET paymentType = 'card_paid', status = 'Waiting confirmation' WHERE id = ? AND status IN ('Waiting confirmation', 'initiated')").run(existing.orderId);
+            db.prepare(
+              "UPDATE orders SET paymentType = 'Card', status = 'Waiting confirmation', paymentTranRef = COALESCE(?, paymentTranRef) WHERE id = ?",
+            ).run(tranRef || null, existing.orderId);
           } catch (e) { /* ignore */ }
         }
       } else {

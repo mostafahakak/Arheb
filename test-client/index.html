@@ -1294,17 +1294,26 @@
           </div>
 
           <div class="card">
-            <h3>Initiate Payment</h3>
+            <h3>Initiate Payment + Checkout</h3>
+            <p style="font-size:0.88rem;color:#4a5568;margin:0 0 12px 0;">
+              Sends <code>checkout</code> (same as POST /api/checkout, no <code>paymentType</code>). Server creates the order (<code>Pending payment</code>, <code>Card</code>) then opens Madfoat. Edit JSON — use real <code>product id</code>, your auth <code>phoneNumber</code>, and valid <code>storeId</code> with coordinates if possible.
+            </p>
             <div class="form-group">
-              <label for="payAmount">Amount</label>
-              <input id="payAmount" type="number" value="1.00" min="0.01" step="0.01" />
+              <label for="payCheckoutJson">checkout (JSON)</label>
+              <textarea id="payCheckoutJson" rows="12" style="width:100%;font-family:monospace;font-size:12px;">{
+  "items": [
+    { "id": "1", "name": "Product", "price": 1, "quantity": 1 }
+  ],
+  "phoneNumber": "+962790000000",
+  "totalAmount": 1,
+  "addressLong": 35.0063,
+  "addressLat": 29.532,
+  "storeId": "1",
+  "weightKg": 0
+}</textarea>
             </div>
             <div class="form-group">
-              <label for="payOrderId">Order ID (optional)</label>
-              <input id="payOrderId" type="text" placeholder="e.g. 42" />
-            </div>
-            <div class="form-group">
-              <label for="payCurrency">Currency</label>
+              <label for="payCurrency">Currency (PayTabs)</label>
               <input id="payCurrency" type="text" value="JOD" maxlength="3" />
             </div>
             <div class="form-group">
@@ -1320,7 +1329,7 @@
               <input id="payCustomerEmail" type="email" placeholder="ahmad@example.com" />
             </div>
             <div class="form-group">
-              <label for="payCustomerPhone">Customer Phone (optional)</label>
+              <label for="payCustomerPhone">Customer Phone override (optional)</label>
               <input id="payCustomerPhone" type="tel" placeholder="+962791111111" />
             </div>
             <button id="payInitiateBtn">Initiate Payment</button>
@@ -2998,12 +3007,17 @@
           s.className = 'status error'; s.style.display = 'block';
           return;
         }
+        let checkout;
+        try {
+          checkout = JSON.parse(document.getElementById('payCheckoutJson').value);
+        } catch (e) {
+          showOutput('payInitiateOutput', { error: 'Invalid checkout JSON: ' + e.message });
+          return;
+        }
         const body = {
-          amount: parseFloat(document.getElementById('payAmount').value) || 1,
+          checkout,
           currency: document.getElementById('payCurrency').value.trim() || 'JOD',
         };
-        const orderId = document.getElementById('payOrderId').value.trim();
-        if (orderId) body.orderId = parseInt(orderId) || orderId;
         const desc = document.getElementById('payDescription').value.trim();
         if (desc) body.description = desc;
         const cName = document.getElementById('payCustomerName').value.trim();
@@ -3024,21 +3038,25 @@
           const data = await r.json();
           showOutput('payInitiateOutput', data);
 
+          const pay = data.data && data.data.payment;
           const rc = document.getElementById('payRedirectContainer');
-          if (data.data && data.data.redirectUrl) {
-            document.getElementById('payRedirectLink').href = data.data.redirectUrl;
+          if (pay && pay.redirectUrl) {
+            document.getElementById('payRedirectLink').href = pay.redirectUrl;
             rc.style.display = 'block';
-            s.textContent = 'Redirect URL received — click the link to open the payment page';
+            s.textContent = 'Order created — open payment page (orderId: ' + (data.data.checkout && data.data.checkout.orderId) + ')';
             s.className = 'status success'; s.style.display = 'block';
           } else {
             rc.style.display = 'none';
-            s.textContent = data.data?.status === 'completed' ? 'Payment completed!' : (data.message || 'Done');
+            s.textContent = pay && pay.status === 'completed' ? 'Order + payment completed!' : (data.message || 'Done');
             s.className = 'status ' + (data.success ? 'success' : 'error'); s.style.display = 'block';
           }
 
-          if (data.data?.tranRef) {
-            document.getElementById('payQueryTranRef').value = data.data.tranRef;
-            document.getElementById('payRefundTranRef').value = data.data.tranRef;
+          if (pay && pay.tranRef) {
+            document.getElementById('payQueryTranRef').value = pay.tranRef;
+            document.getElementById('payRefundTranRef').value = pay.tranRef;
+          }
+          if (data.data && data.data.checkout && data.data.checkout.orderId) {
+            document.getElementById('payListOrderId').value = String(data.data.checkout.orderId);
           }
         } catch (e) {
           showOutput('payInitiateOutput', { error: e.message });
