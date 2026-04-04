@@ -57,6 +57,17 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
 
   const findOrderById = db.prepare('SELECT * FROM orders WHERE id = ?');
 
+  function applyCardPaymentSuccessToOrder(orderId, tranRef) {
+    if (orderId == null) return;
+    try {
+      db.prepare(
+        "UPDATE orders SET paymentType = 'Card', status = 'Waiting confirmation', paymentTranRef = COALESCE(?, paymentTranRef) WHERE id = ?",
+      ).run(tranRef || null, orderId);
+    } catch (e) {
+      console.error('applyCardPaymentSuccessToOrder:', e);
+    }
+  }
+
   // --- Initiate payment: creates order (checkout) + Madfoat session; paymentType is always Card ---
   app.post('/api/payment/initiate', authenticateRequest, async (req, res) => {
     const createOrderFromCheckoutBody = attachCheckoutRoutes.createOrderFromCheckoutBody;
@@ -292,11 +303,7 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
         `).run(status, respStatus, respCode, respMessage, token || null, customerEmail || null, JSON.stringify(body), tranRef);
 
         if (status === 'completed' && existing.orderId) {
-          try {
-            db.prepare(
-              "UPDATE orders SET paymentType = 'Card', status = 'Waiting confirmation', paymentTranRef = COALESCE(?, paymentTranRef) WHERE id = ?",
-            ).run(tranRef || null, existing.orderId);
-          } catch (e) { /* ignore */ }
+          applyCardPaymentSuccessToOrder(existing.orderId, tranRef);
         }
       } else {
         db.prepare(`
@@ -320,11 +327,14 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
 
     if (tranRef) {
       const existing = db.prepare('SELECT * FROM payment_transactions WHERE tranRef = ?').get(tranRef);
-      if (existing && existing.status === 'pending_redirect') {
+      if (existing && (existing.status === 'pending_redirect' || existing.status === 'initiated')) {
         const status = respStatus === 'A' ? 'completed' : (respStatus === 'D' ? 'declined' : 'unknown');
         db.prepare(`
           UPDATE payment_transactions SET status = ?, responseStatus = ?, responseMessage = ?, updatedAt = CURRENT_TIMESTAMP WHERE tranRef = ?
         `).run(status, respStatus || null, respMessage || null, tranRef);
+        if (respStatus === 'A' && existing.orderId) {
+          applyCardPaymentSuccessToOrder(existing.orderId, tranRef);
+        }
       }
     }
 
@@ -377,6 +387,9 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
           JSON.stringify(data),
           tranRef,
         );
+        if (status === 'completed' && existing.orderId) {
+          applyCardPaymentSuccessToOrder(existing.orderId, tranRef);
+        }
       }
 
       return res.status(200).json({

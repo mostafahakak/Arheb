@@ -133,13 +133,24 @@ function insertUserNotification(db, phoneNumber, title, body, imageUrl, data) {
  * @param {object} [data]
  * @returns {Promise<string|null>} messageId or null on failure
  */
-async function sendToToken(token, title, body, imageUrl, data) {
+async function sendToToken(token, title, body, imageUrl, data, options = {}) {
   if (!token || typeof token !== 'string' || !token.trim()) return null;
   const m = getMessaging();
   if (!m) return null;
   const payload = buildMessagePayload(title, body, imageUrl, data);
+  const message = { ...payload, token };
+  if (options.highPriority) {
+    message.android = { priority: 'high' };
+    message.apns = {
+      payload: {
+        aps: {
+          sound: 'default',
+        },
+      },
+    };
+  }
   try {
-    const result = await m.send({ ...payload, token });
+    const result = await m.send(message);
     return result;
   } catch (e) {
     console.warn('fcm sendToToken failed:', e.message);
@@ -218,9 +229,21 @@ async function sendToDrivers(db, driverIds, title, body, data = {}) {
  * @returns {Promise<string|null>}
  */
 async function sendToStore(db, storeId, title, body, data = {}) {
-  if (!db || storeId == null || String(storeId).trim() === '') return null;
-  const token = getStoreFcmToken(db, String(storeId));
-  return sendToToken(token, title, body, null, data);
+  if (!db || storeId == null || String(storeId).trim() === '') {
+    console.warn('[fcm] store notify skipped: missing storeId');
+    return null;
+  }
+  const sid = String(storeId).trim();
+  const token = getStoreFcmToken(db, sid);
+  if (!token) {
+    console.warn('[fcm] store notify: no FCM token registered for storeId=%s (POST /api/store/update-fcm)', sid);
+    return null;
+  }
+  if (!getMessaging()) {
+    console.warn('[fcm] store notify: Firebase Admin not configured (FIREBASE_SERVICE_ACCOUNT_JSON)');
+    return null;
+  }
+  return sendToToken(token, title, body, null, data, { highPriority: true });
 }
 
 /**

@@ -221,6 +221,11 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
   const findOrderById = db.prepare('SELECT * FROM orders WHERE id = ?');
   const findOrderItems = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
 
+  /** JSON/catalog store ids may be number or string; DB TEXT may differ — compare as strings. */
+  function sameStoreId(a, b) {
+    return String(a ?? '') === String(b ?? '');
+  }
+
   const auth = authenticateAdmin(JWT_SECRET);
 
   // ——— Login ———
@@ -346,10 +351,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
         .prepare('SELECT * FROM orders WHERE phoneNumber = ? OR userId = ? ORDER BY createdAt DESC, id DESC')
         .all(phone, user.userId || phone);
       const storesList = loadStores();
-      const storeById = Object.fromEntries(storesList.map((s) => [s.id, s]));
+      const storeById = Object.fromEntries(storesList.map((s) => [String(s.id), s]));
       const ordersOut = orders.map((o) => {
         const items = findOrderItems.all(o.id);
-        const store = o.storeId ? storeById[o.storeId] : null;
+        const store = o.storeId != null ? storeById[String(o.storeId)] : null;
         return {
           ...o,
           storeName: store ? (store.nameEn || store.name || store.nameAr) : (o.storeId || '-'),
@@ -1259,7 +1264,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
     const row = db.prepare('SELECT * FROM pending_products WHERE id = ?').get(id);
     if (!row) return res.status(404).json({ success: false, message: 'Pending product not found' });
-    if (req.admin.role === ROLES.STORE_ADMIN && row.storeId !== req.admin.storeId) {
+    if (req.admin.role === ROLES.STORE_ADMIN && !sameStoreId(row.storeId, req.admin.storeId)) {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
     let product = {};
@@ -1471,14 +1476,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const conditions = [];
     const params = [];
     if (req.admin.role === ROLES.STORE_ADMIN) {
-      conditions.push('(storeId = ? OR storeId IS NULL)');
-      params.push(req.admin.storeId);
+      conditions.push('(CAST(storeId AS TEXT) = ? OR storeId IS NULL)');
+      params.push(String(req.admin.storeId));
     } else if (req.admin.role === ROLES.ADMIN || req.admin.role === ROLES.SUPERADMIN) {
       const storeIdsRaw = req.query.storeIds || req.query.storeId;
       if (storeIdsRaw) {
         const ids = (Array.isArray(storeIdsRaw) ? storeIdsRaw : String(storeIdsRaw).split(',')).map((s) => String(s).trim()).filter(Boolean);
         if (ids.length > 0) {
-          conditions.push('(storeId IN (' + ids.map(() => '?').join(',') + '))');
+          conditions.push('(CAST(storeId AS TEXT) IN (' + ids.map(() => '?').join(',') + '))');
           params.push(...ids);
         }
       }
@@ -1521,14 +1526,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const params = [];
 
     if (req.admin.role === ROLES.STORE_ADMIN) {
-      conditions.push('(storeId = ? OR storeId IS NULL)');
-      params.push(req.admin.storeId);
+      conditions.push('(CAST(storeId AS TEXT) = ? OR storeId IS NULL)');
+      params.push(String(req.admin.storeId));
     } else if (req.admin.role === ROLES.ADMIN || req.admin.role === ROLES.SUPERADMIN) {
       const storeIdsRaw = storeIds || storeId;
       if (storeIdsRaw) {
         const ids = (Array.isArray(storeIdsRaw) ? storeIdsRaw : String(storeIdsRaw).split(',')).map((s) => String(s).trim()).filter(Boolean);
         if (ids.length > 0) {
-          conditions.push('(storeId IN (' + ids.map(() => '?').join(',') + '))');
+          conditions.push('(CAST(storeId AS TEXT) IN (' + ids.map(() => '?').join(',') + '))');
           params.push(...ids);
         }
       }
@@ -1583,17 +1588,17 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       const matchingStoreIds = new Set(
         stores
           .filter((s) => (s.nameEn || s.name || '').toLowerCase().includes(storeNameLower) || (s.nameAr || '').toLowerCase().includes(storeNameLower))
-          .map((s) => s.id)
+          .map((s) => String(s.id))
       );
-      orders = orders.filter((o) => matchingStoreIds.has(o.storeId));
+      orders = orders.filter((o) => o.storeId != null && matchingStoreIds.has(String(o.storeId)));
     }
 
     const storesList = loadStores();
-    const storeById = Object.fromEntries(storesList.map((s) => [s.id, s]));
+    const storeById = Object.fromEntries(storesList.map((s) => [String(s.id), s]));
 
     return orders.map((order) => {
       const items = findOrderItems.all(order.id);
-      const store = order.storeId ? storeById[order.storeId] : null;
+      const store = order.storeId != null ? storeById[String(order.storeId)] : null;
       return {
         ...order,
         storeName: store ? (store.nameEn || store.name || store.nameAr) : (order.storeId || '-'),
@@ -1647,12 +1652,12 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && order.storeId !== req.admin.storeId) {
+    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && !sameStoreId(order.storeId, req.admin.storeId)) {
       return res.status(403).json({ success: false, message: 'Access denied to this order' });
     }
     const items = findOrderItems.all(orderId);
     const storesList = loadStores();
-    const store = order.storeId ? storesList.find((s) => s.id === order.storeId) : null;
+    const store = order.storeId ? storesList.find((s) => String(s.id) === String(order.storeId)) : null;
     const storeName = store ? (store.nameEn || store.name || store.nameAr) : (order.storeId || '-');
     return res.status(200).json({
       success: true,
@@ -1671,7 +1676,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && order.storeId !== req.admin.storeId) {
+    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && !sameStoreId(order.storeId, req.admin.storeId)) {
       return res.status(403).json({ success: false, message: 'Access denied to this order' });
     }
     const { status } = req.body || {};
@@ -1787,12 +1792,20 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (req.admin.role === ROLES.STORE_ADMIN && (order.storeId == null || String(order.storeId) !== String(req.admin.storeId))) {
+    if (req.admin.role === ROLES.STORE_ADMIN && (order.storeId == null || !sameStoreId(order.storeId, req.admin.storeId))) {
       return res.status(403).json({ success: false, message: 'Access denied to this order' });
     }
     const statusLower = (order.status || '').toLowerCase();
-    if (!statusLower.includes('waiting') && !statusLower.includes('confirmation')) {
-      return res.status(400).json({ success: false, message: 'Order can only be rejected when status is Waiting confirmation or Waiting cliq confirmation' });
+    if (
+      !statusLower.includes('waiting') &&
+      !statusLower.includes('confirmation') &&
+      !statusLower.includes('pending payment')
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          'Order can only be rejected when status is Pending payment, Waiting confirmation, or Waiting cliq confirmation',
+      });
     }
     db.prepare('UPDATE orders SET status = ? WHERE id = ?').run('Cancelled', orderId);
     const updated = findOrderById.get(orderId);
@@ -1814,7 +1827,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && order.storeId !== req.admin.storeId) {
+    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && !sameStoreId(order.storeId, req.admin.storeId)) {
       return res.status(403).json({ success: false, message: 'Access denied to this order' });
     }
     let drivers = [];
@@ -1842,7 +1855,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && order.storeId !== req.admin.storeId) {
+    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && !sameStoreId(order.storeId, req.admin.storeId)) {
       return res.status(403).json({ success: false, message: 'Access denied to this order' });
     }
     let drivers = [];
@@ -1883,7 +1896,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && order.storeId !== req.admin.storeId) {
+    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && !sameStoreId(order.storeId, req.admin.storeId)) {
       return res.status(403).json({ success: false, message: 'Access denied to this order' });
     }
     const statusLower = (order.status || '').toLowerCase();
@@ -1932,7 +1945,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && order.storeId !== req.admin.storeId) {
+    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && !sameStoreId(order.storeId, req.admin.storeId)) {
       return res.status(403).json({ success: false, message: 'Access denied to this order' });
     }
     const statusLower = (order.status || '').toLowerCase();
@@ -2002,7 +2015,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && order.storeId !== req.admin.storeId) {
+    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && !sameStoreId(order.storeId, req.admin.storeId)) {
       return res.status(403).json({ success: false, message: 'Access denied to this order' });
     }
     let getOrderTrackingState;
@@ -2161,7 +2174,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
   app.get('/api/admin/dashboard/sales', auth, (req, res) => {
     let orders;
     if (req.admin.role === ROLES.STORE_ADMIN) {
-      orders = db.prepare('SELECT * FROM orders WHERE storeId = ?').all(req.admin.storeId);
+      orders = db.prepare('SELECT * FROM orders WHERE CAST(storeId AS TEXT) = ?').all(String(req.admin.storeId));
     } else {
       orders = db.prepare('SELECT * FROM orders').all();
     }

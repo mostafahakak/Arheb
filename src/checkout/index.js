@@ -9,6 +9,7 @@ const { quoteFromPickupDropoff } = require('../arhebBox/pricing');
 const { mapOrderItemsRows } = require('../utils/orderItemApi');
 const { validateSelectedAddOnsAgainstProduct } = require('../utils/productAddOns');
 const { sendToStore } = require('../fcm');
+const { canonicalStoreId } = require('../storeFcm');
 
 module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   const { getJsonPath } = require('../config/jsonPaths');
@@ -441,6 +442,12 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
     let finalStoreId = storeId;
     if (!finalStoreId && itemsCopy.length > 0 && itemsCopy[0].id) {
       finalStoreId = getStoreIdFromProduct(itemsCopy[0].id);
+    }
+
+    if (finalStoreId != null && String(finalStoreId).trim() !== '') {
+      finalStoreId = canonicalStoreId(finalStoreId) || String(finalStoreId).trim();
+    } else {
+      finalStoreId = null;
     }
 
     if (fcmToken != null && typeof fcmToken === 'string' && phoneNumber) {

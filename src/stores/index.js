@@ -297,7 +297,10 @@ module.exports = function attachStoresRoutes(app, db) {
     try {
       const body = req.body || {};
       const storeId = body.storeId != null ? String(body.storeId).trim() : '';
-      const fcmToken = body.fcmToken != null && typeof body.fcmToken === 'string' ? body.fcmToken : '';
+      const fcmToken =
+        body.fcmToken != null && String(body.fcmToken).trim() !== ''
+          ? String(body.fcmToken).trim()
+          : '';
       if (!storeId) {
         return res.status(400).json({
           success: false,
