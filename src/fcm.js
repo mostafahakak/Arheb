@@ -5,6 +5,8 @@
  * Requires: FIREBASE_SERVICE_ACCOUNT_JSON (stringified JSON) or GOOGLE_APPLICATION_CREDENTIALS path.
  */
 
+const { getStoreFcmToken } = require('./storeFcm');
+
 let admin = null;
 let messaging = null;
 
@@ -207,6 +209,21 @@ async function sendToDrivers(db, driverIds, title, body, data = {}) {
 }
 
 /**
+ * Send push to a store’s registered device (token in store_fcm_tokens).
+ * @param {object} db
+ * @param {string|number} storeId
+ * @param {string} title
+ * @param {string} body
+ * @param {object} [data]
+ * @returns {Promise<string|null>}
+ */
+async function sendToStore(db, storeId, title, body, data = {}) {
+  if (!db || storeId == null || String(storeId).trim() === '') return null;
+  const token = getStoreFcmToken(db, String(storeId));
+  return sendToToken(token, title, body, null, data);
+}
+
+/**
  * Send to user by phoneNumber (looks up fcmToken from users table).
  */
 async function sendToUserByPhone(db, phoneNumber, title, body, imageUrl, data = {}) {
@@ -237,6 +254,7 @@ module.exports = {
   sendToTokens,
   sendToDriver,
   sendToDrivers,
+  sendToStore,
   sendToUserByPhone,
   sendToAllUsers,
   insertUserNotification,

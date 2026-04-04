@@ -42,6 +42,7 @@ const {
   ensureOrderDriverShareColumns,
   ensureDriverRatingsTable,
 } = require('../utils/driverCommission');
+const { getStoreFcmToken } = require('../storeFcm');
 
 const storesResponsePath = getJsonPath('stores_listing_response.json');
 const productsResponsePath = getJsonPath('products_listing_response.json');
@@ -554,7 +555,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
               return rest;
             })()
           : { ...s };
-      return { ...enrichStoreOpeningHours(base), dashboardStatus };
+      const fcmToken = getStoreFcmToken(db, s.id) ?? null;
+      return { ...enrichStoreOpeningHours(base), dashboardStatus, fcmToken };
     };
 
     return res.status(200).json({
@@ -776,6 +778,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     let out = req.admin.role === ROLES.SUPERADMIN ? { ...store } : (() => { const { arhebFee, ...rest } = store; return rest; })();
     out.storeCategories = Array.isArray(out.storeCategories) ? out.storeCategories : [];
     out = enrichStoreOpeningHours(out);
+    out.fcmToken = getStoreFcmToken(db, store.id) ?? null;
     return res.status(200).json({ success: true, data: { store: out } });
   });
 
@@ -860,9 +863,11 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       console.error('Failed to save store update:', e);
       return res.status(500).json({ success: false, message: 'Failed to save store changes' });
     }
+    const patched = enrichStoreOpeningHours({ ...stores[idx] });
+    patched.fcmToken = getStoreFcmToken(db, stores[idx].id) ?? null;
     return res.status(200).json({
       success: true,
-      data: { store: enrichStoreOpeningHours({ ...stores[idx] }) },
+      data: { store: patched },
     });
   });
 
@@ -1488,9 +1493,30 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     return res.status(200).json({ success: true, data: { active, delivered, cancelled, complete: delivered + cancelled } });
   });
 
-  // ——— Orders (sorted newest first; filter by date range, status, store, name, orderType, paymentType) ———
+  /** Only SuperAdmin may move an order to an earlier step in the main flow (or reopen Delivered/Cancelled). */
+  function isBackwardOrderStatusTransition(currentStatus, nextStatus) {
+    const cur = String(currentStatus || '').trim().toLowerCase();
+    const next = String(nextStatus || '').trim().toLowerCase();
+    if (next === 'cancelled') return false;
+    if (cur === 'cancelled' && next !== 'cancelled') return true;
+    if (cur === 'delivered' && next !== 'delivered') return true;
+    const rank = {
+      'waiting confirmation': 0,
+      'waiting cliq confirmation': 1,
+      'payment rejected': 2,
+      preparing: 3,
+      'on the way': 4,
+      delivered: 5,
+    };
+    const cr = rank[cur];
+    const nr = rank[next];
+    if (cr === undefined || nr === undefined) return false;
+    return nr < cr;
+  }
+
+  // ——— Orders (sorted newest first; filter by date range, status, store, name, orderType, paymentType, driver) ———
   function listAdminOrdersWithDetails(req) {
-    const { dateFrom, dateTo, status, storeId, storeIds, storeName, name, orderType, paymentType } = req.query;
+    const { dateFrom, dateTo, status, storeId, storeIds, storeName, name, orderType, paymentType, driverId, unassigned } = req.query;
     const conditions = [];
     const params = [];
 
@@ -1531,6 +1557,15 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (paymentType && String(paymentType).trim()) {
       conditions.push('paymentType = ?');
       params.push(String(paymentType).trim());
+    }
+    if (unassigned === 'true' || unassigned === '1') {
+      conditions.push('driverId IS NULL');
+    } else if (driverId !== undefined && driverId !== null && String(driverId).trim() !== '') {
+      const did = parseInt(String(driverId).trim(), 10);
+      if (!isNaN(did)) {
+        conditions.push('driverId = ?');
+        params.push(did);
+      }
     }
     if (name && String(name).trim()) {
       const term = '%' + String(name).trim() + '%';
@@ -1644,6 +1679,12 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       return res.status(400).json({ success: false, message: 'status is required' });
     }
     const nextStatus = status.trim();
+    if (req.admin.role !== ROLES.SUPERADMIN && isBackwardOrderStatusTransition(order.status, nextStatus)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Only SuperAdmin can move an order to an earlier status or reopen a completed order',
+      });
+    }
     if (nextStatus.toLowerCase() === 'on the way') {
       db.prepare('UPDATE orders SET status = ?, nearArrivalNotified = 0 WHERE id = ?').run(nextStatus, orderId);
     } else {

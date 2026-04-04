@@ -3,6 +3,7 @@ const path = require('path');
 const { getJsonPath } = require('../config/jsonPaths');
 const { isStoreVisibleToCustomers, getAdminStoreDashboardBucket } = require('../utils/storeVisibility');
 const { enrichOpeningHoursObject } = require('../utils/openingHoursJordan');
+const { upsertStoreFcmToken } = require('../storeFcm');
 
 const storesResponsePath = getJsonPath('stores_listing_response.json');
 
@@ -286,6 +287,45 @@ module.exports = function attachStoresRoutes(app, db) {
       },
       timestamp: new Date().toISOString()
     });
+  });
+
+  /**
+   * Register or update the FCM token for a store device (kitchen / POS app).
+   * Token is stored in SQLite (store_fcm_tokens); public store listings never expose it.
+   */
+  app.post('/api/store/update-fcm', (req, res) => {
+    try {
+      const body = req.body || {};
+      const storeId = body.storeId != null ? String(body.storeId).trim() : '';
+      const fcmToken = body.fcmToken != null && typeof body.fcmToken === 'string' ? body.fcmToken : '';
+      if (!storeId) {
+        return res.status(400).json({
+          success: false,
+          message: 'storeId is required',
+        });
+      }
+      const storesResponse = loadStoresResponse();
+      const storesList = storesResponse?.data?.stores ?? [];
+      const exists = storesList.some((s) => String(s.id) === String(storeId));
+      if (!exists) {
+        return res.status(404).json({
+          success: false,
+          message: 'Store not found',
+        });
+      }
+      upsertStoreFcmToken(db, storeId, fcmToken);
+      return res.status(200).json({
+        success: true,
+        message: 'FCM token updated',
+        data: { storeId },
+      });
+    } catch (e) {
+      console.error('update-fcm error:', e);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to update FCM token',
+      });
+    }
   });
 
   app.get('/api/stores/:id/products', (req, res) => {

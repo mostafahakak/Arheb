@@ -8,6 +8,7 @@ const {
 const { quoteFromPickupDropoff } = require('../arhebBox/pricing');
 const { mapOrderItemsRows } = require('../utils/orderItemApi');
 const { validateSelectedAddOnsAgainstProduct } = require('../utils/productAddOns');
+const { sendToStore } = require('../fcm');
 
 module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   const { getJsonPath } = require('../config/jsonPaths');
@@ -517,6 +518,19 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
     } catch (e) {
       console.error('createOrderFromCheckoutBody error:', e);
       return { ok: false, statusCode: 500, message: 'Internal server error' };
+    }
+
+    if (finalStoreId != null && String(finalStoreId).trim() !== '') {
+      const sid = String(finalStoreId).trim();
+      Promise.resolve()
+        .then(() =>
+          sendToStore(db, sid, 'New order', `Order #${orderId}`, {
+            orderId: String(orderId),
+            storeId: sid,
+            type: 'store_new_order',
+          }),
+        )
+        .catch(() => {});
     }
 
     const order = findOrderById.get(orderId);

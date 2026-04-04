@@ -125,6 +125,7 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
 - **Firebase Cloud Messaging (FCM)** is used to send push notifications to drivers (e.g. new order assigned) and to app users (order status updates, broadcast messages). Set **`FIREBASE_SERVICE_ACCOUNT_JSON`** in `.env` to a **stringified JSON** of your Firebase service account key (Project settings → Service accounts → Generate new private key). If unset, the backend uses `GOOGLE_APPLICATION_CREDENTIALS` (path to key file). Without valid credentials, FCM send is skipped (no crash).
 - **Driver presence**: Drivers connect to the **Socket.IO namespace `/driver-presence`** with their driver JWT and send `location` events (`latitude`, `longitude`). The server keeps a list of active drivers and their last location. Admin can request **nearby drivers** for an order (by distance to store) and **auto-assign** the nearest active driver; the driver is notified via FCM.
 - **User FCM**: Users can set `fcmToken` via **PUT /api/profile** or send it with **POST /api/checkout**. Order status changes (and broadcast notifications) are sent to the user’s token. **GET /api/profile/notifications** lists notification history for that user only (Bearer user JWT).
+- **Store FCM**: Store devices (kitchen / POS) register a token with **POST /api/store/update-fcm** (`storeId`, `fcmToken`). Tokens are stored in the database and returned on **GET / PATCH** admin store details as `fcmToken`. When a customer order is created (**POST /api/checkout** or payment flow that creates an order), the backend sends a push to that store’s token if configured (`type: store_new_order` in the data payload).
 - **Broadcast**: Admin/SuperAdmin can send a notification to all registered users via **POST /api/admin/notifications/broadcast** (`title`, `body`, optional `imageUrl`).
 
 ---
@@ -144,6 +145,7 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
   - [Get Top Rated Stores](#get-top-rated-stores)
   - [Get Premium Stores](#get-premium-stores)
   - [Get Stores by Category](#get-stores-by-category)
+  - [Update Store FCM Token](#update-store-fcm-token)
   - [Get Store Products](#get-store-products)
   - [Get Store Products by Category](#get-store-products-by-category)
 - [Categories](#categories)
@@ -694,6 +696,43 @@ Retrieves stores that match a category name (store-level category).
   "timestamp": "2024-01-15T10:30:00Z"
 }
 ```
+
+---
+
+### Update Store FCM Token
+
+Registers or updates the Firebase Cloud Messaging token for a **store** device (e.g. kitchen tablet). The token is saved in the server database and used to notify the store when a **new order** is placed for that `storeId`. Public store listing endpoints do **not** expose this token.
+
+**Endpoint:** `POST /api/store/update-fcm`
+
+**Authentication:** Not required (the `storeId` must match an existing store in the catalog).
+
+**Request Body:**
+```json
+{
+  "storeId": "1235",
+  "fcmToken": "<device FCM registration token>"
+}
+```
+
+- **`storeId`** (required) — Store id as in the stores JSON catalog.
+- **`fcmToken`** (optional) — FCM token string. Send an empty string to clear the stored token for that store.
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "message": "FCM token updated",
+  "data": { "storeId": "1235" }
+}
+```
+
+**Error Responses:**
+- **400** — `storeId` missing.
+- **404** — Store id not found in the catalog.
+- **500** — Server failed to persist the token.
+
+**Admin visibility:** **GET /api/admin/stores** (list), **GET /api/admin/stores/:id**, and **PATCH /api/admin/stores/:id** responses include **`fcmToken`** (or `null` if unset) so the dashboard can show whether a device is registered.
 
 ---
 

@@ -1,8 +1,9 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# Use `runtime` (not `env`) for Node. Node version follows package.json "engines" / .nvmrc.
 services:
   - type: web
     name: arheb-backend
-    env: node
+    runtime: node
     plan: free
     buildCommand: npm install
     startCommand: npm start
-    nodeVersion: 20

@@ -199,6 +199,9 @@ try {
   /* ignore */
 }
 
+const { ensureStoreFcmTable } = require('./storeFcm');
+ensureStoreFcmTable(db);
+
 const upsertUser = db.prepare(`
   INSERT INTO users (phoneNumber, userId, firebaseUid, token, deleted, deletedAt)
   VALUES (@phoneNumber, @userId, @firebaseUid, @token, @deleted, @deletedAt)
