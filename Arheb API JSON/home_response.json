@@ -8,6 +8,8 @@
         "image": "https://example.com/banners/banner1.png",
         "title": "Banner 1",
         "link": "https://example.com/promotion1",
+        "linkTarget": "category",
+        "linkTargetId": "1",
         "order": 1
       },
       {
@@ -237,6 +239,8 @@
         "descriptionEn": "Get 20% off on all items",
         "link": "https://example.com/offers/1",
         "validUntil": "2024-12-31T23:59:59Z",
+        "linkTarget": "product",
+        "linkTargetId": "1",
         "order": 1
       },
       {

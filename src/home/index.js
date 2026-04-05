@@ -6,6 +6,7 @@ const {
   isStoreListedForCustomerBrowse,
   getAdminStoreDashboardBucket,
 } = require('../utils/storeVisibility');
+const { normalizeHomeContentLinkArray } = require('../utils/homeContentLinks');
 
 function loadStoresListForVisibility() {
   try {
@@ -127,15 +128,37 @@ const seedHomeTables = (db, homeResponse) => {
       displayOrder INTEGER
     );
   `);
+  try {
+    db.exec('ALTER TABLE home_banners ADD COLUMN linkTarget TEXT');
+  } catch (e) {
+    /* column exists */
+  }
+  try {
+    db.exec('ALTER TABLE home_banners ADD COLUMN linkTargetId TEXT');
+  } catch (e) {
+    /* column exists */
+  }
+  try {
+    db.exec('ALTER TABLE home_offers ADD COLUMN linkTarget TEXT');
+  } catch (e) {
+    /* column exists */
+  }
+  try {
+    db.exec('ALTER TABLE home_offers ADD COLUMN linkTargetId TEXT');
+  } catch (e) {
+    /* column exists */
+  }
 
   const insertBanner = db.prepare(`
-    INSERT INTO home_banners (id, image, title, link, displayOrder)
-    VALUES (@id, @image, @title, @link, @displayOrder)
+    INSERT INTO home_banners (id, image, title, link, displayOrder, linkTarget, linkTargetId)
+    VALUES (@id, @image, @title, @link, @displayOrder, @linkTarget, @linkTargetId)
     ON CONFLICT(id) DO UPDATE SET
       image = excluded.image,
       title = excluded.title,
       link = excluded.link,
-      displayOrder = excluded.displayOrder
+      displayOrder = excluded.displayOrder,
+      linkTarget = excluded.linkTarget,
+      linkTargetId = excluded.linkTargetId
   `);
 
   const insertCategory = db.prepare(`
@@ -204,7 +227,9 @@ const seedHomeTables = (db, homeResponse) => {
       descriptionEn,
       link,
       validUntil,
-      displayOrder
+      displayOrder,
+      linkTarget,
+      linkTargetId
     ) VALUES (
       @id,
       @image,
@@ -216,7 +241,9 @@ const seedHomeTables = (db, homeResponse) => {
       @descriptionEn,
       @link,
       @validUntil,
-      @displayOrder
+      @displayOrder,
+      @linkTarget,
+      @linkTargetId
     )
     ON CONFLICT(id) DO UPDATE SET
       image = excluded.image,
@@ -228,7 +255,9 @@ const seedHomeTables = (db, homeResponse) => {
       descriptionEn = excluded.descriptionEn,
       link = excluded.link,
       validUntil = excluded.validUntil,
-      displayOrder = excluded.displayOrder
+      displayOrder = excluded.displayOrder,
+      linkTarget = excluded.linkTarget,
+      linkTargetId = excluded.linkTargetId
   `);
 
   const insertData = db.transaction(() => {
@@ -241,6 +270,8 @@ const seedHomeTables = (db, homeResponse) => {
         title: banner.title ?? null,
         link: banner.link ?? null,
         displayOrder: banner.order ?? bannerOrder,
+        linkTarget: banner.linkTarget === 'product' || banner.linkTarget === 'category' ? banner.linkTarget : null,
+        linkTargetId: banner.linkTargetId != null && String(banner.linkTargetId).trim() !== '' ? String(banner.linkTargetId).trim() : null,
       });
     }
 
@@ -290,6 +321,8 @@ const seedHomeTables = (db, homeResponse) => {
         link: offer.link ?? null,
         validUntil: offer.validUntil ?? null,
         displayOrder: offer.order ?? offerOrder,
+        linkTarget: offer.linkTarget === 'product' || offer.linkTarget === 'category' ? offer.linkTarget : null,
+        linkTargetId: offer.linkTargetId != null && String(offer.linkTargetId).trim() !== '' ? String(offer.linkTargetId).trim() : null,
       });
     }
   });
@@ -322,6 +355,16 @@ module.exports = function attachHomeRoutes(app, db, JWT_SECRET) {
     const response = homeResponse
       ? { ...homeResponse }
       : { ...EMPTY_HOME_PAYLOAD };
+
+    if (response.data) {
+      const d = response.data;
+      if (Array.isArray(d.banners)) {
+        d.banners = normalizeHomeContentLinkArray(d.banners);
+      }
+      if (Array.isArray(d.offers)) {
+        d.offers = normalizeHomeContentLinkArray(d.offers);
+      }
+    }
 
     // Use categories from categories_response.json (single source of truth)
     const categories = loadCategoriesResponse();

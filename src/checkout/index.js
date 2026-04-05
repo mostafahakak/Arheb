@@ -5,6 +5,7 @@ const { quoteFromPickupDropoff } = require('../arhebBox/pricing');
 const { storeOrderDeliveryFeeJod, STORE_MAX_JOD } = require('../utils/deliveryFees');
 const { mapOrderItemsRows } = require('../utils/orderItemApi');
 const { enrichWithJordanTime } = require('../utils/jordanTime');
+const { promoAppliesToStore } = require('../utils/promoCode');
 const { validateSelectedAddOnsAgainstProduct } = require('../utils/productAddOns');
 const { sendToStore } = require('../fcm');
 const { canonicalStoreId } = require('../storeFcm');
@@ -118,6 +119,11 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       createdAt TEXT DEFAULT CURRENT_TIMESTAMP
     );
   `);
+  try {
+    db.exec(`ALTER TABLE promo_codes ADD COLUMN storeId TEXT`);
+  } catch (e) {
+    /* exists */
+  }
 
   // Create orders and order_items tables
   db.exec(`
@@ -379,6 +385,16 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       item._normalizedAddOns = v.normalized;
     }
 
+    let finalStoreId = storeId;
+    if (!finalStoreId && itemsCopy.length > 0 && itemsCopy[0].id) {
+      finalStoreId = getStoreIdFromProduct(itemsCopy[0].id);
+    }
+    if (finalStoreId != null && String(finalStoreId).trim() !== '') {
+      finalStoreId = canonicalStoreId(finalStoreId) || String(finalStoreId).trim();
+    } else {
+      finalStoreId = null;
+    }
+
     if (!phoneNumber) {
       return { ok: false, statusCode: 400, message: 'phoneNumber is required' };
     }
@@ -422,6 +438,9 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       if (!promoCodeRecord) {
         return { ok: false, statusCode: 400, message: 'invalid promoCode' };
       }
+      if (!promoAppliesToStore(promoCodeRecord, finalStoreId)) {
+        return { ok: false, statusCode: 400, message: 'promo code not available for this store' };
+      }
       finalDiscount = promoCodeRecord.value;
       finalPromoCode = promoCodeRecord.name;
     } else {
@@ -435,17 +454,6 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
 
     if (typeof totalAmount !== 'number' || isNaN(totalAmount)) {
       return { ok: false, statusCode: 400, message: 'totalAmount must be a valid number' };
-    }
-
-    let finalStoreId = storeId;
-    if (!finalStoreId && itemsCopy.length > 0 && itemsCopy[0].id) {
-      finalStoreId = getStoreIdFromProduct(itemsCopy[0].id);
-    }
-
-    if (finalStoreId != null && String(finalStoreId).trim() !== '') {
-      finalStoreId = canonicalStoreId(finalStoreId) || String(finalStoreId).trim();
-    } else {
-      finalStoreId = null;
     }
 
     if (fcmToken != null && typeof fcmToken === 'string' && phoneNumber) {
@@ -989,10 +997,14 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
     }
   });
 
-  // Validate/Check promo code
+  // Validate/Check promo code (optional query: storeId — must match when code is store-specific)
   app.get('/api/promo-codes/:code', (req, res) => {
     try {
       const code = req.params.code;
+      const storeIdQ =
+        req.query.storeId != null && String(req.query.storeId).trim() !== ''
+          ? String(req.query.storeId).trim()
+          : null;
 
       if (!code || code.trim() === '') {
         return res.status(400).json({
@@ -1006,17 +1018,31 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       if (!promoCodeRecord) {
         return res.status(404).json({
           success: false,
-          message: 'promCode not available'
+          message: 'promo code not available'
         });
+      }
+
+      if (storeIdQ != null && !promoAppliesToStore(promoCodeRecord, storeIdQ)) {
+        return res.status(404).json({
+          success: false,
+          message: 'promo code not available for this store'
+        });
+      }
+
+      const data = {
+        value: promoCodeRecord.value,
+        name: promoCodeRecord.name,
+        appliesToAllStores:
+          promoCodeRecord.storeId == null || String(promoCodeRecord.storeId).trim() === '',
+      };
+      if (!data.appliesToAllStores) {
+        data.storeId = String(promoCodeRecord.storeId).trim();
       }
 
       return res.status(200).json({
         success: true,
         message: `promocode Value is ${promoCodeRecord.value}`,
-        data: {
-          value: promoCodeRecord.value,
-          name: promoCodeRecord.name
-        },
+        data,
         timestamp: new Date().toISOString()
       });
     } catch (error) {

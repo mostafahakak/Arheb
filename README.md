@@ -183,6 +183,7 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
   - [Get Tracking Status](#get-tracking-status)
 - [Promo Codes](#promo-codes)
   - [Validate Promo Code](#validate-promo-code)
+  - [Admin promo codes](#admin-promo-codes)
 - [Popup](#popup)
   - [Get Popup](#get-popup)
 - [Arheb Box](#arheb-box)
@@ -1067,7 +1068,7 @@ console.log(data.data.products); // Products matching "pizza"
 
 ## Home
 
-Retrieves home page data including banners, categories (from categories API), popular stores, and offers. **Banners** and **`offers`** are editable by SuperAdmin/Admin via [Admin Home Banners & Offers](#admin-home-banners--offers) (`GET/PATCH /api/admin/home/banners` and `GET/PATCH /api/admin/home/offers`). When the user is authenticated, the response may include **activeOrder** (orderID and status) if they have an order in an active status. The response also includes **`discountedProducts`**: a list of products that currently have a discount (same shape as in [Get Products](#get-products-paginated)).
+Retrieves home page data including banners, categories (from categories API), popular stores, and offers. **Banners** and **`offers`** are editable by SuperAdmin/Admin via [Admin Home Banners & Offers](#admin-home-banners--offers) (`GET/PATCH /api/admin/home/banners` and `GET/PATCH /api/admin/home/offers`). Each banner/offer may include optional **`linkTarget`** (`"product"` \| `"category"`) and **`linkTargetId`** for in-app navigation. When the user is authenticated, the response may include **activeOrder** (orderID and status) if they have an order in an active status. The response also includes **`discountedProducts`**: a list of products that currently have a discount (same shape as in [Get Products](#get-products-paginated)).
 
 **Endpoint:** `GET /api/home`
 
@@ -1412,8 +1413,8 @@ Creates a new order with items, customer information, and delivery details.
 
 **Note:** 
 - Status is automatically set to "Waiting confirmation"
-- If `promoCode` is provided and valid, the discount will be automatically applied from the promo code value
-- If `promoCode` is invalid, order creation will fail with "invalid promoCode"
+- If `promoCode` is provided and valid, the discount will be automatically applied from the promo code value. **Store-specific** promo codes (see [Admin promo codes](#admin-promo-codes)) only apply when the order’s store (from `storeId` or inferred from cart items) matches that promo’s store; otherwise the request fails with **`promo code not available for this store`**.
+- If `promoCode` is invalid, order creation will fail with **`invalid promoCode`**
 
 **Success Response (201):**
 ```json
@@ -2399,6 +2400,8 @@ socket.on('location_update', (data) => {
 
 ## Promo Codes
 
+Promo codes are stored in the database. Each code has a **discount value** (JOD) and optionally a **`storeId`**: if **`storeId`** is set, the code applies **only** to that store; if **`storeId`** is null/omitted, the code applies to **all stores**. Admins configure this via [Admin promo codes](#admin-promo-codes).
+
 ### Validate Promo Code
 
 Validates a promo code and returns its discount value.
@@ -2410,6 +2413,9 @@ Validates a promo code and returns its discount value.
 **Path Parameters:**
 - `code` - Promo code name
 
+**Query Parameters (optional):**
+- **`storeId`** - If provided, the code must be either **all-stores** (`storeId` null on the promo row) or **for this exact store**. If the code exists but is restricted to another store, the API returns **404** with message **`promo code not available for this store`**.
+
 **Success Response (200):**
 ```json
 {
@@ -2417,29 +2423,57 @@ Validates a promo code and returns its discount value.
   "message": "promocode Value is 10.0",
   "data": {
     "value": 10.0,
-    "name": "SAVE10"
+    "name": "SAVE10",
+    "appliesToAllStores": true
   },
   "timestamp": "2024-01-15T10:30:00Z"
 }
 ```
 
+For a **store-specific** promo (when `appliesToAllStores` is `false`), **`data.storeId`** is the store id the code applies to.
+
 **Not Found Response (404):**
 ```json
 {
   "success": false,
-  "message": "promCode not available"
+  "message": "promo code not available"
 }
 ```
 
-**Example:**
+or, when `storeId` was sent and does not match:
+
+```json
+{
+  "success": false,
+  "message": "promo code not available for this store"
+}
+```
+
+**Examples:**
 ```javascript
-const response = await fetch('https://arheb-backend.onrender.com/api/promo-codes/SAVE10');
-const data = await response.json();
+// Any store (code must exist)
+const r1 = await fetch('https://arheb-backend.onrender.com/api/promo-codes/SAVE10');
 
+// Validate for checkout at store "1"
+const r2 = await fetch('https://arheb-backend.onrender.com/api/promo-codes/SAVE10?storeId=1');
+const data = await r2.json();
 if (data.success) {
-  console.log(`Promo code value: ${data.data.value}`);
+  console.log(`Promo value: ${data.data.value}, all stores: ${data.data.appliesToAllStores}`);
 }
 ```
+
+### Admin promo codes
+
+**Access:** SuperAdmin and Admin only.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/admin/promo-codes` | List all promo codes (`id`, `name`, `value`, **`storeId`** (null = all stores), `createdAt`). |
+| POST | `/api/admin/promo-codes` | Body: **`name`**, **`value`** (number ≥ 0), optional **`storeId`** (string). Omit **`storeId`** or send null for **all stores**. |
+| PATCH | `/api/admin/promo-codes/:id` | Body: optional **`name`**, **`value`**, **`storeId`**. Set **`storeId`** to `null` to make the code apply to all stores. |
+| DELETE | `/api/admin/promo-codes/:id` | Delete promo code. |
+
+The dashboard **Promo codes** page lets you choose **all stores** or **one store** when creating or editing a code.
 
 ---
 
@@ -2881,12 +2915,21 @@ Same backing row as public contact info, plus **default driver delivery percent*
 
 **Access:** SuperAdmin and Admin only. Persists to the same JSON backing **`GET /api/home`** (`data.banners`, `data.offers`).
 
+Each **banner** and **offer** object may include optional app deep-link fields (for mobile: open product or category by id):
+
+| Field | Type | Description |
+|--------|------|-------------|
+| `linkTarget` | `"product"` \| `"category"` | Optional. When set, the client can navigate to that entity type. Invalid values are stripped. |
+| `linkTargetId` | string | Optional. Product id or category id (same ids as in products / categories APIs). Omitted if empty. |
+
+These fields are **returned** on **`GET /api/home`** inside each item in **`data.banners`** and **`data.offers`**.
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/admin/home/banners` | Returns `{ banners }`. |
-| PATCH | `/api/admin/home/banners` | Body: `{ "banners": [ ... ] }` — replaces home banners. |
+| PATCH | `/api/admin/home/banners` | Body: `{ "banners": [ ... ] }` — replaces home banners (include optional `linkTarget` / `linkTargetId` per item). |
 | GET | `/api/admin/home/offers` | Returns `{ offers }` (top offers strip on home). |
-| PATCH | `/api/admin/home/offers` | Body: `{ "offers": [ ... ] }` — replaces home offers. |
+| PATCH | `/api/admin/home/offers` | Body: `{ "offers": [ ... ] }` — replaces home offers (include optional `linkTarget` / `linkTargetId` per item). |
 
 ---
 

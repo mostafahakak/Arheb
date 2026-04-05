@@ -49,6 +49,7 @@ const {
 } = require('../utils/driverCommission');
 const { getStoreFcmToken } = require('../storeFcm');
 const { enrichWithJordanTime } = require('../utils/jordanTime');
+const { normalizeHomeContentLinkArray } = require('../utils/homeContentLinks');
 
 const storesResponsePath = getJsonPath('stores_listing_response.json');
 const productsResponsePath = getJsonPath('products_listing_response.json');
@@ -2884,7 +2885,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
   // ——— Home banners (SuperAdmin / Admin only) ———
   app.get('/api/admin/home/banners', auth, requireAdminOrSuper, (req, res) => {
     const home = loadHome();
-    const banners = home?.data?.banners ?? [];
+    const banners = normalizeHomeContentLinkArray(home?.data?.banners ?? []);
     return res.status(200).json({ success: true, data: { banners } });
   });
 
@@ -2892,7 +2893,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const body = req.body || {};
     const home = loadHome();
     const data = home.data || {};
-    const banners = Array.isArray(body.banners) ? body.banners : data.banners || [];
+    const banners = normalizeHomeContentLinkArray(
+      Array.isArray(body.banners) ? body.banners : data.banners || [],
+    );
     const next = {
       ...home,
       data: {
@@ -2907,7 +2910,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
   // ——— Home top offers (SuperAdmin / Admin only) — same backing file as GET /api/home `data.offers` ———
   app.get('/api/admin/home/offers', auth, requireAdminOrSuper, (req, res) => {
     const home = loadHome();
-    const offers = home?.data?.offers ?? [];
+    const offers = normalizeHomeContentLinkArray(home?.data?.offers ?? []);
     return res.status(200).json({ success: true, data: { offers } });
   });
 
@@ -2915,7 +2918,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const body = req.body || {};
     const home = loadHome();
     const data = home.data || {};
-    const offers = Array.isArray(body.offers) ? body.offers : data.offers || [];
+    const offers = normalizeHomeContentLinkArray(
+      Array.isArray(body.offers) ? body.offers : data.offers || [],
+    );
     const next = {
       ...home,
       data: {
@@ -3064,6 +3069,11 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       createdAt TEXT DEFAULT CURRENT_TIMESTAMP
     )
   `);
+  try {
+    db.exec(`ALTER TABLE promo_codes ADD COLUMN storeId TEXT`);
+  } catch (e) {
+    /* exists */
+  }
   const findAllPromoCodes = db.prepare('SELECT * FROM promo_codes ORDER BY id');
   const findPromoCodeById = db.prepare('SELECT * FROM promo_codes WHERE id = ?');
   const findPromoCodeByName = db.prepare('SELECT * FROM promo_codes WHERE name = ?');
@@ -3082,7 +3092,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
   });
 
   app.post('/api/admin/promo-codes', auth, requireAdminOrSuper, (req, res) => {
-    const { name, value } = req.body || {};
+    const { name, value, storeId } = req.body || {};
     if (!name || typeof name !== 'string' || !name.trim()) {
       return res.status(400).json({ success: false, message: 'name is required' });
     }
@@ -3090,8 +3100,16 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (isNaN(numValue) || numValue < 0) {
       return res.status(400).json({ success: false, message: 'value must be a non-negative number' });
     }
+    let storeIdVal = null;
+    if (storeId !== undefined && storeId !== null && String(storeId).trim() !== '') {
+      storeIdVal = String(storeId).trim();
+    }
     try {
-      db.prepare('INSERT INTO promo_codes (name, value) VALUES (?, ?)').run(name.trim(), numValue);
+      db.prepare('INSERT INTO promo_codes (name, value, storeId) VALUES (?, ?, ?)').run(
+        name.trim(),
+        numValue,
+        storeIdVal,
+      );
       const created = findPromoCodeByName.get(name.trim());
       return res.status(201).json({
         success: true,
@@ -3099,6 +3117,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
           id: created.id,
           name: created.name,
           value: created.value,
+          storeId: created.storeId != null ? created.storeId : null,
           createdAt: created.createdAt,
         },
       });
@@ -3115,7 +3134,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
     const target = findPromoCodeById.get(id);
     if (!target) return res.status(404).json({ success: false, message: 'Promo code not found' });
-    const { name, value } = req.body || {};
+    const { name, value, storeId } = req.body || {};
     const updates = [];
     const values = [];
     if (name !== undefined) {
@@ -3133,6 +3152,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       updates.push('value = ?');
       values.push(numValue);
     }
+    if (storeId !== undefined) {
+      updates.push('storeId = ?');
+      values.push(storeId != null && String(storeId).trim() !== '' ? String(storeId).trim() : null);
+    }
     if (updates.length === 0) {
       return res.status(200).json({ success: true, data: target });
     }
@@ -3148,7 +3171,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const updated = findPromoCodeById.get(id);
     return res.status(200).json({
       success: true,
-      data: { id: updated.id, name: updated.name, value: updated.value, createdAt: updated.createdAt },
+      data: {
+        id: updated.id,
+        name: updated.name,
+        value: updated.value,
+        storeId: updated.storeId != null ? updated.storeId : null,
+        createdAt: updated.createdAt,
+      },
     });
   });
 
