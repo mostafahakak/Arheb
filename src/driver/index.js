@@ -12,7 +12,26 @@ const {
   syncAllDriverRatingsFromTable,
   resolveOrderDriverShare,
   assignDriverToOrder,
+  round2,
 } = require('../utils/driverCommission');
+
+/** Percent change in driver share vs yesterday (same driver, delivered orders). Null if not comparable. */
+function earningsGrowthPercentVsYesterday(db, driverId, todayProfitJod, todayDateStr) {
+  const parts = String(todayDateStr || '').split('-').map(Number);
+  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) return null;
+  const dt = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
+  dt.setUTCDate(dt.getUTCDate() - 1);
+  const yesterdayStr = dt.toISOString().slice(0, 10);
+  const yRows = db
+    .prepare('SELECT * FROM orders WHERE driverId = ? AND status = ? AND date(createdAt) = ?')
+    .all(driverId, 'Delivered', yesterdayStr);
+  const yProfit = sumDriverEarningsForOrders(db, yRows);
+  const t = Number(todayProfitJod) || 0;
+  if (yProfit > 0) {
+    return round2(((t - yProfit) / yProfit) * 100);
+  }
+  return null;
+}
 
 function emitOrderStatus(orderId, status) {
   try {
@@ -514,6 +533,12 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     const cancelled = orders.filter((o) => mapOrderStatus(o.status) === 'cancelled');
     const profit = sumDriverEarningsForOrders(db, completed);
     const ratingCount = req.driver.ratingCount != null ? Number(req.driver.ratingCount) : 0;
+
+    let earningsGrowthPercent = null;
+    if (period === 'today') {
+      earningsGrowthPercent = earningsGrowthPercentVsYesterday(db, driverId, profit, todayStr);
+    }
+
     return res.status(200).json({
       success: true,
       message: 'Stats loaded successfully',
@@ -522,11 +547,11 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
         stats: {
           profit,
           earnings: profit,
-          earningsGrowth: 15,
+          earningsGrowthPercent,
           totalOrders: orders.length,
           completedOrders: completed.length,
           cancelledOrders: cancelled.length,
-          avgDeliveryTime: 25,
+          avgDeliveryTimeMinutes: null,
           rating: req.driver.rating ?? 5,
           totalReviews: ratingCount,
         },

@@ -1574,9 +1574,9 @@ After delivery, the customer can rate the **assigned driver** (1–5 stars) once
 
 **Endpoint:** `POST /api/orders/:orderId/rate-driver`
 
-**Authentication:** Required (Bearer user token)
+**Authentication:** Required (Bearer user JWT — same token as other customer APIs)
 
-**Path parameters:** `orderId` – order ID
+**Path parameters:** `orderId` – numeric order ID (same order the user placed)
 
 **Request body:**
 ```json
@@ -1586,13 +1586,20 @@ After delivery, the customer can rate the **assigned driver** (1–5 stars) once
 }
 ```
 
-- **`rating`** (required): integer **1–5**
-- **`notes`** (optional): string (trimmed, max length enforced server-side)
+- **`rating`** (required): integer **1–5** (whole stars)
+- **`notes`** (optional): string (trimmed, max ~2000 chars server-side)
 
-**Rules:**
-- Order must belong to the authenticated user (`userId` / `phoneNumber` match).
-- Order **`status`** must be **`Delivered`** and a **`driverId`** must be set.
-- **One rating per order** (unique on `orderId`).
+**Rules (enforced server-side):**
+- The order must belong to the caller: **`order.userId`** matches the JWT **`userId`**, or **`order.phoneNumber`** matches the JWT **`phoneNumber`**.
+- Order **`status`** must be **`Delivered`** (comparison is case-insensitive; leading/trailing spaces ignored). The order must have a **`driverId`** (driver was assigned for that delivery).
+- **At most one driver rating per order:** if a row already exists in **`driver_ratings`** for this `orderId`, the API returns **400** (“already rated”).
+
+**How the driver score is updated:**
+1. A row is inserted into **`driver_ratings`** (`orderId`, `userId`, `driverId`, `rating`, optional `notes`).
+2. The server recomputes **`AVG(rating)`** and **`COUNT(*)`** over **all** `driver_ratings` rows for that **`driverId`**.
+3. **`drivers.rating`** is set to that average (rounded to 2 decimals) and **`drivers.ratingCount`** to that count.
+
+So the stored average always matches the arithmetic mean of every per-order rating for that driver (equivalent to incrementally combining old average × count with the new star rating).
 
 **Success (201):**
 ```json
@@ -1600,13 +1607,16 @@ After delivery, the customer can rate the **assigned driver** (1–5 stars) once
   "success": true,
   "message": "Thank you for your feedback",
   "data": {
+    "orderId": 42,
+    "driverId": 3,
     "rating": 5,
-    "driverRatingAvg": 4.85
+    "driverRatingAvg": 4.85,
+    "driverRatingCount": 120
   }
 }
 ```
 
-**Errors:** `400` (not delivered / no driver / invalid rating / already rated), `403` (not your order), `404` (order not found).
+**Errors:** `400` (wrong status / no driver / invalid rating / already rated), `403` (not your order), `404` (order not found).
 
 **Driver app:** Drivers see **average rating** (and aggregate stats where returned); they do **not** receive per-customer review text in the public driver profile payload. **Admin dashboard** can list full rating rows (order id, stars, notes, date) on the driver profile API.
 
@@ -3015,11 +3025,14 @@ Returns the driver's home dashboard: profile, stats (**today/total profit** = dr
 
 Returns earnings and order stats for the driver (optionally filtered by period). **`stats.earnings`** and **`stats.profit`** are the driver’s **share** (same number). **`totalReviews`** is the driver’s **`ratingCount`**.
 
+- **`earningsGrowthPercent`**: only when **`period=today`** — percent change in today’s driver share vs **yesterday’s** delivered orders (same driver). **`null`** if yesterday had no delivered earnings to compare, or when **`period`** is not `today`.
+- **`avgDeliveryTimeMinutes`**: reserved for future use when order timing fields exist; currently always **`null`** (no placeholder).
+
 **Endpoint:** `GET /api/driver/stats?period=today`
 
 **Authentication:** Required (Driver Bearer token)
 
-**Query Parameters:** `period` (optional) – e.g. `today` (default) or other period.
+**Query Parameters:** `period` (optional) – `today` (default) or `all` (all orders for this driver).
 
 **Success Response (200):**
 ```json
@@ -3031,11 +3044,11 @@ Returns earnings and order stats for the driver (optionally filtered by period).
     "stats": {
       "profit": 12.5,
       "earnings": 12.5,
-      "earningsGrowth": 15,
+      "earningsGrowthPercent": 8.2,
       "totalOrders": 8,
       "completedOrders": 7,
       "cancelledOrders": 1,
-      "avgDeliveryTime": 25,
+      "avgDeliveryTimeMinutes": null,
       "rating": 4.8,
       "totalReviews": 42
     }
