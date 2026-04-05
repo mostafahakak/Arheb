@@ -2,7 +2,12 @@ const jwt = require('jsonwebtoken');
 const { verifyAdminToken } = require('../admin/auth');
 const { setOrderTrackingIo, emitOrderEvent } = require('./trackingEmitter');
 const { mapOrderItemsRows } = require('../utils/orderItemApi');
+const { enrichWithJordanTime } = require('../utils/jordanTime');
 const { ensureDriverRatingsTable, round2 } = require('../utils/driverCommission');
+
+function isDeliveredOrderStatus(status) {
+  return String(status || '').trim().toLowerCase() === 'delivered';
+}
 
 // Store active order tracking sessions
 // Format: { orderId: { driverSocket, customerSocket, adminSockets: [], lastLocation } }
@@ -298,51 +303,54 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
         success: true,
         message: 'Order retrieved successfully',
         data: {
-          order: {
-            id: order.id,
-            userId: order.userId,
-            phoneNumber: order.phoneNumber,
-            name: order.name,
-            addressName: order.addressName,
-            addressLong: order.addressLong,
-            addressLat: order.addressLat,
-            discount: order.discount,
-            deliveryFee: order.deliveryFee,
-            serviceFee,
-            feesTax,
-            weightKg: order.weightKg != null ? Number(order.weightKg) : 0,
-            totalAmount: order.totalAmount,
-            orderSummary: {
-              currency: 'JOD',
-              orderValue: Math.round(((Number(order.totalAmount) || 0) + Number.EPSILON) * 100) / 100,
-              deliveryFee: Math.round(((Number(order.deliveryFee) || 0) + Number.EPSILON) * 100) / 100,
-              serviceFee: Math.round(((Number(serviceFee) || 0) + Number.EPSILON) * 100) / 100,
-              feesTaxRate: 0.07,
-              feesTax: Math.round(((Number(feesTax) || 0) + Number.EPSILON) * 100) / 100,
-              total: Math.round((((Number(order.totalAmount) || 0) + (Number(order.deliveryFee) || 0) + (Number(serviceFee) || 0) + (Number(feesTax) || 0)) + Number.EPSILON) * 100) / 100,
+          order: enrichWithJordanTime(
+            {
+              id: order.id,
+              userId: order.userId,
+              phoneNumber: order.phoneNumber,
+              name: order.name,
+              addressName: order.addressName,
+              addressLong: order.addressLong,
+              addressLat: order.addressLat,
+              discount: order.discount,
+              deliveryFee: order.deliveryFee,
+              serviceFee,
+              feesTax,
+              weightKg: order.weightKg != null ? Number(order.weightKg) : 0,
+              totalAmount: order.totalAmount,
+              orderSummary: {
+                currency: 'JOD',
+                orderValue: Math.round(((Number(order.totalAmount) || 0) + Number.EPSILON) * 100) / 100,
+                deliveryFee: Math.round(((Number(order.deliveryFee) || 0) + Number.EPSILON) * 100) / 100,
+                serviceFee: Math.round(((Number(serviceFee) || 0) + Number.EPSILON) * 100) / 100,
+                feesTaxRate: 0.07,
+                feesTax: Math.round(((Number(feesTax) || 0) + Number.EPSILON) * 100) / 100,
+                total: Math.round((((Number(order.totalAmount) || 0) + (Number(order.deliveryFee) || 0) + (Number(serviceFee) || 0) + (Number(feesTax) || 0)) + Number.EPSILON) * 100) / 100,
+              },
+              invoice: {
+                currency: 'JOD',
+                deliveryFee: Math.round(((Number(order.deliveryFee) || 0) + Number.EPSILON) * 100) / 100,
+                serviceFee: Math.round(((Number(serviceFee) || 0) + Number.EPSILON) * 100) / 100,
+                feesTaxRate: 0.07,
+                feesTax: Math.round(((Number(feesTax) || 0) + Number.EPSILON) * 100) / 100,
+                total: Math.round((((Number(order.deliveryFee) || 0) + (Number(serviceFee) || 0) + (Number(feesTax) || 0)) + Number.EPSILON) * 100) / 100,
+              },
+              status: order.status,
+              storeId: order.storeId ?? null,
+              driverId: order.driverId ?? null,
+              driverName: order.driverName ?? null,
+              driverPhone,
+              paymentType: order.paymentType,
+              promoCode: order.promoCode || null,
+              orderRating: order.orderRating || 0,
+              nearby: order.nearby,
+              notes: order.notes,
+              paymentVerificationImage: order.paymentVerificationImage || null,
+              createdAt: order.createdAt,
+              items: mapOrderItemsRows(items),
             },
-            invoice: {
-              currency: 'JOD',
-              deliveryFee: Math.round(((Number(order.deliveryFee) || 0) + Number.EPSILON) * 100) / 100,
-              serviceFee: Math.round(((Number(serviceFee) || 0) + Number.EPSILON) * 100) / 100,
-              feesTaxRate: 0.07,
-              feesTax: Math.round(((Number(feesTax) || 0) + Number.EPSILON) * 100) / 100,
-              total: Math.round((((Number(order.deliveryFee) || 0) + (Number(serviceFee) || 0) + (Number(feesTax) || 0)) + Number.EPSILON) * 100) / 100,
-            },
-            status: order.status,
-            storeId: order.storeId ?? null,
-            driverId: order.driverId ?? null,
-            driverName: order.driverName ?? null,
-            driverPhone,
-            paymentType: order.paymentType,
-            promoCode: order.promoCode || null,
-            orderRating: order.orderRating || 0,
-            nearby: order.nearby,
-            notes: order.notes,
-            paymentVerificationImage: order.paymentVerificationImage || null,
-            createdAt: order.createdAt,
-            items: mapOrderItemsRows(items),
-          },
+            ['createdAt'],
+          ),
         },
         timestamp: new Date().toISOString(),
       });
@@ -375,10 +383,10 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
       if (!owns) {
         return res.status(403).json({ success: false, message: 'Access denied' });
       }
-      if (String(order.status) !== 'Delivered' || order.driverId == null) {
+      if (!isDeliveredOrderStatus(order.status) || order.driverId == null) {
         return res.status(400).json({
           success: false,
-          message: 'Order must be delivered with an assigned driver before rating',
+          message: 'Order must be Delivered with an assigned driver before rating',
         });
       }
       const existing = db.prepare('SELECT id FROM driver_ratings WHERE orderId = ?').get(orderId);
@@ -407,7 +415,13 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
       return res.status(201).json({
         success: true,
         message: 'Thank you for your feedback',
-        data: { rating: r, driverRatingAvg: newAvg },
+        data: {
+          orderId,
+          driverId: order.driverId,
+          rating: r,
+          driverRatingAvg: newAvg,
+          driverRatingCount: newCount,
+        },
       });
     } catch (error) {
       console.error('Rate driver error:', error);

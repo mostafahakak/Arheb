@@ -1,12 +1,10 @@
 const fs = require('fs');
 const path = require('path');
-const {
-  enrichArhebBoxRow,
-  calcArhebBoxDeliveryFeeJod,
-  calcDeliveryFeeFromDistanceAndWeight,
-} = require('../arhebBox');
+const { enrichArhebBoxRow, calcArhebBoxDeliveryFeeJod } = require('../arhebBox');
 const { quoteFromPickupDropoff } = require('../arhebBox/pricing');
+const { storeOrderDeliveryFeeJod, STORE_MAX_JOD } = require('../utils/deliveryFees');
 const { mapOrderItemsRows } = require('../utils/orderItemApi');
+const { enrichWithJordanTime } = require('../utils/jordanTime');
 const { validateSelectedAddOnsAgainstProduct } = require('../utils/productAddOns');
 const { sendToStore } = require('../fcm');
 const { canonicalStoreId } = require('../storeFcm');
@@ -469,30 +467,40 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
     }
 
     const weightKgNum = Math.max(0, safeNumber(weightKg, 0));
+    /** Non-store checkout (edge): legacy weight-only floor. Store orders use distance fee below. */
     let computedDeliveryFee = calcArhebBoxDeliveryFeeJod(weightKgNum);
-    if (
-      finalStoreId != null &&
-      String(finalStoreId).trim() !== '' &&
-      typeof addressLat === 'number' &&
-      !Number.isNaN(addressLat) &&
-      typeof addressLong === 'number' &&
-      !Number.isNaN(addressLong)
-    ) {
-      const st = loadStoreFromJsonById(finalStoreId);
-      if (st) {
-        const storeLoc =
-          (st.latitude != null && st.longitude != null)
-            ? { latitude: Number(st.latitude), longitude: Number(st.longitude) }
-            : parseLatLongFromGoogleMapsUrl(st.mapsUrl);
-        if (storeLoc) {
-          const qOrder = quoteFromPickupDropoff(storeLoc, {
-            latitude: addressLat,
-            longitude: addressLong,
-          });
-          if (qOrder) {
-            computedDeliveryFee = calcDeliveryFeeFromDistanceAndWeight(qOrder.distanceKm, weightKgNum);
+    if (finalStoreId != null && String(finalStoreId).trim() !== '') {
+      /** Store orders: 1 JOD first km + 0.1/km extra, max 3 JOD (distance-only). */
+      if (
+        typeof addressLat === 'number' &&
+        !Number.isNaN(addressLat) &&
+        typeof addressLong === 'number' &&
+        !Number.isNaN(addressLong)
+      ) {
+        const st = loadStoreFromJsonById(finalStoreId);
+        if (st) {
+          const storeLoc =
+            (st.latitude != null && st.longitude != null)
+              ? { latitude: Number(st.latitude), longitude: Number(st.longitude) }
+              : parseLatLongFromGoogleMapsUrl(st.mapsUrl);
+          if (storeLoc) {
+            const qOrder = quoteFromPickupDropoff(storeLoc, {
+              latitude: addressLat,
+              longitude: addressLong,
+            });
+            if (qOrder) {
+              computedDeliveryFee = storeOrderDeliveryFeeJod(qOrder.distanceKm);
+            } else {
+              computedDeliveryFee = storeOrderDeliveryFeeJod(0);
+            }
+          } else {
+            computedDeliveryFee = storeOrderDeliveryFeeJod(0);
           }
+        } else {
+          computedDeliveryFee = storeOrderDeliveryFeeJod(0);
         }
+      } else {
+        computedDeliveryFee = storeOrderDeliveryFeeJod(0);
       }
     }
     const computedServiceFee = SERVICE_FEE_JOD;
@@ -546,37 +554,40 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
 
     const checkoutPayload = {
       orderId,
-      order: {
-        id: order.id,
-        userId: order.userId,
-        phoneNumber: order.phoneNumber,
-        name: order.name,
-        addressName: order.addressName,
-        addressLong: order.addressLong,
-        addressLat: order.addressLat,
-        discount: order.discount,
-        deliveryFee: order.deliveryFee,
-        serviceFee: order.serviceFee != null ? order.serviceFee : SERVICE_FEE_JOD,
-        feesTax:
-          order.feesTax != null
-            ? order.feesTax
-            : calcFeesTaxJod(order.deliveryFee, order.serviceFee ?? SERVICE_FEE_JOD),
-        weightKg: order.weightKg != null ? order.weightKg : round3(weightKgNum),
-        totalAmount: order.totalAmount,
-        orderSummary: buildOrderSummary(order.totalAmount, order.deliveryFee, order.serviceFee ?? SERVICE_FEE_JOD),
-        invoice: buildInvoice(order.deliveryFee, order.serviceFee ?? SERVICE_FEE_JOD),
-        status: order.status,
-        paymentType: order.paymentType,
-        promoCode: order.promoCode || null,
-        orderRating: order.orderRating || 0,
-        nearby: order.nearby,
-        notes: order.notes,
-        storeId: order.storeId ?? null,
-        paymentTranRef: order.paymentTranRef ?? null,
-        paymentCartId: order.paymentCartId ?? null,
-        createdAt: order.createdAt,
-        items: itemsOut,
-      },
+      order: enrichWithJordanTime(
+        {
+          id: order.id,
+          userId: order.userId,
+          phoneNumber: order.phoneNumber,
+          name: order.name,
+          addressName: order.addressName,
+          addressLong: order.addressLong,
+          addressLat: order.addressLat,
+          discount: order.discount,
+          deliveryFee: order.deliveryFee,
+          serviceFee: order.serviceFee != null ? order.serviceFee : SERVICE_FEE_JOD,
+          feesTax:
+            order.feesTax != null
+              ? order.feesTax
+              : calcFeesTaxJod(order.deliveryFee, order.serviceFee ?? SERVICE_FEE_JOD),
+          weightKg: order.weightKg != null ? order.weightKg : round3(weightKgNum),
+          totalAmount: order.totalAmount,
+          orderSummary: buildOrderSummary(order.totalAmount, order.deliveryFee, order.serviceFee ?? SERVICE_FEE_JOD),
+          invoice: buildInvoice(order.deliveryFee, order.serviceFee ?? SERVICE_FEE_JOD),
+          status: order.status,
+          paymentType: order.paymentType,
+          promoCode: order.promoCode || null,
+          orderRating: order.orderRating || 0,
+          nearby: order.nearby,
+          notes: order.notes,
+          storeId: order.storeId ?? null,
+          paymentTranRef: order.paymentTranRef ?? null,
+          paymentCartId: order.paymentCartId ?? null,
+          createdAt: order.createdAt,
+          items: itemsOut,
+        },
+        ['createdAt'],
+      ),
     };
 
     return {
@@ -591,7 +602,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
 
   /**
    * Pre-checkout quote: delivery + service + tax (7% on delivery fee only).
-   * Delivery fee from store→customer distance (min 2 JOD route floor, 1 JOD/km) plus 0.15 JOD/kg. Store location from storeId/mapsUrl.
+   * Store delivery fee: 1 JOD first km + 0.1 JOD per additional km, max 3 JOD.
    */
   app.post('/api/checkout/quote-fees', authenticateRequest, (req, res) => {
     try {
@@ -627,7 +638,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         });
       }
       const weightKgNum = Math.max(0, safeNumber(weightKg, 0));
-      const deliveryFee = calcDeliveryFeeFromDistanceAndWeight(q.distanceKm, weightKgNum);
+      const deliveryFee = storeOrderDeliveryFeeJod(q.distanceKm);
       const serviceFee = SERVICE_FEE_JOD;
       const invoice = buildInvoice(deliveryFee, serviceFee);
       return res.status(200).json({
@@ -637,7 +648,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
           storeName: store.name ?? null,
           storeLocation,
           distanceKm: q.distanceKm,
-          minAmountJod: q.minAmountJod,
+          deliveryFeeMaxJod: STORE_MAX_JOD,
           weightKg: round3(weightKgNum),
           currency: 'JOD',
           deliveryFee: invoice.deliveryFee,
@@ -647,7 +658,9 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
           feesTaxNote: '7% tax on delivery fee plus service fee (not on order subtotal).',
           invoiceTotal: invoice.total,
           pricingNote:
-            'Delivery fee = route minimum (1 JOD/km, min 2 JOD, same as POST /api/arheb-box/quote) plus 0.15 JOD/kg. Varies with distance to deliveryLocation.',
+            'Store delivery fee: 1 JOD for the first km + 0.1 JOD per additional km, maximum ' +
+            STORE_MAX_JOD +
+            ' JOD. Weight does not change delivery fee.',
         },
         timestamp: new Date().toISOString(),
       });
@@ -700,37 +713,40 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         const serviceFee = order.serviceFee != null ? Number(order.serviceFee) : SERVICE_FEE_JOD;
         const feesTax =
           order.feesTax != null ? Number(order.feesTax) : calcFeesTaxJod(order.deliveryFee, serviceFee);
-        return {
-          id: order.id,
-          userId: order.userId,
-          phoneNumber: order.phoneNumber,
-          name: order.name,
-          addressName: order.addressName,
-          addressLong: order.addressLong,
-          addressLat: order.addressLat,
-          discount: order.discount,
-          deliveryFee: order.deliveryFee,
-          serviceFee,
-          feesTax,
-          weightKg: order.weightKg != null ? Number(order.weightKg) : 0,
-          totalAmount: order.totalAmount,
-          orderSummary: buildOrderSummary(order.totalAmount, order.deliveryFee, serviceFee),
-          invoice: buildInvoice(order.deliveryFee, serviceFee),
-          status: order.status,
-          storeId: order.storeId ?? null,
-          driverId: order.driverId ?? null,
-          driverName: order.driverName ?? null,
-          paymentType: order.paymentType,
-          promoCode: order.promoCode || null,
-          orderRating: order.orderRating || 0,
-          nearby: order.nearby,
-          notes: order.notes,
-          paymentVerificationImage: order.paymentVerificationImage || null,
-          paymentTranRef: order.paymentTranRef ?? null,
-          paymentCartId: order.paymentCartId ?? null,
-          createdAt: order.createdAt,
-          items: mapOrderItemsRows(items),
-        };
+        return enrichWithJordanTime(
+          {
+            id: order.id,
+            userId: order.userId,
+            phoneNumber: order.phoneNumber,
+            name: order.name,
+            addressName: order.addressName,
+            addressLong: order.addressLong,
+            addressLat: order.addressLat,
+            discount: order.discount,
+            deliveryFee: order.deliveryFee,
+            serviceFee,
+            feesTax,
+            weightKg: order.weightKg != null ? Number(order.weightKg) : 0,
+            totalAmount: order.totalAmount,
+            orderSummary: buildOrderSummary(order.totalAmount, order.deliveryFee, serviceFee),
+            invoice: buildInvoice(order.deliveryFee, serviceFee),
+            status: order.status,
+            storeId: order.storeId ?? null,
+            driverId: order.driverId ?? null,
+            driverName: order.driverName ?? null,
+            paymentType: order.paymentType,
+            promoCode: order.promoCode || null,
+            orderRating: order.orderRating || 0,
+            nearby: order.nearby,
+            notes: order.notes,
+            paymentVerificationImage: order.paymentVerificationImage || null,
+            paymentTranRef: order.paymentTranRef ?? null,
+            paymentCartId: order.paymentCartId ?? null,
+            createdAt: order.createdAt,
+            items: mapOrderItemsRows(items),
+          },
+          ['createdAt'],
+        );
       });
 
       let arhebBoxRequests = [];
@@ -806,44 +822,47 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         success: true,
         message: 'Order retrieved successfully',
         data: {
-          order: {
-            id: order.id,
-            userId: order.userId,
-            phoneNumber: order.phoneNumber,
-            name: order.name,
-            addressName: order.addressName,
-            addressLong: order.addressLong,
-            addressLat: order.addressLat,
-            discount: order.discount,
-            deliveryFee: order.deliveryFee,
-            serviceFee,
-            feesTax,
-            weightKg: order.weightKg != null ? Number(order.weightKg) : 0,
-            totalAmount: order.totalAmount,
-            orderSummary: buildOrderSummary(order.totalAmount, order.deliveryFee, serviceFee),
-            invoice: buildInvoice(order.deliveryFee, serviceFee),
-            status: order.status,
-            storeId: order.storeId ?? null,
-            driverId: order.driverId ?? null,
-            driverName: order.driverName ?? null,
-            paymentType: order.paymentType,
-            promoCode: order.promoCode || null,
-            orderRating: order.orderRating || 0,
-            nearby: order.nearby,
-            notes: order.notes,
-            paymentVerificationImage: order.paymentVerificationImage || null,
-            paymentTranRef: order.paymentTranRef ?? null,
-            paymentCartId: order.paymentCartId ?? null,
-            createdAt: order.createdAt,
-            items: items.map(item => ({
-              id: item.productId,
-              name: item.productName,
-              price: item.price,
-              quantity: item.quantity
-            }))
-          }
+          order: enrichWithJordanTime(
+            {
+              id: order.id,
+              userId: order.userId,
+              phoneNumber: order.phoneNumber,
+              name: order.name,
+              addressName: order.addressName,
+              addressLong: order.addressLong,
+              addressLat: order.addressLat,
+              discount: order.discount,
+              deliveryFee: order.deliveryFee,
+              serviceFee,
+              feesTax,
+              weightKg: order.weightKg != null ? Number(order.weightKg) : 0,
+              totalAmount: order.totalAmount,
+              orderSummary: buildOrderSummary(order.totalAmount, order.deliveryFee, serviceFee),
+              invoice: buildInvoice(order.deliveryFee, serviceFee),
+              status: order.status,
+              storeId: order.storeId ?? null,
+              driverId: order.driverId ?? null,
+              driverName: order.driverName ?? null,
+              paymentType: order.paymentType,
+              promoCode: order.promoCode || null,
+              orderRating: order.orderRating || 0,
+              nearby: order.nearby,
+              notes: order.notes,
+              paymentVerificationImage: order.paymentVerificationImage || null,
+              paymentTranRef: order.paymentTranRef ?? null,
+              paymentCartId: order.paymentCartId ?? null,
+              createdAt: order.createdAt,
+              items: items.map((item) => ({
+                id: item.productId,
+                name: item.productName,
+                price: item.price,
+                quantity: item.quantity,
+              })),
+            },
+            ['createdAt'],
+          ),
         },
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       });
     } catch (error) {
       console.error('Get order error:', error);

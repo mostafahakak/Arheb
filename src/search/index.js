@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { getJsonPath } = require('../config/jsonPaths');
-const { isStoreVisibleToCustomers } = require('../utils/storeVisibility');
+const { isStoreListedForCustomerBrowse, isStoreVisibleToCustomers } = require('../utils/storeVisibility');
 
 const storesResponsePath = getJsonPath('stores_listing_response.json');
 const productsResponsePath = getJsonPath('products_listing_response.json');
@@ -62,9 +62,9 @@ module.exports = function attachSearchRoutes(app) {
     const productFields = ['name', 'nameAr', 'nameEn', 'productName', 'productNameAr', 'productNameEn', 'category', 'categoryName'];
 
     const matchedStores = stores
-      .filter((s) => matchesText(s, q, storeFields))
+      .filter((s) => isStoreListedForCustomerBrowse(s) && matchesText(s, q, storeFields))
       .map((s) => {
-        const { arhebFee, ...rest } = s;
+        const { arhebFee, hiddenFromCustomers, ...rest } = s;
         return { ...rest, status: computeStoreStatus(s) };
       });
     const matchedProducts = products.filter((p) => p.isAvailable !== false && matchesText(p, q, productFields));

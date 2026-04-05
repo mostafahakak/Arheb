@@ -1,7 +1,10 @@
 const fs = require('fs');
 const path = require('path');
 const { getJsonPath } = require('../config/jsonPaths');
-const { isStoreVisibleToCustomers, getAdminStoreDashboardBucket } = require('../utils/storeVisibility');
+const {
+  isStoreVisibleToCustomers,
+  isStoreListedForCustomerBrowse,
+} = require('../utils/storeVisibility');
 const { enrichOpeningHoursObject } = require('../utils/openingHoursJordan');
 const { upsertStoreFcmToken } = require('../storeFcm');
 
@@ -166,14 +169,17 @@ function computeStoreStatus(store) {
   return 'closed';
 }
 
-// Public store shape: include closingTime, openingTime, storeCategories, status; never expose arhebFee
+// Public store shape: include closingTime, openingTime, storeCategories, status; never expose arhebFee / admin-only flags
 function toPublicStore(store) {
-  const { arhebFee, ...rest } = store;
+  const { arhebFee, hiddenFromCustomers, ...rest } = store;
   const openingHours = store.openingHours
     ? enrichOpeningHoursObject(store.openingHours)
     : enrichOpeningHoursObject(null);
+  const exclusive = !!(store.isExclusive ?? store.isPremium);
   return {
     ...rest,
+    isPremium: exclusive,
+    isExclusive: exclusive,
     closingTime: store.closingTime ?? null,
     openingTime: store.openingHours?.open ?? store.openingTime ?? null,
     openingHours,
@@ -186,6 +192,22 @@ function filterCustomerVisibleStores(stores) {
   return (stores || []).filter((s) => isStoreVisibleToCustomers(s));
 }
 
+function filterStoresForCustomerBrowse(stores) {
+  return (stores || []).filter((s) => isStoreListedForCustomerBrowse(s));
+}
+
+function sortPublicStoresByStatus(stores) {
+  const rank = { open: 0, paused: 1, closed: 2 };
+  return [...stores].sort((a, b) => {
+    const ra = rank[a.status] ?? 9;
+    const rb = rank[b.status] ?? 9;
+    if (ra !== rb) return ra - rb;
+    const na = String(a.name ?? a.nameEn ?? a.id ?? '');
+    const nb = String(b.name ?? b.nameEn ?? b.id ?? '');
+    return na.localeCompare(nb, undefined, { sensitivity: 'base' });
+  });
+}
+
 module.exports = function attachStoresRoutes(app, db) {
   seedStoresTable(db, storesListForSeed);
   if (storesListForSeed.length === 0) {
@@ -196,7 +218,7 @@ module.exports = function attachStoresRoutes(app, db) {
     const storesResponse = loadStoresResponse();
     // When file is missing (e.g. deploy), return empty list so test client / app do not get 500
     const raw = storesResponse?.data?.stores ?? [];
-    const stores = filterCustomerVisibleStores(raw).map(toPublicStore);
+    const stores = sortPublicStoresByStatus(filterStoresForCustomerBrowse(raw).map(toPublicStore));
     return res.status(200).json({
       success: true,
       message: 'Stores listing retrieved successfully',
@@ -207,7 +229,7 @@ module.exports = function attachStoresRoutes(app, db) {
 
   app.get('/api/stores/top-rated', (req, res) => {
     const storesResponse = loadStoresResponse();
-    const storesList = filterCustomerVisibleStores(storesResponse?.data?.stores ?? []).map(toPublicStore);
+    const storesList = filterStoresForCustomerBrowse(storesResponse?.data?.stores ?? []).map(toPublicStore);
     const limit = req.query.limit ? parseInt(req.query.limit) : null;
     const topRatedStores = storesList
       .filter(store => store.rate != null && typeof store.rate === 'number')
@@ -228,22 +250,35 @@ module.exports = function attachStoresRoutes(app, db) {
     });
   });
 
-  // Get premium stores (set by SuperAdmin/Admin)
+  function exclusiveStoresPayload(storesResponse, limit) {
+    const storesList = filterStoresForCustomerBrowse(storesResponse?.data?.stores ?? []).map(toPublicStore);
+    const exclusive = storesList.filter((store) => store.isExclusive === true || store.isPremium === true);
+    const result = limit ? exclusive.slice(0, limit) : exclusive;
+    return { stores: result, count: result.length, limit: limit || 'all' };
+  }
+
+  // Get premium / exclusive stores (set by SuperAdmin/Admin) — same list; prefer GET /api/stores/exclusive
   app.get('/api/stores/premium', (req, res) => {
     const storesResponse = loadStoresResponse();
-    const storesList = filterCustomerVisibleStores(storesResponse?.data?.stores ?? []).map(toPublicStore);
-    const limit = req.query.limit ? parseInt(req.query.limit) : null;
-    const premiumStores = storesList.filter(store => store.isPremium === true);
-    const result = limit ? premiumStores.slice(0, limit) : premiumStores;
+    const limit = req.query.limit ? parseInt(req.query.limit, 10) : null;
+    const { stores, count, limit: lim } = exclusiveStoresPayload(storesResponse, limit);
     return res.status(200).json({
       success: true,
-      message: 'Premium stores retrieved successfully',
-      data: {
-        stores: result,
-        count: result.length,
-        limit: limit || 'all'
-      },
-      timestamp: new Date().toISOString()
+      message: 'Premium / Exclusive stores retrieved successfully',
+      data: { stores, count, limit: lim },
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  app.get('/api/stores/exclusive', (req, res) => {
+    const storesResponse = loadStoresResponse();
+    const limit = req.query.limit ? parseInt(req.query.limit, 10) : null;
+    const { stores, count, limit: lim } = exclusiveStoresPayload(storesResponse, limit);
+    return res.status(200).json({
+      success: true,
+      message: 'Exclusive stores retrieved successfully',
+      data: { stores, count, limit: lim },
+      timestamp: new Date().toISOString(),
     });
   });
 
@@ -254,7 +289,7 @@ module.exports = function attachStoresRoutes(app, db) {
       return res.status(400).json({ success: false, message: 'Category name is required' });
     }
     const storesResponse = loadStoresResponse();
-    const storesList = filterCustomerVisibleStores(storesResponse?.data?.stores ?? []).map(toPublicStore);
+    const storesList = filterStoresForCustomerBrowse(storesResponse?.data?.stores ?? []).map(toPublicStore);
     const categoryNameLower = categoryName.toLowerCase().trim();
     const matches = (val) => {
       if (val == null) return false;
@@ -335,11 +370,11 @@ module.exports = function attachStoresRoutes(app, db) {
     const storeId = req.params.id;
     const storesResponse = loadStoresResponse();
     const storesList = storesResponse?.data?.stores ?? [];
-    const store = storesList.find(s => s.id === storeId);
+    const store = storesList.find((s) => String(s.id) === String(storeId));
     if (!store) {
       return res.status(404).json({ success: false, message: 'Store not found' });
     }
-    if (!isStoreVisibleToCustomers(store)) {
+    if (!isStoreListedForCustomerBrowse(store)) {
       return res.status(404).json({ success: false, message: 'Store not found' });
     }
 
@@ -356,7 +391,7 @@ module.exports = function attachStoresRoutes(app, db) {
     }
 
     const products = productsResponse?.data?.products ?? [];
-    const storeProducts = products.filter(p => p.store?.id === storeId && p.isAvailable !== false);
+    const storeProducts = products.filter((p) => String(p.store?.id) === String(storeId) && p.isAvailable !== false);
     const toClientProduct = (p) => ({ ...p, discount: p.discount ?? null, originalPrice: p.originalPrice ?? p.price ?? null });
 
     return res.status(200).json({
@@ -374,6 +409,8 @@ module.exports = function attachStoresRoutes(app, db) {
           openingTime: store.openingHours?.open ?? store.openingTime ?? null,
           storeCategories: Array.isArray(store.storeCategories) ? store.storeCategories : [],
           status: computeStoreStatus(store),
+          isExclusive: !!(store.isExclusive ?? store.isPremium),
+          isPremium: !!(store.isPremium ?? store.isExclusive),
         },
         products: storeProducts.map(toClientProduct),
         count: storeProducts.length
@@ -392,11 +429,11 @@ module.exports = function attachStoresRoutes(app, db) {
 
     const storesResponse = loadStoresResponse();
     const storesList = storesResponse?.data?.stores ?? [];
-    const store = storesList.find(s => s.id === storeId);
+    const store = storesList.find((s) => String(s.id) === String(storeId));
     if (!store) {
       return res.status(404).json({ success: false, message: 'Store not found' });
     }
-    if (!isStoreVisibleToCustomers(store)) {
+    if (!isStoreListedForCustomerBrowse(store)) {
       return res.status(404).json({ success: false, message: 'Store not found' });
     }
 
@@ -413,7 +450,7 @@ module.exports = function attachStoresRoutes(app, db) {
     }
 
     const products = productsResponse?.data?.products ?? [];
-    const storeProducts = products.filter(p => p.store?.id === storeId && p.isAvailable !== false);
+    const storeProducts = products.filter((p) => String(p.store?.id) === String(storeId) && p.isAvailable !== false);
 
     const categoryNameLower = categoryName.toLowerCase().trim();
     const subCategoryQuery = (req.query.subCategory || '').trim().toLowerCase();

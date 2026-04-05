@@ -25,6 +25,16 @@ function isStoreVisibleToCustomers(store) {
   return isWithinOpeningHours(store);
 }
 
+/**
+ * Listed in public store browse (GET /api/stores, etc.): not blocked, not hidden by Admin/SuperAdmin.
+ * Each store still has `status` open | paused | closed from {@link getAdminStoreDashboardBucket}-style logic.
+ */
+function isStoreListedForCustomerBrowse(store) {
+  if (!store || store.blocked === true) return false;
+  if (store.hiddenFromCustomers === true) return false;
+  return true;
+}
+
 /** Admin dashboard bucket: open (customer-visible) → paused → closed. */
 function getAdminStoreDashboardBucket(store) {
   if (!store) return 'closed';
@@ -40,5 +50,6 @@ module.exports = {
   parse24hClockToMinutes,
   isWithinOpeningHours,
   isStoreVisibleToCustomers,
+  isStoreListedForCustomerBrowse,
   getAdminStoreDashboardBucket,
 };

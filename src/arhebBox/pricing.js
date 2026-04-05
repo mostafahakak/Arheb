@@ -1,3 +1,5 @@
+const { arhebBoxDeliveryFeeFromDistanceJod } = require('../utils/deliveryFees');
+
 /** Haversine distance in km between two WGS84 points. */
 function distanceKm(lat1, lon1, lat2, lon2) {
   const R = 6371;
@@ -12,12 +14,14 @@ function distanceKm(lat1, lon1, lat2, lon2) {
 }
 
 /**
- * Minimum trip price (JOD): 1 JOD per km, minimum 2 JOD (covers first 2 km as 2 JOD floor).
- * e.g. 0.5 km → 2, 3 km → 3, 5.2 km → 6
+ * Minimum parcel amount (JOD) for the route — same basis as Arheb Box delivery fee:
+ * 1 JOD first km + 0.5 JOD per additional km (uncapped).
  */
 function minAmountJod(distanceKm) {
-  if (typeof distanceKm !== 'number' || distanceKm < 0 || Number.isNaN(distanceKm)) return 2;
-  return Math.max(2, Math.ceil(distanceKm));
+  if (typeof distanceKm !== 'number' || distanceKm < 0 || Number.isNaN(distanceKm)) {
+    return arhebBoxDeliveryFeeFromDistanceJod(0);
+  }
+  return arhebBoxDeliveryFeeFromDistanceJod(distanceKm);
 }
 
 function quoteFromPickupDropoff(pickup, dropoff) {

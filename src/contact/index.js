@@ -1,3 +1,5 @@
+const { getDriverDeliveryDefaultPercent, normalizeDriverCommissionPercent, getDriverCommissionSettings } = require('../utils/driverCommission');
+
 module.exports = function attachContactRoutes(app, db, authenticateRequest) {
   // Create contact_us table
   db.exec(`
@@ -11,6 +13,9 @@ module.exports = function attachContactRoutes(app, db, authenticateRequest) {
   `);
   try {
     db.exec('ALTER TABLE contact_us ADD COLUMN cliqNumber TEXT');
+  } catch (e) { /* column already exists */ }
+  try {
+    db.exec('ALTER TABLE contact_us ADD COLUMN driverDeliveryPercent REAL');
   } catch (e) { /* column already exists */ }
 
   // Add dummy data if table is empty
@@ -41,7 +46,9 @@ module.exports = function attachContactRoutes(app, db, authenticateRequest) {
   // Get contact us data (includes cliqNumber for app/users)
   app.get('/api/contact', (req, res) => {
     try {
-      const getContact = db.prepare('SELECT email, phone, cliqNumber FROM contact_us ORDER BY id DESC LIMIT 1');
+      const getContact = db.prepare(
+        'SELECT email, phone, cliqNumber, driverDeliveryPercent FROM contact_us ORDER BY id DESC LIMIT 1',
+      );
       const contact = getContact.get();
 
       if (!contact) {
@@ -51,6 +58,13 @@ module.exports = function attachContactRoutes(app, db, authenticateRequest) {
         });
       }
 
+      const g = getDriverCommissionSettings(db);
+      const defaultPct = g.type === 'percent' ? g.value : 0.65;
+      const driverDeliveryPercentAppInfo =
+        contact.driverDeliveryPercent != null && String(contact.driverDeliveryPercent).trim() !== ''
+          ? normalizeDriverCommissionPercent(Number(contact.driverDeliveryPercent), defaultPct)
+          : null;
+
       return res.status(200).json({
         success: true,
         message: 'Contact information retrieved successfully',
@@ -58,7 +72,9 @@ module.exports = function attachContactRoutes(app, db, authenticateRequest) {
           contact: {
             email: contact.email,
             phone: contact.phone,
-            cliqNumber: contact.cliqNumber != null ? contact.cliqNumber : ''
+            cliqNumber: contact.cliqNumber != null ? contact.cliqNumber : '',
+            driverDeliveryPercent: driverDeliveryPercentAppInfo,
+            driverDeliveryDefaultEffective: getDriverDeliveryDefaultPercent(db),
           }
         },
         timestamp: new Date().toISOString()

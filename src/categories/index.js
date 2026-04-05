@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { getJsonPath } = require('../config/jsonPaths');
-const { isStoreVisibleToCustomers } = require('../utils/storeVisibility');
+const { isStoreVisibleToCustomers, isStoreListedForCustomerBrowse } = require('../utils/storeVisibility');
 
 const categoriesResponsePath = getJsonPath('categories_response.json');
 
@@ -259,7 +259,7 @@ function attachCategoriesRoutes(app, db) {
 
       const statusMap = loadStoreStatusMap();
       const offerStores = allStores
-        .filter(s => storeIdsWithOffers.has(String(s.id)) && isStoreVisibleToCustomers(s))
+        .filter((s) => storeIdsWithOffers.has(String(s.id)) && isStoreListedForCustomerBrowse(s))
         .map(s => {
           const { arhebFee, ...rest } = s;
           return { ...rest, status: statusMap[s.id] ?? 'closed' };

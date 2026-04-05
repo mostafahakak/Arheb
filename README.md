@@ -92,9 +92,9 @@ A separate **Admin Dashboard** (React + Next.js) is in the `dashboard/` folder. 
   - **Super Admin**: Full access; manage all stores, orders, categories, admins (including other SuperAdmins), and **Arheb Box** requests.
   - **Admin**: Same as Super Admin but **cannot** add or remove SuperAdmins.
   - **Store Admin**: Sees only their assigned store; can edit store details, add/edit/delete products, and view orders for that store.
-- **Arheb Box**: Admins can view all Arheb box requests (id, date/time, username, phone, pickup, dropoff, notes, status) and update status (pending → confirmed → in_progress → delivered → cancelled). Requests are submitted by users with Bearer token and stored in the database.
+- **Arheb Box**: Admins can list requests, open **detail** (**GET /api/admin/arheb-box/:id**), update status, assign drivers, and track pricing fields. Requests are submitted by users with Bearer token and stored in the database.
 - **English and Arabic** (language switcher in the UI).
-- **Driver earnings:** Admin/SuperAdmin can set **global driver commission** (percent of delivery fee or fixed JOD per delivery) under **App info** (`/dashboard/info/`). The **Drivers** list links to a **driver profile** page (`/dashboard/drivers/profile/?id=`) with filters (status, date range), delivered-order profit totals, and full customer **driver ratings** (stars + notes). Drivers only see their **average rating** in the driver app, not individual reviews.
+- **Driver earnings:** Each driver can have a **per-driver commission percent** (`commissionPercent` on the driver row). If unset, the effective rate comes from **App info** — **`driverDeliveryPercent`** on **GET/PATCH /api/admin/info** (same screen as email/phone/Cliq). If that is also unset, the legacy **global driver commission** setting (**GET/PATCH /api/admin/settings/driver-commission**) is used. The **Drivers** list links to a **driver profile** page (`/dashboard/drivers/profile/?id=`) with filters (status, date range), delivered-order profit totals, and full customer **driver ratings** (stars + notes). Drivers only see their **average rating** in the driver app, not individual reviews.
 
 To create the **initial SuperAdmin** on first run, set in the backend `.env`:
 
@@ -144,6 +144,7 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
   - [Get All Stores](#get-all-stores)
   - [Get Top Rated Stores](#get-top-rated-stores)
   - [Get Premium Stores](#get-premium-stores)
+  - [Get Exclusive Stores](#get-exclusive-stores)
   - [Get Stores by Category](#get-stores-by-category)
   - [Update Store FCM Token](#update-store-fcm-token)
   - [Get Store Products](#get-store-products)
@@ -202,6 +203,8 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
   - [Admin Categories](#admin-categories)
   - [Admin Drivers](#admin-drivers)
   - [Admin Driver Commission](#admin-driver-commission)
+  - [Admin App Info (driver delivery default)](#admin-app-info-driver-delivery-default)
+  - [Admin Home Banners & Offers](#admin-home-banners--offers)
   - [Admin Driver Profile (detail)](#admin-driver-profile-detail)
 - [Driver API](#driver-api)
   - [Driver Send OTP](#driver-send-otp)
@@ -561,11 +564,13 @@ Retrieves all products that currently have a discount applied. This is useful fo
 
 ## Stores
 
-Stores can be **paused** (hidden from users; admins see status "Paused") or **blocked** (hidden from users; only Admin/SuperAdmin can unblock; Store Admin cannot edit or add/remove products). Paused and blocked stores are excluded from all public store APIs (`GET /api/stores`, top-rated, premium, by category, and store products). Admin APIs return all stores and support `paused` and `blocked` via `PATCH /api/admin/stores/:id`.
+Stores can be **paused**, **blocked**, or **hidden from browse** (`hiddenFromCustomers`, Admin/SuperAdmin): **blocked** stores never appear in public APIs; **hidden** stores are omitted from customer browse lists but are not the same as paused. **Paused** stores can still appear in `GET /api/stores` with `status: "paused"` (sorted after open stores). **Exclusive** / **premium** flags (`isExclusive` / `isPremium` — set together by admin) mark featured stores; use **`GET /api/stores/exclusive`** (or legacy **`/api/stores/premium`**) for that curated list.
+
+Public listings use **`GET /api/stores`**, **`/api/stores/top-rated`**, **`/api/stores/premium`**, **`/api/stores/exclusive`**, **`/api/stores/category/:name`**, and **store products** — all exclude **blocked** and **hidden** stores. Admin APIs return full store records; **`PATCH /api/admin/stores/:id`** supports `paused`, `blocked`, `hiddenFromCustomers`, and **`isExclusive`** (SuperAdmin/Admin only).
 
 ### Get All Stores
 
-Retrieves all available (non-paused, non-blocked) stores.
+Retrieves all stores that are **listed for customer browse** (not blocked, not hidden). Each store includes **`status`**: `"open"` | `"paused"` | `"closed"` (Jordan opening hours + admin toggles — see [Admin Stores](#admin-stores)).
 
 **Endpoint:** `GET /api/stores`
 
@@ -588,6 +593,9 @@ Retrieves all available (non-paused, non-blocked) stores.
         "numberOfReviews": 100,
         "deliveryFee": 2.5,
         "isOpen": true,
+        "status": "open",
+        "isExclusive": false,
+        "isPremium": false,
         "closingTime": "23:00",
         "openingTime": "09:00",
         "storeCategories": [
@@ -599,7 +607,7 @@ Retrieves all available (non-paused, non-blocked) stores.
 }
 ```
 
-Each store includes **`closingTime`** (string or `null`), **`openingTime`** (string or `null`), and **`storeCategories`** (array of `{ id, nameEn, nameAr, name }`) so the client can show store hours and product categories offered by the store.
+Each store includes **`status`**, **`isExclusive`** / **`isPremium`** (same meaning — exclusive/premium tier), **`closingTime`** (string or `null`), **`openingTime`** (string or `null`), and **`storeCategories`** (array of `{ id, nameEn, nameAr, name }`) so the client can show store hours and product categories offered by the store.
 
 ---
 
@@ -669,6 +677,16 @@ Retrieves stores marked as premium by SuperAdmin or Admin.
 ```
 
 **Note:** Only SuperAdmin or Admin can set a store as premium via `PATCH /api/admin/stores/:id` with `{ "isPremium": true }`. Store Admin cannot set premium.
+
+---
+
+### Get Exclusive Stores
+
+Same behavior and payload as [Get Premium Stores](#get-premium-stores): returns stores with **`isExclusive`** / **`isPremium`** set (admin-curated list). Prefer this endpoint name; **`GET /api/stores/premium`** is an alias.
+
+**Endpoint:** `GET /api/stores/exclusive?limit=10`
+
+**Authentication:** Not required
 
 ---
 
@@ -1049,7 +1067,7 @@ console.log(data.data.products); // Products matching "pizza"
 
 ## Home
 
-Retrieves home page data including banners, categories (from categories API), popular stores, and offers. When the user is authenticated, the response may include **activeOrder** (orderID and status) if they have an order in an active status. The response also includes **`discountedProducts`**: a list of products that currently have a discount (same shape as in [Get Products](#get-products-paginated)).
+Retrieves home page data including banners, categories (from categories API), popular stores, and offers. **Banners** and **`offers`** are editable by SuperAdmin/Admin via [Admin Home Banners & Offers](#admin-home-banners--offers) (`GET/PATCH /api/admin/home/banners` and `GET/PATCH /api/admin/home/offers`). When the user is authenticated, the response may include **activeOrder** (orderID and status) if they have an order in an active status. The response also includes **`discountedProducts`**: a list of products that currently have a discount (same shape as in [Get Products](#get-products-paginated)).
 
 **Endpoint:** `GET /api/home`
 
@@ -1277,7 +1295,7 @@ Deletes the address at the given index (0-based). After deletion, the first rema
 
 ### Quote Checkout Fees
 
-Call **before** `POST /api/checkout` to preview **delivery fee**, **service fee**, and **VAT** using the same rules as **Arheb Box** for delivery pricing, with **7% VAT on the delivery fee only** (not on the order subtotal and not on the service fee — same as store checkout).
+Call **before** `POST /api/checkout` to preview **delivery fee**, **service fee**, and **tax** using **store-order** delivery rules (**not** the same per-km formula as [Arheb Box](#arheb-box)). Tax is **7% on delivery fee + service fee** (not on the order subtotal).
 
 **Endpoint:** `POST /api/checkout/quote-fees`
 
@@ -1288,9 +1306,9 @@ Call **before** `POST /api/checkout` to preview **delivery fee**, **service fee*
 | Field | Type | Required | Description |
 |--------|------|----------|-------------|
 | `storeId` | string | Yes | Store id (must exist in `stores_listing_response.json`). |
-| `storeLocation` | object | No | Optional. If sent, it can be used for client-side display only. Server now resolves store location from `storeId` + store `mapsUrl` / store coordinates. |
+| `storeLocation` | object | No | Optional. If sent, it can be used for client-side display only. Server resolves store location from `storeId` + store `mapsUrl` / store coordinates. |
 | `deliveryLocation` | object | Yes | Customer drop-off: **`latitude`** and **`longitude`** (numbers). |
-| `weightKg` | number | No | Cart / shipment weight in kg for delivery pricing (default `0`). Same weight basis as checkout’s server-side delivery fee. |
+| `weightKg` | number | No | Echoed in the response for client convenience; **store delivery fee does not vary by weight** (weight is ignored for fee calculation). |
 
 **Example:**
 
@@ -1312,26 +1330,27 @@ Call **before** `POST /api/checkout` to preview **delivery fee**, **service fee*
     "storeName": "كريسبي تشيكن",
     "storeLocation": { "latitude": 29.532, "longitude": 35.006 },
     "distanceKm": 1.234,
-    "minAmountJod": 2,
+    "deliveryFeeMaxJod": 3,
     "weightKg": 2.5,
     "currency": "JOD",
-    "deliveryFee": 1.38,
+    "deliveryFee": 1.02,
     "serviceFee": 0.65,
     "feesTaxRate": 0.07,
-    "feesTax": 0.22,
-    "feesTaxNote": "7% VAT on delivery fee only (not on order subtotal or service fee).",
-    "invoiceTotal": 2.25,
-    "pricingNote": "Delivery fee matches Arheb Box: route minimum (1 JOD/km, floor 2 JOD) + 0.15 JOD/kg, capped at 3 JOD. distanceKm and minAmountJod describe the route (same haversine rules as POST /api/arheb-box/quote)."
+    "feesTax": 0.12,
+    "feesTaxNote": "7% tax on delivery fee plus service fee (not on order subtotal).",
+    "invoiceTotal": 1.79,
+    "pricingNote": "Store delivery fee: 1 JOD for the first km + 0.1 JOD per additional km, maximum 3 JOD. Weight does not change delivery fee."
   },
   "timestamp": "2024-01-15T10:30:00Z"
 }
 ```
 
-- **`deliveryFee`**: Same formula as **Arheb Box** / store checkout: **route minimum** (`minAmountJod` from distance: 1 JOD/km, **minimum 2 JOD**) **+ 0.15 × weightKg** JOD, rounded to 2 decimals, then **capped at a maximum of 3 JOD**.
+- **`deliveryFee`**: **Store orders:** **1 JOD** for the first km **+ 0.1 JOD** per additional km, rounded to 2 decimals, **capped at `deliveryFeeMaxJod` (3 JOD)**. This is **distance-only** (no weight component).
+- **`deliveryFeeMaxJod`**: Always **3** for store quotes (maximum delivery fee in JOD).
 - **`serviceFee`**: fixed **0.65** JOD.
-- **`feesTax`**: **7% × deliveryFee** only.
+- **`feesTax`**: **7% × (deliveryFee + serviceFee)**.
 - **`invoiceTotal`**: `deliveryFee + serviceFee + feesTax` (fees-only total; does **not** include cart subtotal).
-- **`distanceKm` / `minAmountJod`**: route metrics (1 JOD/km, minimum 2 JOD — same helper as **POST /api/arheb-box/quote**); informational for the client.
+- **`distanceKm`**: Haversine distance between resolved store location and `deliveryLocation` (informational).
 - Store location is resolved server-side from the store record (`storeId`) using store lat/long if present, otherwise parsed from `mapsUrl`.
 
 **Error responses:** `400` (missing/invalid body), `404` (unknown `storeId`), `500` (server error).
@@ -2462,7 +2481,7 @@ console.log(data.data.popup);
 
 ## Arheb Box
 
-Requests are stored in `arheb_box_requests` with **sender/receiver** contacts, pickup & dropoff (lat/lng + address + `mapsUrl`), **payment** (`paymentMethod`, `whoPays`: `sender` | `receiver`), **trip amount** (`amount` in JOD), **distance** and **minimum price** (`distanceKm`, `minAmountJod`). Pricing: **1 JOD per km**, **minimum 2 JOD** (e.g. 3 km → at least 3 JOD; 0.5 km → at least 2 JOD), **+ 0.15 JOD/kg** weight component where applicable, with the **computed delivery fee capped at 3 JOD** (same basis as store checkout / quote-fees). The client must call **quote** first, then send an `amount` ≥ `minAmountJod`. After a driver is assigned, **customer** `GET /api/arheb-box/:id` and list/detail responses include **`driverPhone`**.
+Requests are stored in `arheb_box_requests` with **sender/receiver** contacts, pickup & dropoff (lat/lng + address + `mapsUrl`), **payment** (`paymentMethod`, `whoPays`: `sender` | `receiver`), **trip amount** (`amount` in JOD), **distance** and **minimum price** (`distanceKm`, `minAmountJod`). **Arheb Box pricing is separate from store orders:** minimum parcel amount / delivery fee basis is **1 JOD for the first km + 0.5 JOD per additional km** (no cap). **`minAmountJod`** from **`POST /api/arheb-box/quote`** matches that formula. The client must call **quote** first, then send an `amount` ≥ `minAmountJod`. After a driver is assigned, **customer** `GET /api/arheb-box/:id` and list/detail responses include **`driverPhone`**. Order objects and Arheb Box rows may include **`createdAtJordan`** (human-readable **Asia/Amman** time) alongside UTC `createdAt`.
 
 ### Arheb Box quote (distance & minimum amount)
 
@@ -2471,7 +2490,7 @@ Requests are stored in `arheb_box_requests` with **sender/receiver** contacts, p
 
 **Body:** same `pickup` / `dropoff` shape as submit (each with `latitude`, `longitude`).
 
-**Response:** `{ distanceKm, minAmountJod, currency: "JOD" }`
+**Response:** `{ distanceKm, minAmountJod, currency: "JOD", pricingNote }` — `minAmountJod` is the minimum **parcel amount** (JOD) for the route, computed with the **1 + 0.5×(km−1)** rule (no maximum).
 
 ### Get Arheb Box request by ID (customer)
 
@@ -2506,7 +2525,7 @@ Returns full request including **`driverPhone`** when a driver is assigned.
 
 **Success response** includes `paymentMethod`, `whoPays`, `amount`, `distanceKm`, `minAmountJod`, pickup/dropoff with `mapsUrl`, sender/receiver phones and names.
 
-**Admin (dashboard):** `GET /api/admin/arheb-box`, `PATCH /api/admin/arheb-box/:id`, `POST /api/admin/arheb-box/:id/assign-driver`. Admin/driver responses include pricing fields and **`driverPhone`** when applicable.
+**Admin (dashboard):** `GET /api/admin/arheb-box`, **`GET /api/admin/arheb-box/:id`** (single request, same enriched shape as list), `PATCH /api/admin/arheb-box/:id`, `POST /api/admin/arheb-box/:id/assign-driver`. Admin/driver responses include pricing fields and **`driverPhone`** when applicable.
 
 **Driver:** `GET /api/driver/arheb-box` includes **`amount`**, **`paymentMethod`**, **`whoPays`**, **`distanceKm`**, **`minAmountJod`**, sender/receiver phones, and maps links.
 
@@ -2530,12 +2549,18 @@ Retrieves contact information (email and phone).
   "data": {
     "contact": {
       "email": "contact@arheb.com",
-      "phone": "+201234567890"
+      "phone": "+201234567890",
+      "cliqNumber": "",
+      "driverDeliveryPercent": 0.65,
+      "driverDeliveryDefaultEffective": 0.65
     }
   },
   "timestamp": "2024-01-15T10:30:00Z"
 }
 ```
+
+- **`driverDeliveryPercent`**: App-wide default **share of the delivery fee** for drivers when **`drivers.commissionPercent`** is unset (`null`–`1` or `0`–`100` style values normalized on read). Mirrors **GET/PATCH /api/admin/info**.
+- **`driverDeliveryDefaultEffective`**: Resolved default after fallbacks (App info → legacy global [driver commission settings](#admin-driver-commission)).
 
 ---
 
@@ -2676,7 +2701,7 @@ Store state is derived from **admin flags + Jordan opening hours**:
 | GET | `/api/admin/stores` | List stores (Store Admin sees only their store). Admin/SuperAdmin query params: `isOpen=true` (only effectively open stores), `isOpen=false` (only effectively closed stores), `paused=true` (only paused stores). |
 | POST | `/api/admin/stores` | Create store (Admin and SuperAdmin only). Body: name, nameEn, nameAr, cover, logo, phone, address, addressEn, deliveryFee, minimumOrder, etc. |
 | GET | `/api/admin/stores/:id` | Get one store |
-| PATCH | `/api/admin/stores/:id` | Update store (name, nameAr, nameEn, cover, logo, deliveryTime, deliveryFee, minimumOrder, isOpen, openingHours, address, phone, category, closingTime, storeCategories, etc.). **isPremium** only by SuperAdmin/Admin. **storeCategories** is an array of `{ id, nameEn, nameAr, name }`. |
+| PATCH | `/api/admin/stores/:id` | Update store (name, nameAr, nameEn, cover, logo, deliveryTime, deliveryFee, minimumOrder, isOpen, openingHours, address, phone, category, closingTime, storeCategories, **`paused`**, **`blocked`**, **`hiddenFromCustomers`**, **`isExclusive`** / **`isPremium`**, etc.). **isPremium** / **isExclusive** only by SuperAdmin/Admin. **`hiddenFromCustomers`** hides the store from customer browse lists without blocking it. **storeCategories** is an array of `{ id, nameEn, nameAr, name }`. |
 | DELETE | `/api/admin/stores/:id` | Delete store (Admin and SuperAdmin only). Removes store and its products. |
 
 ---
@@ -2793,7 +2818,9 @@ Order list and order detail responses include **`driverId`** and **`driverName`*
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/admin/arheb-box` | List all Arheb box requests (id, phoneNumber, userName, pickup, dropoff, notes, status, createdAt). Sorted by `createdAt DESC, id DESC`. |
+| GET | `/api/admin/arheb-box/:id` | Single request by id; **`data.request`** uses the same enrichment as list/detail (pricing, **`createdAtJordan`**, driver fields, etc.). |
 | PATCH | `/api/admin/arheb-box/:id` | Update request status. Body: `{ "status": "confirmed" }` (e.g. pending, confirmed, in_progress, delivered, cancelled). |
+| POST | `/api/admin/arheb-box/:id/assign-driver` | Body `{ "driverId" }` — assigns driver, notifies via FCM. |
 
 ---
 
@@ -2816,9 +2843,10 @@ Order list and order detail responses include **`driverId`** and **`driverName`*
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/admin/drivers` | List all drivers (`id`, `name`, `mobile`, `email`, `vehicleType`, `vehicleNumber`, `licenseNumber`, `photo`, `latitude`, `longitude`, **`rating`**, **`ratingCount`**, `isVerified`, `isBlocked`, `createdAt`). |
-| POST | `/api/admin/drivers` | Add driver. Body: `name`, `mobile` (required); `email`, `vehicleType`, `vehicleNumber`, `licenseNumber` (optional). No OTP. |
-| PATCH | `/api/admin/drivers/:id` | Update driver and/or block. Body: any of `name`, `mobile`, `email`, `vehicleType`, `vehicleNumber`, `licenseNumber`, `isBlocked` (boolean). |
+| GET | `/api/admin/drivers` | List all drivers (`id`, `name`, `mobile`, `email`, `vehicleType`, `vehicleNumber`, `licenseNumber`, `photo`, `latitude`, `longitude`, **`rating`**, **`ratingCount`**, **`commissionPercent`** (effective % after defaults), `isVerified`, `isBlocked`, `createdAt`). |
+| GET | `/api/admin/drivers/export` | Download Excel (`.xlsx`) of all drivers including **`commissionPercent`**, ratings, **`createdAtJordan`**, etc. (Admin/SuperAdmin). |
+| POST | `/api/admin/drivers` | Add driver. Body: `name`, `mobile` (required); `email`, `vehicleType`, `vehicleNumber`, `licenseNumber`, **`commissionPercent`** (optional, per-driver override) — No OTP. |
+| PATCH | `/api/admin/drivers/:id` | Update driver and/or block. Body: any of `name`, `mobile`, `email`, `vehicleType`, `vehicleNumber`, `licenseNumber`, **`commissionPercent`**, `isBlocked` (boolean). |
 | DELETE | `/api/admin/drivers/:id` | Remove driver (unassigns from orders then deletes). |
 
 ---
@@ -2827,14 +2855,38 @@ Order list and order detail responses include **`driverId`** and **`driverName`*
 
 **Access:** SuperAdmin and Admin only.
 
-Global settings for how much of each order’s **delivery fee** is recorded as the driver’s **earnings** when a driver is assigned. Default: **`percent`** with value **`0.65`** (65% of the delivery fee). Alternative: **`fixed`** — a flat amount in **JOD** per assigned order (capped so it never exceeds that order’s delivery fee).
+**Legacy global fallback** for how much of each order’s **delivery fee** is recorded as the driver’s **earnings** when no per-driver or App-info default applies. Default: **`percent`** with value **`0.65`**. Alternative: **`fixed`** — a flat amount in **JOD** per assigned order (capped so it never exceeds that order’s delivery fee).
+
+**Resolution order:** **`drivers.commissionPercent`** (if set) → **[App info](#admin-app-info-driver-delivery-default)** **`driverDeliveryPercent`** → **these global settings**.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/admin/settings/driver-commission` | Returns `{ commissionType: "percent" \| "fixed", commissionValue: number }`. |
+| GET | `/api/admin/settings/driver-commission` | Returns `{ commissionType, commissionValue, note }` — use as fallback when App info and per-driver percents are unset. |
 | PATCH | `/api/admin/settings/driver-commission` | Body: `commissionType` and/or `commissionValue`. For **percent**, use a decimal **0–1** (e.g. `0.65`) or **0–100** (e.g. `65`) — both are accepted. |
 
-On **accept** (`POST /api/driver/orders/accept`), the server snapshots **`driverCommissionType`**, **`driverCommissionValue`**, and **`driverEarnings`** on the order row so later changes to global settings do not rewrite past assignments.
+On **accept** (`POST /api/driver/orders/accept`), the server snapshots **`driverCommissionType`**, **`driverCommissionValue`**, and **`driverEarnings`** on the order row so later changes to settings do not rewrite past assignments.
+
+### Admin App Info (driver delivery default)
+
+**Access:** SuperAdmin and Admin only.
+
+Same backing row as public contact info, plus **default driver delivery percent** for drivers without **`commissionPercent`**.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/admin/info` | Returns `{ email, phone, cliqNumber, driverDeliveryPercent, driverDeliveryDefaultEffective }`. |
+| PATCH | `/api/admin/info` | Body: any of `email`, `phone`, `cliqNumber`, **`driverDeliveryPercent`**. Missing fields unchanged. |
+
+### Admin Home Banners & Offers
+
+**Access:** SuperAdmin and Admin only. Persists to the same JSON backing **`GET /api/home`** (`data.banners`, `data.offers`).
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/admin/home/banners` | Returns `{ banners }`. |
+| PATCH | `/api/admin/home/banners` | Body: `{ "banners": [ ... ] }` — replaces home banners. |
+| GET | `/api/admin/home/offers` | Returns `{ offers }` (top offers strip on home). |
+| PATCH | `/api/admin/home/offers` | Body: `{ "offers": [ ... ] }` — replaces home offers. |
 
 ---
 
@@ -2856,7 +2908,7 @@ On **accept** (`POST /api/driver/orders/accept`), the server snapshots **`driver
 **Response `data` highlights:**
 
 - **`driver`**: profile fields plus **`rating`** and **`ratingCount`** (customer driver ratings).
-- **`globalCommission`**: current global commission settings (same as GET driver-commission).
+- **`globalCommission`**: legacy global fallback settings (same as GET `/api/admin/settings/driver-commission`); effective per-order rates use per-driver and App info as described above.
 - **`stats`**: delivered / active / cancelled counts (all time, not filtered).
 - **`filters`**: echo of filter + pagination metadata (`totalOrders`, etc.).
 - **`earningsForFilteredDelivered`**: among **Delivered** orders matching filters — **`totalProfit`** (sum of driver earnings), **`totalDeliveryFees`**, **`orderCount`**.
@@ -3170,7 +3222,7 @@ Every driver order object includes **store**, **customer**, **delivery fee**, **
 
 ### Driver Accept Order
 
-Assigns an order to the authenticated driver and sets its status to "On the way". Persists **commission snapshot** fields on the order (`driverCommissionType`, `driverCommissionValue`, `driverEarnings`) from current [Admin Driver Commission](#admin-driver-commission) settings.
+Assigns an order to the authenticated driver and sets its status to "On the way". Persists **commission snapshot** fields on the order (`driverCommissionType`, `driverCommissionValue`, `driverEarnings`) using the effective driver rate: **per-driver `commissionPercent`** → [App info](#admin-app-info-driver-delivery-default) **`driverDeliveryPercent`** → [legacy global](#admin-driver-commission) settings.
 
 **Endpoint:** `POST /api/driver/orders/accept`
 
@@ -3440,7 +3492,7 @@ const profileResponse = await fetch('https://arheb-backend.onrender.com/api/prof
 
 - 📱 Phone numbers should be in **E.164 format** (e.g., `+201500157920`)
 - 🔑 JWT tokens expire after **7 days**
-- ⏰ All timestamps are in **ISO 8601 format** (UTC)
+- ⏰ All timestamps are in **ISO 8601 format** (UTC). Many order and Arheb Box payloads also include **`createdAtJordan`** (or similar `*Jordan` fields) for display in **Jordan (Asia/Amman)** local time.
 - 🔥 Backend uses **Firebase Authentication** for phone number verification
 - 📦 Data endpoints return cached/static data from JSON files
 - ⭐ Store ratings are calculated dynamically when orders are rated
@@ -3460,20 +3512,37 @@ For issues or questions, please contact: `contact@arheb.app`
 
 ## API Changelog
 
-**Last updated: 2026-03-26**
+**Last updated: 2026-04-03**
+
+### 2026-04 — Store browse, exclusive route, delivery fees, driver %, Jordan time
+
+- **Stores:** Public listings include **`status`**, **`isExclusive`** / **`isPremium`**; **`GET /api/stores/exclusive`** documents the curated exclusive/premium list (alias: **`/api/stores/premium`**). **`hiddenFromCustomers`** removes a store from browse without blocking it.
+- **Checkout quote:** **`POST /api/checkout/quote-fees`** uses **store** delivery only: **1 JOD first km + 0.1 JOD per extra km, max 3 JOD**; tax **7% × (delivery + service fee)**; **`deliveryFeeMaxJod`** in response.
+- **Arheb Box:** Quote / minimum amount uses **1 JOD first km + 0.5 JOD per extra km, no cap** (different from store orders). **`GET /api/admin/arheb-box/:id`** for dashboard detail.
+- **Drivers:** **`commissionPercent`** on driver rows; **`GET /api/admin/drivers/export`**; **`GET /api/admin/drivers/active-map`** includes **`currentStoreOrderId`** and **`currentArhebBoxRequestId`** per driver.
+- **App info:** **`GET/PATCH /api/admin/info`** includes **`driverDeliveryPercent`** and **`driverDeliveryDefaultEffective`**; **`GET /api/contact`** exposes the same defaults for clients.
+- **Home admin:** **`GET/PATCH /api/admin/home/offers`** (and existing banners endpoints) edit **`GET /api/home`** `offers` / `banners`.
+- **Timestamps:** Orders and related payloads often include **`createdAtJordan`** (**Asia/Amman**) for display.
 
 ### New APIs
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| POST | `/api/checkout/quote-fees` | User (Bearer) | Pre-checkout quote: `storeId` and `deliveryLocation` (lat/long), optional `weightKg`. Returns delivery fee (Arheb Box formula), service fee, 7% VAT on delivery fee only, route `distanceKm` / `minAmountJod`. |
-| GET | `/api/admin/drivers/active-map` | Admin / SuperAdmin | Returns drivers on **`/driver-presence`** (non-stale): `{ city, center, activeDriversCount, driversWithLocationCount, drivers[] }`. Each driver includes `hasLocation`, `latitude`, `longitude` (null until the app emits `location`), `lastSeen`. |
+| POST | `/api/checkout/quote-fees` | User (Bearer) | Pre-checkout quote: `storeId`, `deliveryLocation` (lat/long), optional `weightKg` (echoed only). **Store** delivery fee (1 + 0.1×(km−1) JOD, max 3), service fee 0.65 JOD, **7% tax on delivery + service fee**, `distanceKm`, `deliveryFeeMaxJod`. |
+| GET | `/api/stores/exclusive` | None | Same as `/api/stores/premium` — exclusive/premium stores; optional `limit`. |
+| GET | `/api/admin/drivers/active-map` | Admin / SuperAdmin | Returns drivers on **`/driver-presence`** (non-stale): `{ city, center, activeDriversCount, driversWithLocationCount, drivers[] }`. Each driver includes `hasLocation`, `latitude`, `longitude` (null until the app emits `location`), `lastSeen`, **`currentStoreOrderId`**, **`currentArhebBoxRequestId`**. |
+| GET | `/api/admin/drivers/export` | Admin / SuperAdmin | Excel export of drivers (includes **`commissionPercent`**, **`createdAtJordan`**, etc.). |
+| GET | `/api/admin/arheb-box/:id` | Admin | Single Arheb Box request (`data.request`), enriched like list. |
+| GET | `/api/admin/home/banners` | Admin / SuperAdmin | Read `data.banners` for **`GET /api/home`**. |
+| PATCH | `/api/admin/home/banners` | Admin / SuperAdmin | Replace home banners: body `{ "banners": [...] }`. |
+| GET | `/api/admin/home/offers` | Admin / SuperAdmin | Read `data.offers` for **`GET /api/home`**. |
+| PATCH | `/api/admin/home/offers` | Admin / SuperAdmin | Replace home offers: body `{ "offers": [...] }`. |
 | GET | `/api/admin/orders/:orderId/available-drivers` | Admin (Store Admin: own store orders only) | Returns non-blocked drivers that do not already have a pending request for this order. Used when assigning a driver to an order. |
 | POST | `/api/admin/orders/:orderId/request-driver` | Admin (Store Admin: own store orders only) | Sends a delivery request to one or more drivers. Body: `{ "driverIds": [1, 2, 3] }`. Allowed only when order status is "Preparing" or "Waiting confirmation" and order has no driver assigned. |
 | GET | `/api/admin/orders/:orderId/tracking` | Admin (Store Admin: own store orders only) | Returns order tracking state for the dashboard: `orderId`, `orderStatus`, `driverId`, `driverName`, `isTracking`, `driverConnected`, `lastLocation` (latitude, longitude, timestamp). Used with Socket.IO for live driver tracking. |
 | GET | `/api/driver/requests` | Driver | Returns pending delivery requests for the authenticated driver. Each request includes full order payload (store name/address/mapsUrl, client address, total, delivery fee, item count, etc.). Driver accepts via existing `POST /api/driver/orders/accept`. |
-| GET | `/api/admin/info` | Admin / SuperAdmin | Returns app-level contact info and Cliq number for the platform: `{ email, phone, cliqNumber }`. Used by the admin dashboard `App info` page. |
-| PATCH | `/api/admin/info` | Admin / SuperAdmin | Updates app contact info and Cliq number. Body: any subset of `{ email, phone, cliqNumber }`. Missing fields are left unchanged. |
+| GET | `/api/admin/info` | Admin / SuperAdmin | Returns app-level contact info: `{ email, phone, cliqNumber, driverDeliveryPercent, driverDeliveryDefaultEffective }`. |
+| PATCH | `/api/admin/info` | Admin / SuperAdmin | Updates app contact info. Body: any subset of `{ email, phone, cliqNumber, driverDeliveryPercent }`. Missing fields are left unchanged. |
 | POST | `/api/admin/stores/:storeId/products/import` | Admin / SuperAdmin / Store Admin (per-store) | Imports products for a store from an Excel file. Expects `multipart/form-data` with field `file` (`.xlsx`/`.xls`). Store Admin rows go to the pending products queue; Admin/SuperAdmin rows are imported directly. Rows with an `id` column that already exists for the store are **skipped** (no duplicate). Export includes `id` column. |
 | GET | `/api/admin/stores/:storeId/products/export` | Admin / SuperAdmin / Store Admin (per-store) | Exports all products for the given store as an Excel file. Columns include `id`, `nameEn`, `nameAr`, `price`, `discount`, `unit`, `category`, `description`, `stock`, `isAvailable`. |
 | POST | `/api/admin/orders/:orderId/reject` | Admin (Store Admin: own store only) | Reject (cancel) an order when status is **Waiting confirmation** or **Waiting cliq confirmation**. Sets status to `Cancelled` and sends FCM to the customer. |
@@ -3481,7 +3550,6 @@ For issues or questions, please contact: `contact@arheb.app`
 | GET | `/api/admin/notifications` | Admin / SuperAdmin | Returns list of sent broadcast notifications (id, title, body, imageUrl, successCount, failureCount, createdAt) for the dashboard history. |
 | POST | `/api/admin/notifications/broadcast` | Admin / SuperAdmin | Sends FCM to all users. Body: `{ title, body, imageUrl? }`. Each broadcast is **saved** to the `Notifications` table for later retrieval via GET `/api/admin/notifications`. |
 | GET | `/api/profile/notifications` | User (Bearer) | In-app notification inbox: paginated list (`page`, `perPage`) of notifications **sent to this user only**. Persisted in `user_notifications` when FCM is sent (per-user pushes and broadcast). Each item includes `data` (FCM payload: `orderId`, `deepLink`, `type`, …). |
-
 | POST | `/api/payment/initiate` | User (Bearer) | Creates order from **`checkout`** body (card only), then Madfoat session. Returns **201** with `data.checkout` (same shape as POST /api/checkout) and `data.payment` (`tranRef`, `redirectUrl`, etc.). Saves `paymentTranRef` / `paymentCartId` on the order. |
 | GET | `/api/payment/client-key` | None | Returns client key and profile ID for managed-form (paylib.js) frontend integration. |
 | GET | `/api/payment/query/:tranRef` | User (Bearer) | Query transaction status from Madfoat by transaction reference. |
@@ -3493,14 +3561,14 @@ For issues or questions, please contact: `contact@arheb.app`
 ### Adjusted / Updated APIs
 
 - **Stores (public)**  
-  - All store responses now include **`closingTime`** (string or `null`), **`openingTime`** (string or `null`), and **`storeCategories`** (array of `{ id, nameEn, nameAr, name }`).  
+  - All store responses now include **`status`** (`open` \| `paused` \| `closed`), **`isExclusive`** / **`isPremium`**, **`closingTime`** (string or `null`), **`openingTime`** (string or `null`), and **`storeCategories`** (array of `{ id, nameEn, nameAr, name }`).  
   - **`openingTime`** is derived from `openingHours.open` when present.  
-  - **`arhebFee`** is never exposed in public APIs.
+  - **`arhebFee`** is never exposed in public APIs. **Blocked** and **`hiddenFromCustomers`** stores are excluded from browse; other stores may appear with `status: "paused"` or `"closed"` as appropriate.
 
 - **Admin Stores**  
   - **GET** `/api/admin/stores` and **GET** `/api/admin/stores/:id`: **`arhebFee`** is included only for SuperAdmin; omitted for Admin and Store Admin. **`closingTime`** always included.  
   - **POST** `/api/admin/stores`: Body may include `closingTime`, and `arhebFee` (only applied if requester is SuperAdmin).  
-  - **PATCH** `/api/admin/stores/:id`: **`closingTime`** allowed for all roles. **`arhebFee`** allowed only for SuperAdmin; others get `403` if sent.  
+  - **PATCH** `/api/admin/stores/:id`: **`closingTime`** allowed for all roles. **`arhebFee`** allowed only for SuperAdmin; others get `403` if sent. **`hiddenFromCustomers`**, **`isExclusive`** / **`isPremium`** (SuperAdmin/Admin), **`paused`**, **`blocked`** as documented in [Admin Stores](#admin-stores).  
   - **Clone** store: Copies `closingTime` and `arhebFee` from source; body may override `closingTime`.
 
 - **Admin Orders**  
@@ -3518,9 +3586,9 @@ For issues or questions, please contact: `contact@arheb.app`
   - Customer and admin observers receive **`location_update`** (unchanged) and **`status_update`** for live tracking from driver accept until delivery.
 
 - **Contact / App Info**  
-  - **GET** `/api/contact`: Response `data.contact` now includes **`cliqNumber`** in addition to `email` and `phone`.  
+  - **GET** `/api/contact`: Response `data.contact` includes **`cliqNumber`**, **`driverDeliveryPercent`**, **`driverDeliveryDefaultEffective`** (see [Get Contact Information](#get-contact-information)).  
   - **PUT** `/api/contact`: Body may include optional `cliqNumber` (string). If provided, it updates the stored Cliq number along with email/phone.  
-  - **GET** `/api/admin/info` / **PATCH** `/api/admin/info` (see New APIs) provide an admin-only way to view and update the same contact info used by the app.
+  - **GET** `/api/admin/info` / **PATCH** `/api/admin/info` (see New APIs) — same row as contact plus **default driver delivery %** for drivers without **`commissionPercent`**.
 
 - **Checkout & Orders (Cliq payments)**  
   - **POST** `/api/checkout`:  
@@ -3545,7 +3613,7 @@ For issues or questions, please contact: `contact@arheb.app`
     - Admins can move Cliq orders from `'Waiting cliq confirmation'` → `'Waiting confirmation'` (approved) or to `'Payment rejected'` (rejected), which then flows through existing order processing as usual.
 
 - **Stores (public + admin) – Store categories**  
-  - All public store responses (`GET /api/stores`, `/api/stores/top-rated`, `/api/stores/premium`, `/api/stores/category/:categoryName`) now include **`storeCategories`** (array) as part of each store.  
+  - All public store responses (`GET /api/stores`, `/api/stores/top-rated`, `/api/stores/premium`, `/api/stores/exclusive`, `/api/stores/category/:categoryName`) now include **`storeCategories`** (array) as part of each store.  
   - **GET** `/api/stores/:id/products` and **GET** `/api/stores/:id/products/category/:categoryName` include `store.storeCategories` so clients can know which categories belong to that store.  
   - **Admin** store APIs allow managing `storeCategories` per store; dashboard product forms now pick categories from the store’s own `storeCategories` instead of global categories.
 
@@ -3577,9 +3645,8 @@ For issues or questions, please contact: `contact@arheb.app`
 - **Admin Products search**  
   - **GET** `/api/admin/stores/:storeId/products` now accepts query param **`?name=text`** to filter products by name (searches `name`, `nameAr`, `nameEn`; case-insensitive partial match).
 
-- **Stores: Pause & Block**  
-  - Stores can be **paused** (hidden from users; admins see status “Paused”) or **blocked** (hidden from users; only Admin/SuperAdmin can unblock; Store Admin cannot edit or add/remove products).  
-  - Public store APIs exclude paused and blocked stores. **PATCH** `/api/admin/stores/:id` accepts **`paused`** (any admin for their store) and **`blocked`** (Admin/SuperAdmin only). Each pause/unpause is recorded in **`store_pause_events`**; **GET** `/api/admin/stores/pause-history` returns sessions and total paused duration for a date range (optional store filter for Admin/SuperAdmin).
+- **Stores: Pause, block, hide**  
+  - Stores can be **paused**, **blocked**, or **hidden from browse** (`hiddenFromCustomers`). **Blocked** stores are excluded from all public store APIs. **Hidden** stores are excluded from browse lists but are not the same as paused. **`GET /api/stores`** can still list **paused** stores with `status: "paused"` (sorted after open). **PATCH** `/api/admin/stores/:id` accepts **`paused`** (any admin for their store), **`blocked`** (Admin/SuperAdmin only), and **`hiddenFromCustomers`**. Each pause/unpause is recorded in **`store_pause_events`**; **GET** `/api/admin/stores/pause-history` returns sessions and total paused duration for a date range (optional store filter for Admin/SuperAdmin).
 
 - **Products: Related products**  
   - **GET** `/api/products/:id` response includes **`relatedProducts`** (array of up to 8 same-store products by name similarity). Documented in [Get Product by ID](#get-product-by-id).
@@ -3599,22 +3666,14 @@ For issues or questions, please contact: `contact@arheb.app`
   - **POST** `/api/driver/arheb-box/:id/complete` – Bearer + request id; only assigned driver; **in_progress** → **delivered**, FCM to sender.  
   - **POST** `/api/driver/orders/:orderId/complete` or **POST** `/api/driver/orders/complete` with `{ orderId }` – store order **On the way** → **Delivered** (Bearer verifies driver).
 
-### Driver commission, earnings APIs, customer driver ratings, delivery fee cap
+### Driver commission, earnings APIs, customer driver ratings, delivery fees
 
-- **Delivery fee cap:** Store checkout and **POST /api/checkout/quote-fees** use the same helper as Arheb Box: **route minimum (1 JOD/km, floor 2 JOD) + 0.15 JOD/kg**, rounded to 2 decimals, **capped at 3 JOD** maximum.
-- **Admin:** **GET/PATCH** `/api/admin/settings/driver-commission` — global **`commissionType`** (`percent` \| `fixed`) and **`commissionValue`** (percent as 0–1 or 0–100; fixed as JOD). Default **percent 0.65**. Dashboard: **App info** page (`/dashboard/info/`).
+- **Store orders:** Delivery fee uses **1 JOD first km + 0.1 JOD per additional km**, **max 3 JOD** (same basis as **POST /api/checkout/quote-fees** and checkout). **Arheb Box** uses a **different** formula for **`minAmountJod`**: **1 + 0.5×(km−1)** JOD, **no cap**.
+- **Driver share:** **Per-driver `commissionPercent`** → **GET/PATCH /api/admin/info** **`driverDeliveryPercent`** → **GET/PATCH /api/admin/settings/driver-commission** (legacy global). **`GET/PATCH /api/admin/info`** is the preferred place for the app-wide default **percent** (0–1 or 0–100 accepted).
 - **Order snapshot:** On **POST /api/driver/orders/accept**, the order stores **`driverCommissionType`**, **`driverCommissionValue`**, **`driverEarnings`**.
 - **Driver app:** Order payloads include **`storeName`**, **`customerName`**, **`deliveryFee`**, **`profitJod`** (and **`driverShare`**), **`orderDate`** / **`createdAt`**, plus **`driverShare`** `{ commissionType, commissionValue, earningsJod }`. **GET /api/driver/home** and **GET /api/driver/stats** use **profit** (driver share), not raw delivery fee. **GET /api/driver/orders/assigned**, **GET /api/driver/earnings/today**, **GET /api/driver/earnings/summary** document earnings for drivers.
 - **Customer:** **POST /api/orders/:orderId/rate-driver** — rate the driver 1–5 + optional notes; one rating per order; updates **`drivers.rating`** and **`ratingCount`**. See [Rate Driver (Customer)](#rate-driver-customer).
 - **Admin dashboard:** **GET /api/admin/drivers/:id/profile** — filters, paginated orders with **`driverShare`**, **`earningsForFilteredDelivered`**, full **`ratings`** list. UI: **Drivers** → **Profile** → `/dashboard/drivers/profile/?id=` (static export–friendly URL).
-
----
-
-## Support
-
-For issues or questions, please contact: `contact@arheb.app`
-
----
 
 <div align="center">
 

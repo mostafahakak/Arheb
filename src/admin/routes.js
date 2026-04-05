@@ -41,8 +41,14 @@ const {
   ensureDriverCommissionSettingsTable,
   ensureOrderDriverShareColumns,
   ensureDriverRatingsTable,
+  ensureDriverCommissionPercentColumn,
+  parseDriverCommissionPercentForStorage,
+  normalizeDriverCommissionPercent,
+  getDriverDeliveryDefaultPercent,
+  ensureContactUsDriverDeliveryPercentColumn,
 } = require('../utils/driverCommission');
 const { getStoreFcmToken } = require('../storeFcm');
+const { enrichWithJordanTime } = require('../utils/jordanTime');
 
 const storesResponsePath = getJsonPath('stores_listing_response.json');
 const productsResponsePath = getJsonPath('products_listing_response.json');
@@ -561,7 +567,15 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
             })()
           : { ...s };
       const fcmToken = getStoreFcmToken(db, s.id) ?? null;
-      return { ...enrichStoreOpeningHours(base), dashboardStatus, fcmToken };
+      const ex = !!(base.isExclusive ?? base.isPremium);
+      return {
+        ...enrichStoreOpeningHours(base),
+        dashboardStatus,
+        fcmToken,
+        isExclusive: ex,
+        isPremium: ex,
+        hiddenFromCustomers: base.hiddenFromCustomers === true,
+      };
     };
 
     return res.status(200).json({
@@ -807,7 +821,23 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       if (req.admin.role === ROLES.STORE_ADMIN) {
         return res.status(403).json({ success: false, message: 'Only SuperAdmin or Admin can set premium' });
       }
-      stores[idx].isPremium = Boolean(body.isPremium);
+      const p = Boolean(body.isPremium);
+      stores[idx].isPremium = p;
+      stores[idx].isExclusive = p;
+    }
+    if (body.isExclusive !== undefined) {
+      if (req.admin.role === ROLES.STORE_ADMIN) {
+        return res.status(403).json({ success: false, message: 'Only SuperAdmin or Admin can set exclusive' });
+      }
+      const ex = Boolean(body.isExclusive);
+      stores[idx].isExclusive = ex;
+      stores[idx].isPremium = ex;
+    }
+    if (body.hiddenFromCustomers !== undefined) {
+      if (req.admin.role !== ROLES.SUPERADMIN && req.admin.role !== ROLES.ADMIN) {
+        return res.status(403).json({ success: false, message: 'Only Admin or SuperAdmin can hide a store from customers' });
+      }
+      stores[idx].hiddenFromCustomers = Boolean(body.hiddenFromCustomers);
     }
     if (body.arhebFee !== undefined) {
       if (req.admin.role !== ROLES.SUPERADMIN) {
@@ -1599,11 +1629,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     return orders.map((order) => {
       const items = findOrderItems.all(order.id);
       const store = order.storeId != null ? storeById[String(order.storeId)] : null;
-      return {
-        ...order,
-        storeName: store ? (store.nameEn || store.name || store.nameAr) : (order.storeId || '-'),
-        items: mapOrderItemsRows(items),
-      };
+      return enrichWithJordanTime(
+        {
+          ...order,
+          storeName: store ? (store.nameEn || store.name || store.nameAr) : (order.storeId || '-'),
+          items: mapOrderItemsRows(items),
+        },
+        ['createdAt'],
+      );
     });
   }
 
@@ -1618,6 +1651,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       const rows = withItems.map((o) => ({
         id: o.id,
         createdAt: o.createdAt,
+        createdAtJordan: o.createdAtJordan ?? '',
         status: o.status,
         storeName: o.storeName,
         name: o.name,
@@ -1662,11 +1696,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     return res.status(200).json({
       success: true,
       data: {
-        order: {
-          ...order,
-          storeName,
-          items: mapOrderItemsRows(items),
-        },
+        order: enrichWithJordanTime(
+          {
+            ...order,
+            storeName,
+            items: mapOrderItemsRows(items),
+          },
+          ['createdAt'],
+        ),
       },
     });
   });
@@ -2058,6 +2095,19 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       const metaById = Object.fromEntries(driversMeta.map((d) => [Number(d.id), d]));
       // Include every non-stale presence entry. Drivers who connected but have not sent
       // `location` yet appear with hasLocation: false (dashboard can still list them).
+      const activeStoreOrder = db.prepare(
+        `SELECT id FROM orders WHERE driverId = ? AND status NOT IN ('Delivered', 'Cancelled') ORDER BY id DESC LIMIT 1`,
+      );
+      const activeArhebBox = (() => {
+        try {
+          return db.prepare(
+            `SELECT id FROM arheb_box_requests WHERE driverId = ? AND lower(trim(status)) NOT IN ('delivered', 'cancelled') ORDER BY id DESC LIMIT 1`,
+          );
+        } catch (e) {
+          return null;
+        }
+      })();
+
       const drivers = active.map((d) => {
         const latNum = d.latitude != null ? Number(d.latitude) : NaN;
         const lonNum = d.longitude != null ? Number(d.longitude) : NaN;
@@ -2068,6 +2118,22 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
           latNum <= 90 &&
           lonNum >= -180 &&
           lonNum <= 180;
+        let currentStoreOrderId = null;
+        let currentArhebBoxRequestId = null;
+        try {
+          const so = activeStoreOrder.get(d.driverId);
+          currentStoreOrderId = so?.id ?? null;
+        } catch (e) {
+          /* ignore */
+        }
+        if (activeArhebBox) {
+          try {
+            const bx = activeArhebBox.get(d.driverId);
+            currentArhebBoxRequestId = bx?.id ?? null;
+          } catch (e) {
+            /* ignore */
+          }
+        }
         return {
           id: d.driverId,
           name: metaById[d.driverId]?.name || null,
@@ -2078,6 +2144,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
           longitude: hasLocation ? lonNum : null,
           hasLocation,
           lastSeen: d.lastSeen,
+          currentStoreOrderId,
+          currentArhebBoxRequestId,
         };
       });
       return res.status(200).json({
@@ -2187,7 +2255,12 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const recent = orders
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
       .slice(0, 10)
-      .map((o) => ({ id: o.id, totalAmount: o.totalAmount, status: o.status, createdAt: o.createdAt, storeId: o.storeId }));
+      .map((o) =>
+        enrichWithJordanTime(
+          { id: o.id, totalAmount: o.totalAmount, status: o.status, createdAt: o.createdAt, storeId: o.storeId },
+          ['createdAt'],
+        ),
+      );
     const data = {
         totalOrders: orders.length,
         totalRevenue,
@@ -2217,6 +2290,25 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       }
       console.error('Arheb box list error:', e);
       return res.status(500).json({ success: false, message: 'Failed to list arheb box requests' });
+    }
+  });
+
+  app.get('/api/admin/arheb-box/:id', auth, (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
+    try {
+      const row = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(id);
+      if (!row) return res.status(404).json({ success: false, message: 'Arheb box request not found' });
+      return res.status(200).json({
+        success: true,
+        data: { request: enrichArhebBoxRow(row, db) },
+      });
+    } catch (e) {
+      if (e.message && e.message.includes('no such table')) {
+        return res.status(404).json({ success: false, message: 'Arheb box request not found' });
+      }
+      console.error('Arheb box get error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to load request' });
     }
   });
 
@@ -2283,6 +2375,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
         data: {
           commissionType: s.type,
           commissionValue: s.value,
+          note:
+            'Fallback when App info driverDeliveryPercent (GET/PATCH /api/admin/info) is unset. Prefer setting the default under App info; per-driver overrides use drivers.commissionPercent.',
         },
       });
     } catch (e) {
@@ -2312,6 +2406,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
         data: {
           commissionType: updated.type,
           commissionValue: updated.value,
+          note:
+            'Legacy fallback when App info driverDeliveryPercent is not set. Prefer GET/PATCH /api/admin/info for the app-wide default driver delivery percent.',
         },
       });
     } catch (e) {
@@ -2324,11 +2420,67 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
   });
 
   // ——— Drivers (SuperAdmin / Admin only: add, remove, block) ———
+  app.get('/api/admin/drivers/export', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      ensureDriverRatingsTable(db);
+      ensureDriverCommissionPercentColumn(db);
+      ensureContactUsDriverDeliveryPercentColumn(db);
+      const defaultPct = getDriverDeliveryDefaultPercent(db);
+      const rows = db
+        .prepare(
+          'SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, rating, ratingCount, isVerified, isBlocked, createdAt, commissionPercent FROM drivers ORDER BY id',
+        )
+        .all();
+      const exportRows = rows.map((r) =>
+        enrichWithJordanTime(
+          {
+            id: r.id,
+            name: r.name,
+            mobile: r.mobile,
+            email: r.email ?? '',
+            vehicleType: r.vehicleType ?? '',
+            vehicleNumber: r.vehicleNumber ?? '',
+            licenseNumber: r.licenseNumber ?? '',
+            rating: r.rating ?? 5,
+            ratingCount: r.ratingCount != null ? Number(r.ratingCount) : 0,
+            isVerified: Boolean(r.isVerified),
+            isBlocked: Boolean(r.isBlocked),
+            commissionPercent: normalizeDriverCommissionPercent(r.commissionPercent, defaultPct),
+            createdAt: r.createdAt,
+          },
+          ['createdAt'],
+        ),
+      );
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.json_to_sheet(exportRows);
+      XLSX.utils.book_append_sheet(wb, ws, 'Drivers');
+      const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', 'attachment; filename="drivers-export.xlsx"');
+      return res.send(buf);
+    } catch (e) {
+      if (e.message && e.message.includes('no such table')) {
+        const wb = XLSX.utils.book_new();
+        const ws = XLSX.utils.json_to_sheet([]);
+        XLSX.utils.book_append_sheet(wb, ws, 'Drivers');
+        const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', 'attachment; filename="drivers-export.xlsx"');
+        return res.send(buf);
+      }
+      console.error('Drivers export error:', e);
+      return res.status(500).json({ success: false, message: 'Export failed' });
+    }
+  });
+
   app.get('/api/admin/drivers', auth, requireAdminOrSuper, (req, res) => {
     try {
       ensureDriverRatingsTable(db);
+      ensureDriverCommissionPercentColumn(db);
+      ensureContactUsDriverDeliveryPercentColumn(db);
+      const defaultPct = getDriverDeliveryDefaultPercent(db);
       const rows = db.prepare(
-        'SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, photo, latitude, longitude, rating, ratingCount, isVerified, isBlocked, createdAt FROM drivers ORDER BY id'
+        'SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, photo, latitude, longitude, rating, ratingCount, isVerified, isBlocked, createdAt, commissionPercent FROM drivers ORDER BY id'
       ).all();
       const drivers = rows.map((r) => ({
         id: r.id,
@@ -2345,6 +2497,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
         ratingCount: r.ratingCount != null ? Number(r.ratingCount) : 0,
         isVerified: Boolean(r.isVerified),
         isBlocked: Boolean(r.isBlocked),
+        commissionPercent: normalizeDriverCommissionPercent(r.commissionPercent, defaultPct),
         createdAt: r.createdAt,
       }));
       return res.status(200).json({ success: true, data: { drivers } });
@@ -2364,9 +2517,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     try {
       ensureOrderDriverShareColumns(db);
       ensureDriverRatingsTable(db);
+      ensureDriverCommissionPercentColumn(db);
       const driver = db
         .prepare(
-          'SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, createdAt, rating, ratingCount FROM drivers WHERE id = ?'
+          'SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, createdAt, rating, ratingCount, commissionPercent FROM drivers WHERE id = ?'
         )
         .get(id);
       if (!driver) return res.status(404).json({ success: false, message: 'Driver not found' });
@@ -2435,6 +2589,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
         .all(id);
 
       const commission = getDriverCommissionSettings(db);
+      const appDefaultPct = getDriverDeliveryDefaultPercent(db);
+      const effectivePct = normalizeDriverCommissionPercent(driver.commissionPercent, appDefaultPct);
 
       return res.status(200).json({
         success: true,
@@ -2451,11 +2607,16 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
             createdAt: driver.createdAt,
             rating: driver.rating ?? 5,
             ratingCount: driver.ratingCount != null ? Number(driver.ratingCount) : 0,
+            commissionPercentStored: driver.commissionPercent != null ? Number(driver.commissionPercent) : null,
+            commissionPercent: effectivePct,
           },
           globalCommission: {
             commissionType: commission.type,
             commissionValue: commission.value,
+            note:
+              'Legacy global settings. Effective default when a driver has no rate is App info driverDeliveryPercent (GET/PATCH /api/admin/info), then this value if app info is unset.',
           },
+          appInfoDriverDeliveryPercent: appDefaultPct,
           stats: {
             delivered: counts.delivered || 0,
             active: counts.active || 0,
@@ -2486,28 +2647,46 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
   });
 
   app.post('/api/admin/drivers', auth, requireAdminOrSuper, (req, res) => {
-    const { name, mobile, email, vehicleType, vehicleNumber, licenseNumber } = req.body || {};
+    const { name, mobile, email, vehicleType, vehicleNumber, licenseNumber, commissionPercent } = req.body || {};
     if (!name || !String(name).trim() || !mobile || !String(mobile).trim()) {
       return res.status(400).json({ success: false, message: 'name and mobile are required' });
     }
     const normalizedMobile = String(mobile).trim();
     try {
+      ensureDriverCommissionSettingsTable(db);
+      ensureDriverCommissionPercentColumn(db);
+      ensureContactUsDriverDeliveryPercentColumn(db);
+      let pctToStore = getDriverDeliveryDefaultPercent(db);
+      if (commissionPercent !== undefined) {
+        try {
+          const p = parseDriverCommissionPercentForStorage(commissionPercent);
+          if (p !== undefined) pctToStore = p;
+        } catch (err) {
+          if (err.code === 'VALIDATION') {
+            return res.status(400).json({ success: false, message: err.message });
+          }
+          throw err;
+        }
+      }
       const existing = db.prepare('SELECT id FROM drivers WHERE mobile = ?').get(normalizedMobile);
       if (existing) {
         return res.status(400).json({ success: false, message: 'Driver with this mobile already exists' });
       }
       db.prepare(`
-        INSERT INTO drivers (name, mobile, email, vehicleType, vehicleNumber, licenseNumber, photo, latitude, longitude, rating, isVerified, isBlocked)
-        VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 5, 0, 0)
+        INSERT INTO drivers (name, mobile, email, vehicleType, vehicleNumber, licenseNumber, photo, latitude, longitude, rating, isVerified, isBlocked, commissionPercent)
+        VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 5, 0, 0, ?)
       `).run(
         String(name).trim(),
         normalizedMobile,
         email ? String(email).trim() : null,
         vehicleType ? String(vehicleType).trim() : null,
         vehicleNumber ? String(vehicleNumber).trim() : null,
-        licenseNumber ? String(licenseNumber).trim() : null
+        licenseNumber ? String(licenseNumber).trim() : null,
+        pctToStore,
       );
-      const driver = db.prepare('SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, createdAt FROM drivers WHERE mobile = ?').get(normalizedMobile);
+      const driver = db
+        .prepare('SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, createdAt, commissionPercent FROM drivers WHERE mobile = ?')
+        .get(normalizedMobile);
       return res.status(201).json({
         success: true,
         message: 'Driver added successfully',
@@ -2522,6 +2701,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
             licenseNumber: driver.licenseNumber,
             isBlocked: Boolean(driver.isBlocked),
             createdAt: driver.createdAt,
+            commissionPercent: normalizeDriverCommissionPercent(driver.commissionPercent, getDriverDeliveryDefaultPercent(db)),
           },
         },
       });
@@ -2536,7 +2716,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid driver id' });
     const driver = db.prepare('SELECT * FROM drivers WHERE id = ?').get(id);
     if (!driver) return res.status(404).json({ success: false, message: 'Driver not found' });
-    const { name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked } = req.body || {};
+    ensureDriverCommissionPercentColumn(db);
+    ensureContactUsDriverDeliveryPercentColumn(db);
+    const { name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, commissionPercent } = req.body || {};
     const updates = [];
     const values = [];
     if (name !== undefined) { updates.push('name = ?'); values.push(String(name).trim()); }
@@ -2546,13 +2728,28 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (vehicleNumber !== undefined) { updates.push('vehicleNumber = ?'); values.push(vehicleNumber ? String(vehicleNumber).trim() : null); }
     if (licenseNumber !== undefined) { updates.push('licenseNumber = ?'); values.push(licenseNumber ? String(licenseNumber).trim() : null); }
     if (isBlocked !== undefined) { updates.push('isBlocked = ?'); values.push(isBlocked ? 1 : 0); }
+    if (commissionPercent !== undefined) {
+      try {
+        const p = parseDriverCommissionPercentForStorage(commissionPercent);
+        updates.push('commissionPercent = ?');
+        values.push(p === undefined ? null : p);
+      } catch (err) {
+        if (err.code === 'VALIDATION') {
+          return res.status(400).json({ success: false, message: err.message });
+        }
+        throw err;
+      }
+    }
     if (updates.length === 0) {
       return res.status(400).json({ success: false, message: 'No fields to update' });
     }
     values.push(id);
     try {
       db.prepare(`UPDATE drivers SET ${updates.join(', ')} WHERE id = ?`).run(...values);
-      const updated = db.prepare('SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, createdAt FROM drivers WHERE id = ?').get(id);
+      const defaultPct = getDriverDeliveryDefaultPercent(db);
+      const updated = db
+        .prepare('SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, createdAt, commissionPercent FROM drivers WHERE id = ?')
+        .get(id);
       return res.status(200).json({
         success: true,
         data: {
@@ -2566,6 +2763,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
             licenseNumber: updated.licenseNumber,
             isBlocked: Boolean(updated.isBlocked),
             createdAt: updated.createdAt,
+            commissionPercent: normalizeDriverCommissionPercent(updated.commissionPercent, defaultPct),
           },
         },
       });
@@ -2706,16 +2904,58 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     return res.status(200).json({ success: true, data: { banners } });
   });
 
+  // ——— Home top offers (SuperAdmin / Admin only) — same backing file as GET /api/home `data.offers` ———
+  app.get('/api/admin/home/offers', auth, requireAdminOrSuper, (req, res) => {
+    const home = loadHome();
+    const offers = home?.data?.offers ?? [];
+    return res.status(200).json({ success: true, data: { offers } });
+  });
+
+  app.patch('/api/admin/home/offers', auth, requireAdminOrSuper, (req, res) => {
+    const body = req.body || {};
+    const home = loadHome();
+    const data = home.data || {};
+    const offers = Array.isArray(body.offers) ? body.offers : data.offers || [];
+    const next = {
+      ...home,
+      data: {
+        ...data,
+        offers,
+      },
+    };
+    saveHome(next);
+    return res.status(200).json({ success: true, data: { offers } });
+  });
+
   // ——— App info / Contact (email, phone, cliqNumber) — Admin & SuperAdmin only ———
   app.get('/api/admin/info', auth, requireAdminOrSuper, (req, res) => {
     try {
-      const row = db.prepare('SELECT email, phone, cliqNumber FROM contact_us ORDER BY id DESC LIMIT 1').get();
+      ensureContactUsDriverDeliveryPercentColumn(db);
+      const row = db
+        .prepare('SELECT email, phone, cliqNumber, driverDeliveryPercent FROM contact_us ORDER BY id DESC LIMIT 1')
+        .get();
+      const fallbackPct = getDriverCommissionSettings(db);
+      const defaultPct =
+        fallbackPct.type === 'percent' ? fallbackPct.value : 0.65;
+      const effectiveDefault = getDriverDeliveryDefaultPercent(db);
       if (!row) {
         return res.status(200).json({
           success: true,
-          data: { info: { email: '', phone: '', cliqNumber: '' } },
+          data: {
+            info: {
+              email: '',
+              phone: '',
+              cliqNumber: '',
+              driverDeliveryPercent: null,
+              driverDeliveryDefaultEffective: effectiveDefault,
+            },
+          },
         });
       }
+      const driverDeliveryPercentAppInfo =
+        row.driverDeliveryPercent != null && String(row.driverDeliveryPercent).trim() !== ''
+          ? normalizeDriverCommissionPercent(Number(row.driverDeliveryPercent), defaultPct)
+          : null;
       return res.status(200).json({
         success: true,
         data: {
@@ -2723,12 +2963,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
             email: row.email ?? '',
             phone: row.phone ?? '',
             cliqNumber: row.cliqNumber != null ? row.cliqNumber : '',
+            driverDeliveryPercent: driverDeliveryPercentAppInfo,
+            driverDeliveryDefaultEffective: effectiveDefault,
           },
         },
       });
     } catch (e) {
       if (e.message && e.message.includes('no such table')) {
-        return res.status(200).json({ success: true, data: { info: { email: '', phone: '', cliqNumber: '' } } });
+        return res.status(200).json({ success: true, data: { info: { email: '', phone: '', cliqNumber: '', driverDeliveryPercent: null } } });
       }
       console.error('Admin get info error:', e);
       return res.status(500).json({ success: false, message: 'Failed to load info' });
@@ -2740,16 +2982,30 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const email = body.email !== undefined ? String(body.email).trim() : undefined;
     const phone = body.phone !== undefined ? String(body.phone).trim() : undefined;
     const cliqNumber = body.cliqNumber !== undefined ? String(body.cliqNumber).trim() : undefined;
+    const driverDeliveryPercentRaw = body.driverDeliveryPercent;
     if (email !== undefined && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).json({ success: false, message: 'Invalid email format' });
     }
     try {
+      ensureContactUsDriverDeliveryPercentColumn(db);
+      let driverPctToStore = null;
+      if (driverDeliveryPercentRaw !== undefined) {
+        try {
+          driverPctToStore = parseDriverCommissionPercentForStorage(driverDeliveryPercentRaw);
+        } catch (err) {
+          if (err.code === 'VALIDATION') {
+            return res.status(400).json({ success: false, message: err.message });
+          }
+          throw err;
+        }
+      }
       const row = db.prepare('SELECT id, email, phone, cliqNumber FROM contact_us ORDER BY id DESC LIMIT 1').get();
       if (!row) {
-        db.prepare('INSERT INTO contact_us (email, phone, cliqNumber) VALUES (?, ?, ?)').run(
+        db.prepare('INSERT INTO contact_us (email, phone, cliqNumber, driverDeliveryPercent) VALUES (?, ?, ?, ?)').run(
           email ?? 'contact@arheb.com',
           phone ?? '+201234567890',
-          cliqNumber ?? ''
+          cliqNumber ?? '',
+          driverPctToStore,
         );
       } else {
         db.prepare(`
@@ -2757,11 +3013,27 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
             email = COALESCE(?, email),
             phone = COALESCE(?, phone),
             cliqNumber = COALESCE(?, cliqNumber),
+            driverDeliveryPercent = CASE WHEN ? = 1 THEN ? ELSE driverDeliveryPercent END,
             updatedAt = CURRENT_TIMESTAMP
           WHERE id = ?
-        `).run(email ?? null, phone ?? null, cliqNumber ?? null, row.id);
+        `).run(
+          email ?? null,
+          phone ?? null,
+          cliqNumber ?? null,
+          driverDeliveryPercentRaw !== undefined ? 1 : 0,
+          driverPctToStore,
+          row.id,
+        );
       }
-      const updated = db.prepare('SELECT email, phone, cliqNumber FROM contact_us ORDER BY id DESC LIMIT 1').get();
+      const fallbackPct = getDriverCommissionSettings(db);
+      const defaultPct = fallbackPct.type === 'percent' ? fallbackPct.value : 0.65;
+      const updated = db
+        .prepare('SELECT email, phone, cliqNumber, driverDeliveryPercent FROM contact_us ORDER BY id DESC LIMIT 1')
+        .get();
+      const driverDeliveryPercentAppInfo =
+        updated.driverDeliveryPercent != null && String(updated.driverDeliveryPercent).trim() !== ''
+          ? normalizeDriverCommissionPercent(Number(updated.driverDeliveryPercent), defaultPct)
+          : null;
       return res.status(200).json({
         success: true,
         data: {
@@ -2769,6 +3041,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
             email: updated.email ?? '',
             phone: updated.phone ?? '',
             cliqNumber: updated.cliqNumber != null ? updated.cliqNumber : '',
+            driverDeliveryPercent: driverDeliveryPercentAppInfo,
+            driverDeliveryDefaultEffective: getDriverDeliveryDefaultPercent(db),
           },
         },
       });

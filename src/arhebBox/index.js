@@ -1,4 +1,6 @@
 const fcm = require('../fcm');
+const { enrichWithJordanTime } = require('../utils/jordanTime');
+const { arhebBoxDeliveryFeeFromDistanceJod, STORE_MAX_JOD } = require('../utils/deliveryFees');
 const { quoteFromPickupDropoff, minAmountJod, distanceKm: haversineKm } = require('./pricing');
 
 const SERVICE_FEE_JOD = 0.65;
@@ -17,20 +19,16 @@ function safeNumber(v, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-// Weight-only floor (used when distance is unknown)
-function calcArhebBoxDeliveryFeeJod(weightKg) {
-  const w = Math.max(0, safeNumber(weightKg, 0));
-  const fee = 1 + 0.15 * w;
-  return round2(Math.min(MAX_DELIVERY_FEE_JOD, fee));
+/** When distance is unknown, use 1 JOD base (no weight-based add-on in current pricing). */
+function calcArhebBoxDeliveryFeeJod(_weightKg) {
+  return round2(1);
 }
 
-const MAX_DELIVERY_FEE_JOD = 3;
-
-/** Route minimum (1 JOD/km, min 2 JOD) + 0.15 JOD/kg — same basis as Arheb Box quote. Capped at 3 JOD. */
-function calcDeliveryFeeFromDistanceAndWeight(distanceKm, weightKg) {
-  const d = typeof distanceKm === 'number' && Number.isFinite(distanceKm) ? Math.max(0, distanceKm) : 0;
-  const w = Math.max(0, safeNumber(weightKg, 0));
-  return round2(Math.min(MAX_DELIVERY_FEE_JOD, minAmountJod(d) + 0.15 * w));
+/** Arheb Box: 1 JOD first km + 0.5 JOD per additional km; no maximum. Distance-only; weight ignored. */
+function calcDeliveryFeeFromDistanceAndWeight(distanceKm, _weightKg) {
+  const d = typeof distanceKm === 'number' && Number.isFinite(distanceKm) ? Math.max(0, distanceKm) : null;
+  if (d == null) return round2(1);
+  return arhebBoxDeliveryFeeFromDistanceJod(d);
 }
 
 function calcFeesTaxJod(deliveryFeeJod, serviceFeeJod) {
@@ -80,8 +78,10 @@ function enrichRequestRow(row, db) {
         : calcArhebBoxDeliveryFeeJod(weightKg);
   const serviceFee = row.serviceFee != null ? Number(row.serviceFee) : SERVICE_FEE_JOD;
   const feesTax = row.feesTax != null ? Number(row.feesTax) : calcFeesTaxJod(deliveryFee, serviceFee);
-  return {
+  const base = {
     id: row.id,
+    phoneNumber: row.phoneNumber ?? null,
+    userName: row.userName ?? null,
     senderPhone: row.phoneNumber,
     senderName: row.userName,
     receiverPhone: row.receiverPhone || null,
@@ -105,6 +105,7 @@ function enrichRequestRow(row, db) {
     driverPhone,
     createdAt: row.createdAt,
   };
+  return enrichWithJordanTime(base, ['createdAt']);
 }
 
 module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest) {
@@ -192,7 +193,8 @@ module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest) {
           distanceKm: q.distanceKm,
           minAmountJod: q.minAmountJod,
           currency: 'JOD',
-          pricingNote: '1 JOD per km; minimum 2 JOD. Amount offered must be at least minAmountJod.',
+          pricingNote:
+            'Arheb Box delivery fee: 1 JOD for the first km + 0.5 JOD per additional km (no cap). Amount offered must be at least minAmountJod.',
         },
         timestamp: new Date().toISOString(),
       });
@@ -370,4 +372,5 @@ module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest) {
 module.exports.enrichArhebBoxRow = enrichRequestRow;
 module.exports.calcArhebBoxDeliveryFeeJod = calcArhebBoxDeliveryFeeJod;
 module.exports.calcDeliveryFeeFromDistanceAndWeight = calcDeliveryFeeFromDistanceAndWeight;
-module.exports.MAX_DELIVERY_FEE_JOD = MAX_DELIVERY_FEE_JOD;
+/** @deprecated Store-order max (3 JOD). Arheb Box delivery fee has no cap. */
+module.exports.MAX_DELIVERY_FEE_JOD = STORE_MAX_JOD;

@@ -2,7 +2,10 @@ const fs = require('fs');
 const path = require('path');
 const jwt = require('jsonwebtoken');
 const { getJsonPath } = require('../config/jsonPaths');
-const { isStoreVisibleToCustomers, getAdminStoreDashboardBucket } = require('../utils/storeVisibility');
+const {
+  isStoreListedForCustomerBrowse,
+  getAdminStoreDashboardBucket,
+} = require('../utils/storeVisibility');
 
 function loadStoresListForVisibility() {
   try {
@@ -338,17 +341,15 @@ module.exports = function attachHomeRoutes(app, db, JWT_SECRET) {
 
     const storesForVisibility = loadStoresListForVisibility();
     const storeByIdMap = Object.fromEntries(storesForVisibility.map((s) => [String(s.id), s]));
-    const visibleStoreIds = new Set(
-      storesForVisibility.filter((s) => isStoreVisibleToCustomers(s)).map((s) => String(s.id))
+    const listedStoreIds = new Set(
+      storesForVisibility.filter((s) => isStoreListedForCustomerBrowse(s)).map((s) => String(s.id)),
     );
     if (response.data?.mostPopularStores?.length) {
       response.data.mostPopularStores = response.data.mostPopularStores
-        .filter((s) => s && s.id != null && visibleStoreIds.has(String(s.id)))
+        .filter((s) => s && s.id != null && listedStoreIds.has(String(s.id)))
         .map((s) => {
           const fullStore = storeByIdMap[String(s.id)];
-          const status = fullStore
-            ? (fullStore.paused === true ? 'paused' : (isStoreVisibleToCustomers(fullStore) ? 'open' : 'closed'))
-            : 'closed';
+          const status = fullStore ? getAdminStoreDashboardBucket(fullStore) : 'closed';
           return { ...s, status };
         });
     }

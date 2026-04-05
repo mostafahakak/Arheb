@@ -5,10 +5,14 @@ const { jordanMobileLookupKeys, normalizeOtpDigits } = require('../utils/jordanM
 const { getJsonPath } = require('../config/jsonPaths');
 const fcm = require('../fcm');
 const enrichArhebBoxRow = require('../arhebBox').enrichArhebBoxRow;
+const { enrichWithJordanTime } = require('../utils/jordanTime');
 const {
   ensureDriverCommissionSettingsTable,
   ensureOrderDriverShareColumns,
   ensureDriverRatingsTable,
+  ensureDriverCommissionPercentColumn,
+  getDriverDeliveryDefaultPercent,
+  normalizeDriverCommissionPercent,
   syncAllDriverRatingsFromTable,
   resolveOrderDriverShare,
   assignDriverToOrder,
@@ -143,7 +147,7 @@ function orderToDriverApi(order, items = [], driverRow = null, store = null, db 
     };
     out.profitJod = share.earningsJod;
   }
-  return out;
+  return enrichWithJordanTime(out, ['createdAt', 'orderDate']);
 }
 
 function mapOrderStatus(s) {
@@ -226,6 +230,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
   ensureDriverCommissionSettingsTable(db);
   ensureOrderDriverShareColumns(db);
   ensureDriverRatingsTable(db);
+  ensureDriverCommissionPercentColumn(db);
   syncAllDriverRatingsFromTable(db);
 
   db.exec(`
@@ -393,6 +398,11 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     );
     const d = { ...driver };
     delete d.licenseNumber;
+    const defaultPct = getDriverDeliveryDefaultPercent(db);
+    const commissionPercent =
+      d.commissionPercent != null && Number.isFinite(Number(d.commissionPercent))
+        ? Number(d.commissionPercent)
+        : defaultPct;
     return res.status(200).json({
       success: true,
       message: 'Login successful',
@@ -409,6 +419,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
           longitude: d.longitude,
           rating: d.rating ?? 5,
           isVerified: Boolean(d.isVerified),
+          commissionPercent,
         },
         token: `Bearer ${token}`,
         refreshToken: null,
@@ -447,6 +458,11 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
     const todayDeliveryFees = todayOrders.reduce((s, o) => s + (Number(o.deliveryFee) || 0), 0);
     const totalDeliveryFees = allDelivered.reduce((s, o) => s + (Number(o.deliveryFee) || 0), 0);
 
+    const defaultPct = getDriverDeliveryDefaultPercent(db);
+    const homeCommission =
+      req.driver.commissionPercent != null && Number.isFinite(Number(req.driver.commissionPercent))
+        ? Number(req.driver.commissionPercent)
+        : defaultPct;
     const driverDto = {
       id: String(req.driver.id),
       name: req.driver.name,
@@ -457,6 +473,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
       latitude: req.driver.latitude,
       longitude: req.driver.longitude,
       rating: req.driver.rating ?? 5,
+      commissionPercent: homeCommission,
     };
     const stats = {
       todayProfit,
@@ -539,11 +556,15 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
       earningsGrowthPercent = earningsGrowthPercentVsYesterday(db, driverId, profit, todayStr);
     }
 
+    const defaultPct = getDriverDeliveryDefaultPercent(db);
+    const commissionPercent = normalizeDriverCommissionPercent(req.driver.commissionPercent, defaultPct);
+
     return res.status(200).json({
       success: true,
       message: 'Stats loaded successfully',
       data: {
         period,
+        commissionPercent,
         stats: {
           profit,
           earnings: profit,
@@ -601,10 +622,14 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
       }
     }
 
+    const defaultPct = getDriverDeliveryDefaultPercent(db);
+    const commissionPercent = normalizeDriverCommissionPercent(req.driver.commissionPercent, defaultPct);
+
     return res.status(200).json({
       success: true,
       message: 'Orders loaded successfully',
       data: {
+        commissionPercent,
         filter,
         page,
         perPage,
