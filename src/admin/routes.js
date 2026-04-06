@@ -17,7 +17,9 @@ const {
   requireSuperAdmin,
   requireAdminOrSuper,
   requireStoreAccess,
+  requireDashboardAdmin,
 } = require('./middleware');
+const { ensureActivityLogTable, logActivity, handleActivityLogList } = require('./activityLog');
 const { syncCategoriesToDb } = require('../categories');
 const { getJsonPath } = require('../config/jsonPaths');
 const fcm = require('../fcm');
@@ -207,6 +209,7 @@ function savePopup(data) {
 
 module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
   seedAdmins(db);
+  ensureActivityLogTable(db);
 
   try {
     db.exec(`
@@ -234,6 +237,11 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
   }
 
   const auth = authenticateAdmin(JWT_SECRET);
+
+  // ——— Activity log (SuperAdmin / Admin: all; Store Admin: own actions only) ———
+  app.get('/api/admin/activity-log', auth, requireDashboardAdmin, (req, res) =>
+    handleActivityLogList(db, req, res),
+  );
 
   // ——— Login ———
   app.post('/api/admin/login', (req, res) => {
@@ -329,6 +337,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       const blocked = req.body?.isBlocked === true;
       db.prepare('UPDATE users SET isBlocked = ? WHERE phoneNumber = ?').run(blocked ? 1 : 0, phone);
       const updated = findUserByPhone.get(phone);
+      logActivity(db, req, {
+        action: 'edit',
+        resourceType: 'user',
+        resourceId: phone,
+        storeScopeId: null,
+        summary: `${blocked ? 'Blocked' : 'Unblocked'} user ${phone}`,
+      });
       return res.status(200).json({
         success: true,
         data: {
@@ -421,6 +436,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       throw e;
     }
     const created = findAdminByEmail.get(email.trim().toLowerCase());
+    logActivity(db, req, {
+      action: 'add',
+      resourceType: 'admin_user',
+      resourceId: String(created.id),
+      storeScopeId: created.storeId != null ? String(created.storeId) : null,
+      summary: `Created admin ${created.email} (${created.role})`,
+    });
     return res.status(201).json({
       success: true,
       data: {
@@ -478,6 +500,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     values.push(id);
     db.prepare(`UPDATE admins SET ${updates.join(', ')} WHERE id = ?`).run(...values);
     const updated = findAdminById.get(id);
+    logActivity(db, req, {
+      action: 'edit',
+      resourceType: 'admin_user',
+      resourceId: String(updated.id),
+      storeScopeId: updated.storeId != null ? String(updated.storeId) : null,
+      summary: `Updated admin ${updated.email}`,
+    });
     return res.status(200).json({
       success: true,
       data: {
@@ -502,6 +531,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (target.role === ROLES.SUPERADMIN && req.admin.role !== ROLES.SUPERADMIN) {
       return res.status(403).json({ success: false, message: 'Cannot delete SuperAdmin' });
     }
+    logActivity(db, req, {
+      action: 'delete',
+      resourceType: 'admin_user',
+      resourceId: String(id),
+      storeScopeId: target.storeId != null ? String(target.storeId) : null,
+      summary: `Deleted admin ${target.email}`,
+    });
     db.prepare('DELETE FROM admins WHERE id = ?').run(id);
     return res.status(200).json({ success: true, message: 'Admin deleted' });
   });
@@ -785,6 +821,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     } catch (e) {
       if (!e.message || !e.message.includes('no such table')) throw e;
     }
+    logActivity(db, req, {
+      action: 'add',
+      resourceType: 'store',
+      resourceId: String(newStore.id),
+      storeScopeId: String(newStore.id),
+      summary: `Created store ${newStore.nameEn || newStore.name || newStore.id}`,
+    });
     return res.status(201).json({
       success: true,
       data: { store: enrichStoreOpeningHours({ ...newStore }) },
@@ -901,6 +944,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     }
     const patched = enrichStoreOpeningHours({ ...stores[idx] });
     patched.fcmToken = getStoreFcmToken(db, stores[idx].id) ?? null;
+    logActivity(db, req, {
+      action: 'edit',
+      resourceType: 'store',
+      resourceId: String(stores[idx].id),
+      storeScopeId: String(stores[idx].id),
+      summary: `Updated store ${patched.nameEn || patched.name || req.params.id}`,
+      details: { keys: Object.keys(body || {}) },
+    });
     return res.status(200).json({
       success: true,
       data: { store: patched },
@@ -1010,6 +1061,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     products.push(...newProducts);
     saveProducts(products);
 
+    logActivity(db, req, {
+      action: 'add',
+      resourceType: 'store_clone',
+      resourceId: String(newStore.id),
+      storeScopeId: String(newStore.id),
+      summary: `Cloned store from ${sourceId} → ${newStore.id} (${newProducts.length} products)`,
+    });
     return res.status(201).json({
       success: true,
       message: 'Store cloned successfully',
@@ -1029,6 +1087,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (remaining.length !== products.length) {
       saveProducts(remaining);
     }
+    logActivity(db, req, {
+      action: 'delete',
+      resourceType: 'store',
+      resourceId: String(storeId),
+      storeScopeId: String(storeId),
+      summary: `Deleted store ${storeId}`,
+    });
     return res.status(200).json({ success: true, message: 'Store deleted' });
   });
 
@@ -1123,6 +1188,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
         'INSERT INTO pending_products (storeId, submittedBy, productData, status) VALUES (?, ?, ?, ?)'
       ).run(storeId, req.admin.adminId, JSON.stringify(productData), 'pending');
       const pending = db.prepare('SELECT * FROM pending_products WHERE id = last_insert_rowid()').get();
+      logActivity(db, req, {
+        action: 'add',
+        resourceType: 'pending_product',
+        resourceId: String(pending.id),
+        storeScopeId: String(storeId),
+        summary: `Submitted product for approval (pending #${pending.id})`,
+      });
       return res.status(201).json({
         success: true,
         message: 'Product submitted for approval. An admin will review it.',
@@ -1138,6 +1210,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const newProduct = buildProductObject(body, store);
     products.push(newProduct);
     saveProducts(products);
+    logActivity(db, req, {
+      action: 'add',
+      resourceType: 'product',
+      resourceId: String(newProduct.id),
+      storeScopeId: String(storeId),
+      summary: `Added product ${newProduct.nameEn || newProduct.name || newProduct.id} to store ${storeId}`,
+    });
     return res.status(201).json({ success: true, data: { product: newProduct } });
   });
 
@@ -1224,6 +1303,16 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
         errors.push(`Row ${i + 1}: ${e.message || 'Failed'}`);
       }
     }
+    logActivity(db, req, {
+      action: 'add',
+      resourceType: isStoreAdmin ? 'pending_product' : 'product',
+      resourceId: 'import',
+      storeScopeId: String(storeId),
+      summary: isStoreAdmin
+        ? `Excel import: ${created} pending product(s) submitted`
+        : `Excel import: ${created} product(s) created`,
+      details: { created, skipped, errorCount: errors.length },
+    });
     return res.status(200).json({
       success: true,
       message: isStoreAdmin ? `${created} product(s) submitted for approval` : `${created} product(s) imported`,
@@ -1338,6 +1427,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     db.prepare(
       'UPDATE pending_products SET status = ?, reviewedBy = ?, reviewedAt = ?, productData = ? WHERE id = ?'
     ).run('approved', req.admin.adminId, now, JSON.stringify(productData), id);
+    logActivity(db, req, {
+      action: 'edit',
+      resourceType: 'pending_product',
+      resourceId: String(id),
+      storeScopeId: String(row.storeId),
+      summary: `Approved pending product #${id} → product ${productData.id}`,
+    });
     return res.status(200).json({
       success: true,
       message: 'Product approved and added to store',
@@ -1361,6 +1457,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     ).run('rejected', req.admin.adminId, note || null, now, id);
     let product = {};
     try { product = JSON.parse(row.productData); } catch (_) {}
+    logActivity(db, req, {
+      action: 'edit',
+      resourceType: 'pending_product',
+      resourceId: String(id),
+      storeScopeId: String(row.storeId),
+      summary: `Rejected pending product #${id}`,
+      details: { note: note || null },
+    });
     return res.status(200).json({
       success: true,
       message: 'Product rejected',
@@ -1397,6 +1501,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       }
     }
     saveProducts(products);
+    logActivity(db, req, {
+      action: 'edit',
+      resourceType: 'product',
+      resourceId: String(productId),
+      storeScopeId: String(storeId),
+      summary: `Updated product ${productId} in store ${storeId}`,
+      details: { keys: Object.keys(req.body || {}) },
+    });
     return res.status(200).json({ success: true, data: { product: products[idx] } });
   });
 
@@ -1440,6 +1552,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       return res.status(404).json({ success: false, message: 'No matching products in this store' });
     }
     saveProducts(products);
+    logActivity(db, req, {
+      action: 'edit',
+      resourceType: 'product',
+      resourceId: 'bulk',
+      storeScopeId: String(storeId),
+      summary: `Bulk discount ${disc}% on ${updated} products`,
+    });
     return res.status(200).json({ success: true, data: { updated, discount: disc } });
   });
 
@@ -1468,6 +1587,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       return res.status(404).json({ success: false, message: 'No matching products in this store' });
     }
     saveProducts(products);
+    logActivity(db, req, {
+      action: 'edit',
+      resourceType: 'product',
+      resourceId: 'bulk',
+      storeScopeId: String(storeId),
+      summary: `Bulk remove discount on ${updated} products`,
+    });
     return res.status(200).json({ success: true, data: { updated } });
   });
 
@@ -1483,6 +1609,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (idx === -1) return res.status(404).json({ success: false, message: 'Product not found' });
     products.splice(idx, 1);
     saveProducts(products);
+    logActivity(db, req, {
+      action: 'delete',
+      resourceType: 'product',
+      resourceId: String(productId),
+      storeScopeId: String(storeId),
+      summary: `Deleted product ${productId} from store ${storeId}`,
+    });
     return res.status(200).json({ success: true, message: 'Product deleted' });
   });
 
@@ -1717,6 +1850,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && !sameStoreId(order.storeId, req.admin.storeId)) {
       return res.status(403).json({ success: false, message: 'Access denied to this order' });
     }
+    const currentStatusLower = String(order.status || '').trim().toLowerCase();
+    if (currentStatusLower === 'cancelled' && req.admin.role !== ROLES.SUPERADMIN) {
+      return res.status(403).json({
+        success: false,
+        message:
+          'Cancelled orders cannot be changed. Only SuperAdmin can change status to restore a previous phase.',
+      });
+    }
     const { status } = req.body || {};
     if (!status || typeof status !== 'string') {
       return res.status(400).json({ success: false, message: 'status is required' });
@@ -1812,6 +1953,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       }
       updated = findOrderById.get(orderId);
     }
+    logActivity(db, req, {
+      action: 'edit',
+      resourceType: 'order',
+      resourceId: String(orderId),
+      storeScopeId: order.storeId != null ? String(order.storeId) : null,
+      summary: `Order #${orderId} status ${order.status} → ${nextStatus}`,
+      details: { from: order.status, to: nextStatus },
+    });
     return res.status(200).json({
       success: true,
       data: {
@@ -1848,6 +1997,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     db.prepare('UPDATE orders SET status = ? WHERE id = ?').run('Cancelled', orderId);
     const updated = findOrderById.get(orderId);
     const items = findOrderItems.all(orderId);
+    logActivity(db, req, {
+      action: 'edit',
+      resourceType: 'order',
+      resourceId: String(orderId),
+      storeScopeId: order.storeId != null ? String(order.storeId) : null,
+      summary: `Order #${orderId} rejected → Cancelled`,
+      details: { from: order.status, to: 'Cancelled' },
+    });
     return res.status(200).json({
       success: true,
       data: {
@@ -2173,6 +2330,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     db.prepare('DELETE FROM order_items WHERE orderId = ?').run(orderId);
     db.prepare('DELETE FROM orders WHERE id = ?').run(orderId);
+    logActivity(db, req, {
+      action: 'delete',
+      resourceType: 'order',
+      resourceId: String(orderId),
+      storeScopeId: order.storeId != null ? String(order.storeId) : null,
+      summary: `Deleted order #${orderId}`,
+    });
     return res.status(200).json({ success: true, message: 'Order deleted' });
   });
 
@@ -2212,6 +2376,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       } catch (insertErr) {
         if (!insertErr.message || !insertErr.message.includes('no such table')) console.error('Notifications insert:', insertErr);
       }
+      logActivity(db, req, {
+        action: 'add',
+        resourceType: 'notification_broadcast',
+        resourceId: null,
+        storeScopeId: null,
+        summary: `Broadcast notification: ${title.trim().slice(0, 80)}`,
+        details: { successCount, failureCount },
+      });
       return res.status(200).json({
         success: true,
         message: 'Broadcast notification sent',
@@ -2333,6 +2505,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       }
       const row = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(id);
       const request = enrichArhebBoxRow(row, db);
+      logActivity(db, req, {
+        action: 'edit',
+        resourceType: 'arheb_box',
+        resourceId: String(id),
+        storeScopeId: null,
+        summary: `Arheb Box #${id} status → ${status.trim()}`,
+      });
       return res.status(200).json({ success: true, data: { request } });
     } catch (e) {
       console.error('Arheb box update error:', e);
@@ -2354,6 +2533,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       db.prepare('UPDATE arheb_box_requests SET driverId = ?, driverName = ?, status = ? WHERE id = ?').run(driverIdNum, driver.name, 'assigned', id);
       fcm.sendToDriver(db, driverIdNum, 'New Arheb Box delivery', `Request #${id} has been assigned to you. Open the app to accept.`, { type: 'arheb_box_assigned', requestId: String(id) }).catch(() => {});
       const updated = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(id);
+      logActivity(db, req, {
+        action: 'edit',
+        resourceType: 'arheb_box',
+        resourceId: String(id),
+        storeScopeId: null,
+        summary: `Arheb Box #${id}: assigned driver ${driverIdNum}`,
+        details: { driverName: driver.name },
+      });
       return res.status(200).json({
         success: true,
         message: 'Driver assigned. They will be notified.',
@@ -2401,6 +2588,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       }
       const nextVal = commissionValue !== undefined ? commissionValue : cur.value;
       const updated = setDriverCommissionSettings(db, nextType, nextVal);
+      logActivity(db, req, {
+        action: 'edit',
+        resourceType: 'driver_commission_settings',
+        resourceId: null,
+        storeScopeId: null,
+        summary: `Driver commission settings: ${updated.type} = ${updated.value}`,
+      });
       return res.status(200).json({
         success: true,
         message: 'Driver commission updated',
@@ -2688,6 +2882,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       const driver = db
         .prepare('SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, createdAt, commissionPercent FROM drivers WHERE mobile = ?')
         .get(normalizedMobile);
+      logActivity(db, req, {
+        action: 'add',
+        resourceType: 'driver',
+        resourceId: String(driver.id),
+        storeScopeId: null,
+        summary: `Added driver ${driver.name} (${driver.mobile})`,
+      });
       return res.status(201).json({
         success: true,
         message: 'Driver added successfully',
@@ -2751,6 +2952,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       const updated = db
         .prepare('SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, createdAt, commissionPercent FROM drivers WHERE id = ?')
         .get(id);
+      logActivity(db, req, {
+        action: 'edit',
+        resourceType: 'driver',
+        resourceId: String(id),
+        storeScopeId: null,
+        summary: `Updated driver ${updated.name} (#${id})`,
+        details: { keys: Object.keys(req.body || {}) },
+      });
       return res.status(200).json({
         success: true,
         data: {
@@ -2778,10 +2987,17 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid driver id' });
     try {
-      const driver = db.prepare('SELECT id FROM drivers WHERE id = ?').get(id);
+      const driver = db.prepare('SELECT id, name, mobile FROM drivers WHERE id = ?').get(id);
       if (!driver) return res.status(404).json({ success: false, message: 'Driver not found' });
       db.prepare('UPDATE orders SET driverId = NULL, driverName = NULL WHERE driverId = ?').run(id);
       db.prepare('DELETE FROM drivers WHERE id = ?').run(id);
+      logActivity(db, req, {
+        action: 'delete',
+        resourceType: 'driver',
+        resourceId: String(id),
+        storeScopeId: null,
+        summary: `Deleted driver ${driver.name} (#${id})`,
+      });
       return res.status(200).json({ success: true, message: 'Driver removed' });
     } catch (e) {
       console.error('Admin delete driver error:', e);
@@ -2820,6 +3036,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       return res.status(500).json({ success: false, message: 'Database sync failed', error: err.message });
     }
     saveCategories(categories);
+    logActivity(db, req, {
+      action: 'add',
+      resourceType: 'category',
+      resourceId: String(newCat.id),
+      storeScopeId: null,
+      summary: `Added category ${newCat.nameEn || newCat.name || newCat.id}`,
+    });
     return res.status(201).json({ success: true, data: { category: newCat } });
   });
 
@@ -2844,6 +3067,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       return res.status(500).json({ success: false, message: 'Database sync failed', error: err.message });
     }
     saveCategories(categories);
+    logActivity(db, req, {
+      action: 'edit',
+      resourceType: 'category',
+      resourceId: idParam,
+      storeScopeId: null,
+      summary: `Updated category ${idParam}`,
+      details: { keys: Object.keys(body) },
+    });
     return res.status(200).json({ success: true, data: { category: categories[idx] } });
   });
 
@@ -2860,6 +3091,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       return res.status(500).json({ success: false, message: 'Database sync failed', error: err.message });
     }
     saveCategories(categories);
+    logActivity(db, req, {
+      action: 'delete',
+      resourceType: 'category',
+      resourceId: idParam,
+      storeScopeId: null,
+      summary: `Deleted category ${idParam}`,
+    });
     return res.status(200).json({ success: true, message: 'Category deleted' });
   });
 
@@ -2879,6 +3117,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       destination_value: body.destination_value !== undefined ? body.destination_value : current.destination_value,
     };
     savePopup(updated);
+    logActivity(db, req, {
+      action: 'edit',
+      resourceType: 'popup',
+      resourceId: null,
+      storeScopeId: null,
+      summary: 'Updated app popup',
+    });
     return res.status(200).json({ success: true, data: { popup: updated } });
   });
 
@@ -2904,6 +3149,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       },
     };
     saveHome(next);
+    logActivity(db, req, {
+      action: 'edit',
+      resourceType: 'home_banner',
+      resourceId: null,
+      storeScopeId: null,
+      summary: `Updated home banners (${banners.length} item(s))`,
+    });
     return res.status(200).json({ success: true, data: { banners } });
   });
 
@@ -2929,6 +3181,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       },
     };
     saveHome(next);
+    logActivity(db, req, {
+      action: 'edit',
+      resourceType: 'home_offer',
+      resourceId: null,
+      storeScopeId: null,
+      summary: `Updated home offers (${offers.length} item(s))`,
+    });
     return res.status(200).json({ success: true, data: { offers } });
   });
 
@@ -3039,6 +3298,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
         updated.driverDeliveryPercent != null && String(updated.driverDeliveryPercent).trim() !== ''
           ? normalizeDriverCommissionPercent(Number(updated.driverDeliveryPercent), defaultPct)
           : null;
+      logActivity(db, req, {
+        action: 'edit',
+        resourceType: 'app_info',
+        resourceId: null,
+        storeScopeId: null,
+        summary: 'Updated app info / contact',
+        details: { keys: Object.keys(body) },
+      });
       return res.status(200).json({
         success: true,
         data: {
@@ -3111,6 +3378,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
         storeIdVal,
       );
       const created = findPromoCodeByName.get(name.trim());
+      logActivity(db, req, {
+        action: 'add',
+        resourceType: 'promo_code',
+        resourceId: String(created.id),
+        storeScopeId: created.storeId != null ? String(created.storeId) : null,
+        summary: `Added promo code ${created.name}`,
+      });
       return res.status(201).json({
         success: true,
         data: {
@@ -3169,6 +3443,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       throw e;
     }
     const updated = findPromoCodeById.get(id);
+    logActivity(db, req, {
+      action: 'edit',
+      resourceType: 'promo_code',
+      resourceId: String(id),
+      storeScopeId: updated.storeId != null ? String(updated.storeId) : null,
+      summary: `Updated promo code ${updated.name}`,
+    });
     return res.status(200).json({
       success: true,
       data: {
@@ -3187,6 +3468,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     const target = findPromoCodeById.get(id);
     if (!target) return res.status(404).json({ success: false, message: 'Promo code not found' });
     db.prepare('DELETE FROM promo_codes WHERE id = ?').run(id);
+    logActivity(db, req, {
+      action: 'delete',
+      resourceType: 'promo_code',
+      resourceId: String(id),
+      storeScopeId: target.storeId != null ? String(target.storeId) : null,
+      summary: `Deleted promo code ${target.name}`,
+    });
     return res.status(200).json({ success: true, message: 'Promo code deleted' });
   });
 };

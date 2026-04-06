@@ -2701,6 +2701,36 @@ All admin endpoints require **Admin JWT** authentication. Send the token in the 
 
 ---
 
+### Activity log
+
+**Endpoint:** `GET /api/admin/activity-log`
+
+**Access:** **SuperAdmin**, **Admin**, and **Store Admin** (dashboard roles). **Store Admin** only sees rows for **their own** `adminId`. **Admin** and **SuperAdmin** see the full log.
+
+**Query parameters (all optional):**
+
+| Param | Description |
+|--------|-------------|
+| `page` | Page number (default `1`) |
+| `perPage` | Page size, max `100` (default `25`) |
+| `storeId` | Filter by `storeScopeId` (Store Admin may only use their own store id) |
+| `action` | `add`, `edit`, or `delete` |
+| `resourceType` | Exact match, e.g. `product`, `store`, `driver`, `admin_user`, `pending_product`, `home_banner`, `app_info`, `promo_code`, … |
+| `adminId` | Filter by actor (Admin/SuperAdmin only; forbidden for Store Admin) |
+| `dateFrom` / `dateTo` | Inclusive date filters on `createdAt` (ISO date string) |
+
+**Response:** `{ success, data: { activities[], page, perPage, total, totalPages } }`. Each activity includes `adminId`, `adminEmail`, `adminName`, `role`, `action`, `resourceType`, `resourceId`, `storeScopeId`, `summary`, optional `details` (parsed JSON).
+
+Mutations across the admin API append to the `admin_activity_log` table (products, stores, drivers, admins, orders, promos, home content, app info, etc.).
+
+---
+
+### Order status: cancelled orders
+
+**PATCH** `/api/admin/orders/:orderId/status`: if the order is already **cancelled**, only **SuperAdmin** may change status (including moving back to an earlier phase). Other roles receive **403** with a message explaining this. Non–SuperAdmin users also cannot apply **backward** status transitions on non-cancelled orders (same guard).
+
+---
+
 ### Admins CRUD
 
 **Access:** SuperAdmin and Admin only. Admin cannot create/edit/delete SuperAdmins.

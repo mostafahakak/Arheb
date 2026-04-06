@@ -43,10 +43,24 @@ function requireStoreAccess(getStoreIdFromRequest) {
   };
 }
 
+/** SuperAdmin, Admin, or Store Admin (dashboard activity log, etc.). */
+function requireDashboardAdmin(req, res, next) {
+  if (!req.admin) return res.status(401).json({ success: false, message: 'Not authenticated' });
+  if (
+    req.admin.role === ROLES.SUPERADMIN ||
+    req.admin.role === ROLES.ADMIN ||
+    req.admin.role === ROLES.STORE_ADMIN
+  ) {
+    return next();
+  }
+  return res.status(403).json({ success: false, message: 'Insufficient permissions' });
+}
+
 module.exports = {
   authenticateAdmin,
   requireRole,
   requireSuperAdmin,
   requireAdminOrSuper,
   requireStoreAccess,
+  requireDashboardAdmin,
 };
