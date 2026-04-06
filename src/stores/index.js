@@ -419,6 +419,86 @@ module.exports = function attachStoresRoutes(app, db) {
     });
   });
 
+  /** Stable sort so pagination slices never overlap or repeat across pages. */
+  const compareProductIdStable = (a, b) =>
+    String(a.id ?? '').localeCompare(String(b.id ?? ''), undefined, { numeric: true, sensitivity: 'base' });
+
+  /**
+   * Paginated store products — 50 per page, deterministic order by product id.
+   * Use for large catalogs; avoids loading 10k+ products in one response.
+   */
+  app.get('/api/stores/:id/products/paged', (req, res) => {
+    const storeId = req.params.id;
+    const storesResponse = loadStoresResponse();
+    const storesList = storesResponse?.data?.stores ?? [];
+    const store = storesList.find((s) => String(s.id) === String(storeId));
+    if (!store) {
+      return res.status(404).json({ success: false, message: 'Store not found' });
+    }
+    if (!isStoreListedForCustomerBrowse(store)) {
+      return res.status(404).json({ success: false, message: 'Store not found' });
+    }
+
+    const pageRaw = req.query.page != null ? String(req.query.page).trim() : '1';
+    const page = Math.max(1, parseInt(pageRaw, 10) || 1);
+    const perPage = 50;
+
+    const productsResponsePath = getJsonPath('products_listing_response.json');
+    let productsResponse;
+    try {
+      const raw = fs.readFileSync(productsResponsePath, 'utf-8');
+      productsResponse = JSON.parse(raw);
+    } catch (error) {
+      return res.status(500).json({ success: false, message: 'Products payload is unavailable' });
+    }
+    if (!productsResponse) {
+      return res.status(500).json({ success: false, message: 'Products payload is unavailable' });
+    }
+
+    const products = productsResponse?.data?.products ?? [];
+    const storeProducts = products
+      .filter((p) => String(p.store?.id) === String(storeId) && p.isAvailable !== false)
+      .sort(compareProductIdStable);
+
+    const total = storeProducts.length;
+    const totalPages = total === 0 ? 0 : Math.ceil(total / perPage);
+    const start = (page - 1) * perPage;
+    const pageItems = storeProducts.slice(start, start + perPage);
+
+    const toClientProduct = (p) => ({ ...p, discount: p.discount ?? null, originalPrice: p.originalPrice ?? p.price ?? null });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Store products page retrieved successfully',
+      data: {
+        store: {
+          id: store.id,
+          name: store.name,
+          nameAr: store.nameAr,
+          nameEn: store.nameEn,
+          logo: store.logo,
+          cover: store.cover,
+          closingTime: store.closingTime ?? null,
+          openingTime: store.openingHours?.open ?? store.openingTime ?? null,
+          storeCategories: Array.isArray(store.storeCategories) ? store.storeCategories : [],
+          status: computeStoreStatus(store),
+          isExclusive: !!(store.isExclusive ?? store.isPremium),
+          isPremium: !!(store.isPremium ?? store.isExclusive),
+        },
+        products: pageItems.map(toClientProduct),
+        pagination: {
+          page,
+          perPage,
+          total,
+          totalPages,
+          hasNextPage: totalPages > 0 && page < totalPages,
+          hasPrevPage: page > 1 && total > 0,
+        },
+      },
+      timestamp: new Date().toISOString(),
+    });
+  });
+
   app.get('/api/stores/:id/products/category/:categoryName', (req, res) => {
     const storeId = req.params.id;
     const categoryName = req.params.categoryName;

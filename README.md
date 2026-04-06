@@ -808,6 +808,32 @@ Retrieves all products for a specific store.
 
 ---
 
+### Get Store Products (paginated)
+
+For stores with very large catalogs, use this endpoint instead of **`GET /api/stores/:id/products`**, which returns every product in one response.
+
+**Endpoint:** `GET /api/stores/:id/products/paged`
+
+**Query parameters:**
+- **`page`** — Page number starting at **1** (default `1` if omitted or invalid). Each page returns at most **50** products.
+
+Products are ordered by **`id`** (stable string/numeric sort) so pages do not repeat or skip items when you request `page=1`, then `page=2`, etc.
+
+**Authentication:** Not required
+
+**Success Response (200):** Same `data.store` shape as [Get Store Products](#get-store-products). `data.products` is only the current page. `data.pagination` includes:
+
+| Field | Description |
+|--------|-------------|
+| `page` | Current page |
+| `perPage` | Always `50` |
+| `total` | Total available products (after the same filters as the non-paginated endpoint) |
+| `totalPages` | `ceil(total / perPage)` |
+| `hasNextPage` | Whether a next page exists |
+| `hasPrevPage` | Whether a previous page exists |
+
+---
+
 ### Get Store Products by Category
 
 Retrieves all products for a specific store filtered by category name.
@@ -3688,6 +3714,7 @@ For issues or questions, please contact: `contact@arheb.app`
 - **Stores (public + admin) – Store categories**  
   - All public store responses (`GET /api/stores`, `/api/stores/top-rated`, `/api/stores/premium`, `/api/stores/exclusive`, `/api/stores/category/:categoryName`) now include **`storeCategories`** (array) as part of each store.  
   - **GET** `/api/stores/:id/products` and **GET** `/api/stores/:id/products/category/:categoryName` include `store.storeCategories` so clients can know which categories belong to that store.  
+  - **GET** `/api/stores/:id/products/paged?page=1` returns **50** products per page (stable sort by `id`) for large catalogs; use instead of loading all products at once.  
   - **Admin** store APIs allow managing `storeCategories` per store; dashboard product forms now pick categories from the store’s own `storeCategories` instead of global categories.
 
 ### FCM, driver presence, store pause/block, customer orders & tracking, Arheb Box
