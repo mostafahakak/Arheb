@@ -252,19 +252,26 @@ module.exports = function attachStoresRoutes(app, db) {
 
   function exclusiveStoresPayload(storesResponse, limit) {
     const storesList = filterStoresForCustomerBrowse(storesResponse?.data?.stores ?? []).map(toPublicStore);
-    const exclusive = storesList.filter((store) => store.isExclusive === true || store.isPremium === true);
+    const exclusive = storesList.filter((store) => store.isExclusive === true);
     const result = limit ? exclusive.slice(0, limit) : exclusive;
     return { stores: result, count: result.length, limit: limit || 'all' };
   }
 
-  // Get premium / exclusive stores (set by SuperAdmin/Admin) — same list; prefer GET /api/stores/exclusive
+  function premiumStoresPayload(storesResponse, limit) {
+    const storesList = filterStoresForCustomerBrowse(storesResponse?.data?.stores ?? []).map(toPublicStore);
+    const premium = storesList.filter((store) => store.isPremium === true);
+    const result = limit ? premium.slice(0, limit) : premium;
+    return { stores: result, count: result.length, limit: limit || 'all' };
+  }
+
+  // Premium stores (set by SuperAdmin/Admin)
   app.get('/api/stores/premium', (req, res) => {
     const storesResponse = loadStoresResponse();
     const limit = req.query.limit ? parseInt(req.query.limit, 10) : null;
-    const { stores, count, limit: lim } = exclusiveStoresPayload(storesResponse, limit);
+    const { stores, count, limit: lim } = premiumStoresPayload(storesResponse, limit);
     return res.status(200).json({
       success: true,
-      message: 'Premium / Exclusive stores retrieved successfully',
+      message: 'Premium stores retrieved successfully',
       data: { stores, count, limit: lim },
       timestamp: new Date().toISOString(),
     });
@@ -409,8 +416,8 @@ module.exports = function attachStoresRoutes(app, db) {
           openingTime: store.openingHours?.open ?? store.openingTime ?? null,
           storeCategories: Array.isArray(store.storeCategories) ? store.storeCategories : [],
           status: computeStoreStatus(store),
-          isExclusive: !!(store.isExclusive ?? store.isPremium),
-          isPremium: !!(store.isPremium ?? store.isExclusive),
+          isExclusive: store.isExclusive === true,
+          isPremium: store.isPremium === true,
         },
         products: storeProducts.map(toClientProduct),
         count: storeProducts.length
@@ -422,6 +429,27 @@ module.exports = function attachStoresRoutes(app, db) {
   /** Stable sort so pagination slices never overlap or repeat across pages. */
   const compareProductIdStable = (a, b) =>
     String(a.id ?? '').localeCompare(String(b.id ?? ''), undefined, { numeric: true, sensitivity: 'base' });
+
+  const normalizeTextKey = (v) =>
+    String(v == null ? '' : v)
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ');
+
+  function productCategoryKey(p) {
+    const keys = [
+      p?.categoryEn,
+      p?.category,
+      p?.categoryAr,
+      p?.categoryName,
+      p?.subCategoryEn,
+      p?.subCategory,
+      p?.subCategoryAr,
+    ]
+      .map(normalizeTextKey)
+      .filter(Boolean);
+    return keys.length ? keys[0] : '';
+  }
 
   /**
    * Paginated store products — 50 per page, deterministic order by product id.
@@ -482,8 +510,8 @@ module.exports = function attachStoresRoutes(app, db) {
           openingTime: store.openingHours?.open ?? store.openingTime ?? null,
           storeCategories: Array.isArray(store.storeCategories) ? store.storeCategories : [],
           status: computeStoreStatus(store),
-          isExclusive: !!(store.isExclusive ?? store.isPremium),
-          isPremium: !!(store.isPremium ?? store.isExclusive),
+          isExclusive: store.isExclusive === true,
+          isPremium: store.isPremium === true,
         },
         products: pageItems.map(toClientProduct),
         pagination: {
@@ -493,6 +521,154 @@ module.exports = function attachStoresRoutes(app, db) {
           totalPages,
           hasNextPage: totalPages > 0 && page < totalPages,
           hasPrevPage: page > 1 && total > 0,
+        },
+      },
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  /**
+   * Paginated store products by store categories.
+   *
+   * Rules:
+   * - Always returns ALL `store.storeCategories` (plus an `other` bucket).
+   * - Each "page" returns up to 10 items per active category.
+   * - When a category is finished, it is removed from next pages, so remaining categories keep returning 10 until all products are exhausted.
+   *
+   * Response shape:
+   * - `data.categories`: array of categories with `{ id, nameEn, nameAr, name, items, total }`
+   * - `data.pagination`: `{ page, perCategory, totalProducts, finished }`
+   */
+  app.get('/api/stores/:id/products/paged-categories', (req, res) => {
+    const storeId = req.params.id;
+    const storesResponse = loadStoresResponse();
+    const storesList = storesResponse?.data?.stores ?? [];
+    const store = storesList.find((s) => String(s.id) === String(storeId));
+    if (!store) return res.status(404).json({ success: false, message: 'Store not found' });
+    if (!isStoreListedForCustomerBrowse(store)) return res.status(404).json({ success: false, message: 'Store not found' });
+
+    const pageRaw = req.query.page != null ? String(req.query.page).trim() : '1';
+    const page = Math.max(1, parseInt(pageRaw, 10) || 1);
+    const perCategory = 10;
+
+    const productsResponsePath = getJsonPath('products_listing_response.json');
+    let productsResponse;
+    try {
+      const raw = fs.readFileSync(productsResponsePath, 'utf-8');
+      productsResponse = JSON.parse(raw);
+    } catch (error) {
+      return res.status(500).json({ success: false, message: 'Products payload is unavailable' });
+    }
+    if (!productsResponse) return res.status(500).json({ success: false, message: 'Products payload is unavailable' });
+
+    const storeCategories = Array.isArray(store.storeCategories) ? store.storeCategories : [];
+    const categoriesForPaging = [
+      ...storeCategories.map((c, idx) => ({
+        id: c?.id != null ? String(c.id) : `cat_${idx + 1}`,
+        nameEn: c?.nameEn ?? '',
+        nameAr: c?.nameAr ?? '',
+        name: c?.name ?? '',
+      })),
+      { id: 'other', nameEn: 'Other', nameAr: 'أخرى', name: 'Other' },
+    ];
+
+    const categoryMatchers = categoriesForPaging.map((c) => {
+      const keys = new Set(
+        [c.id, c.nameEn, c.nameAr, c.name].map(normalizeTextKey).filter(Boolean),
+      );
+      return { cat: c, keys };
+    });
+
+    const products = productsResponse?.data?.products ?? [];
+    const storeProducts = products
+      .filter((p) => String(p.store?.id) === String(storeId) && p.isAvailable !== false)
+      .sort(compareProductIdStable);
+
+    const toClientProduct = (p) => ({ ...p, discount: p.discount ?? null, originalPrice: p.originalPrice ?? p.price ?? null });
+
+    // Bucket products by category (storeCategories first; everything else → other)
+    const buckets = new Map(categoryMatchers.map((x) => [x.cat.id, []]));
+    for (const p of storeProducts) {
+      const pKeys = new Set(
+        [
+          p?.categoryEn,
+          p?.category,
+          p?.categoryAr,
+          p?.categoryName,
+          p?.subCategoryEn,
+          p?.subCategory,
+          p?.subCategoryAr,
+        ].map(normalizeTextKey).filter(Boolean),
+      );
+      let matchedId = 'other';
+      for (const m of categoryMatchers) {
+        if (m.cat.id === 'other') continue;
+        for (const k of pKeys) {
+          if (m.keys.has(k)) {
+            matchedId = m.cat.id;
+            break;
+          }
+        }
+        if (matchedId !== 'other') break;
+      }
+      buckets.get(matchedId).push(p);
+    }
+
+    // Simulate "pages" as cycles of perCategory per active bucket.
+    const pointers = new Map(Array.from(buckets.keys()).map((k) => [k, 0]));
+    let active = Array.from(buckets.keys()).filter((k) => (buckets.get(k)?.length || 0) > 0);
+    let currentPage = 1;
+    let pagePick = new Map(Array.from(buckets.keys()).map((k) => [k, []]));
+
+    while (currentPage <= page && active.length > 0) {
+      const nextPick = new Map(Array.from(buckets.keys()).map((k) => [k, []]));
+      const nextActive = [];
+      for (const k of active) {
+        const list = buckets.get(k) || [];
+        const start = pointers.get(k) || 0;
+        const slice = list.slice(start, start + perCategory);
+        pointers.set(k, start + slice.length);
+        nextPick.set(k, slice);
+        if ((pointers.get(k) || 0) < list.length) nextActive.push(k);
+      }
+      pagePick = nextPick;
+      active = nextActive;
+      currentPage += 1;
+    }
+
+    const totalProducts = storeProducts.length;
+    const finished = active.length === 0;
+
+    const categoriesOut = categoriesForPaging.map((c) => {
+      const total = buckets.get(c.id)?.length || 0;
+      const items = (pagePick.get(c.id) || []).map(toClientProduct);
+      return { ...c, total, items };
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Store products categories page retrieved successfully',
+      data: {
+        store: {
+          id: store.id,
+          name: store.name,
+          nameAr: store.nameAr,
+          nameEn: store.nameEn,
+          logo: store.logo,
+          cover: store.cover,
+          closingTime: store.closingTime ?? null,
+          openingTime: store.openingHours?.open ?? store.openingTime ?? null,
+          storeCategories: storeCategories,
+          status: computeStoreStatus(store),
+          isExclusive: store.isExclusive === true,
+          isPremium: store.isPremium === true,
+        },
+        categories: categoriesOut,
+        pagination: {
+          page,
+          perCategory,
+          totalProducts,
+          finished,
         },
       },
       timestamp: new Date().toISOString(),

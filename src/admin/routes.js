@@ -604,13 +604,12 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
             })()
           : { ...s };
       const fcmToken = getStoreFcmToken(db, s.id) ?? null;
-      const ex = !!(base.isExclusive ?? base.isPremium);
       return {
         ...enrichStoreOpeningHours(base),
         dashboardStatus,
         fcmToken,
-        isExclusive: ex,
-        isPremium: ex,
+        isExclusive: base.isExclusive === true,
+        isPremium: base.isPremium === true,
         hiddenFromCustomers: base.hiddenFromCustomers === true,
       };
     };
@@ -779,10 +778,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       categoryAr: body.categoryAr ?? body.category ?? '',
       categoryEn: body.categoryEn ?? body.category ?? '',
       subCategories: Array.isArray(body.subCategories) ? body.subCategories : [],
-      ...(() => {
-        const featured = body.isPremium === true || body.isExclusive === true;
-        return { isPremium: featured, isExclusive: featured };
-      })(),
+      isPremium: body.isPremium === true,
+      isExclusive: body.isExclusive === true,
       mapsUrl: body.mapsUrl ?? '',
       closingTime: closingTimeResolved,
       arhebFee: req.admin.role === ROLES.SUPERADMIN && body.arhebFee != null ? (typeof body.arhebFee === 'number' ? body.arhebFee : parseFloat(body.arhebFee)) : null,
@@ -868,17 +865,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       if (req.admin.role === ROLES.STORE_ADMIN) {
         return res.status(403).json({ success: false, message: 'Only SuperAdmin or Admin can set premium' });
       }
-      const p = Boolean(body.isPremium);
-      stores[idx].isPremium = p;
-      stores[idx].isExclusive = p;
+      stores[idx].isPremium = Boolean(body.isPremium);
     }
     if (body.isExclusive !== undefined) {
       if (req.admin.role === ROLES.STORE_ADMIN) {
         return res.status(403).json({ success: false, message: 'Only SuperAdmin or Admin can set exclusive' });
       }
-      const ex = Boolean(body.isExclusive);
-      stores[idx].isExclusive = ex;
-      stores[idx].isPremium = ex;
+      stores[idx].isExclusive = Boolean(body.isExclusive);
     }
     if (body.hiddenFromCustomers !== undefined) {
       if (req.admin.role !== ROLES.SUPERADMIN && req.admin.role !== ROLES.ADMIN) {

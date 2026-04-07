@@ -834,6 +834,26 @@ Products are ordered by **`id`** (stable string/numeric sort) so pages do not re
 
 ---
 
+### Get Store Products (paginated by store categories)
+
+For very large stores where you want to **render categories always** (and avoid pages that only show 1–2 categories), use this endpoint.
+
+**Endpoint:** `GET /api/stores/:id/products/paged-categories`
+
+**Query parameters:**
+- **`page`** — Page number starting at **1** (default `1`). Each page returns up to **10 items per active category**.
+
+**Behavior:**
+- Always returns **all** `store.storeCategories` (plus an `other` bucket) on every page.
+- Each page returns up to **10** products per category.
+- When a category runs out of products, it stops contributing to next pages; the remaining categories continue to return 10 until all products are exhausted.
+
+**Success Response (200):**
+- `data.categories`: array of categories with `{ id, nameEn, nameAr, name, total, items[] }`
+- `data.pagination`: `{ page, perCategory: 10, totalProducts, finished }`
+
+---
+
 ### Get Store Products by Category
 
 Retrieves all products for a specific store filtered by category name.
