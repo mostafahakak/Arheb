@@ -123,7 +123,7 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
 ## Push notifications (FCM) and driver presence
 
 - **Firebase Cloud Messaging (FCM)** is used to send push notifications to drivers (e.g. new order assigned) and to app users (order status updates, broadcast messages). Set **`FIREBASE_SERVICE_ACCOUNT_JSON`** in `.env` to a **stringified JSON** of your Firebase service account key (Project settings → Service accounts → Generate new private key). If unset, the backend uses `GOOGLE_APPLICATION_CREDENTIALS` (path to key file). Without valid credentials, FCM send is skipped (no crash).
-- **Driver presence**: Drivers connect to the **Socket.IO namespace `/driver-presence`** with their driver JWT and send `location` events (`latitude`, `longitude`). The server keeps a list of active drivers and their last location. Admin can request **nearby drivers** for an order (by distance to store) and **auto-assign** the nearest active driver; the driver is notified via FCM.
+- **Driver presence**: Drivers connect to the **Socket.IO namespace `/driver-presence`** with their driver JWT and send `location` events (`latitude`, `longitude`). The server keeps **online** drivers and their last location. **Store admins** use **POST** `/api/admin/orders/:orderId/auto-assign` to invite the **nearest online** driver (no driver picker). If that driver **rejects** (**POST** `/api/driver/orders/:orderId/reject-request`), the **next nearest online** driver is notified. **Admin / SuperAdmin** assign specific drivers with **POST** `/api/admin/orders/:orderId/request-driver` and list candidates with **GET** `/api/admin/orders/:orderId/assignable-drivers` (online + distance sorted). Each invite sends **FCM** (`type: driver_request`) and a **`delivery_request`** event on `/driver-presence` when connected.
 - **User FCM**: Users can set `fcmToken` via **PUT /api/profile** or send it with **POST /api/checkout**. Order status changes (and broadcast notifications) are sent to the user’s token. **GET /api/profile/notifications** lists notification history for that user only (Bearer user JWT).
 - **Store FCM**: Store devices (kitchen / POS) register a token with **POST /api/store/update-fcm** (`storeId`, `fcmToken`). Tokens are stored in the database and returned on **GET / PATCH** admin store details as `fcmToken`. When a customer order is created (**POST /api/checkout** or payment flow that creates an order), the backend sends a push to that store’s token if configured (`type: store_new_order` in the data payload).
 - **Broadcast**: Admin/SuperAdmin can send a notification to all registered users via **POST /api/admin/notifications/broadcast** (`title`, `body`, optional `imageUrl`).
@@ -3369,6 +3369,10 @@ Assigns an order to the authenticated driver and sets its status to "On the way"
 
 `driverId` is optional; if omitted, the authenticated driver's ID is used. You can only accept for yourself.
 
+**When `driverId` is not added (accept request):** If the JSON body does **not** include **`driverId`**, the backend assigns the order to the driver identified by the **Bearer token** (same as sending your own id explicitly). If **`driverId`** is present, it must match that token’s driver or the response is **`403`**.
+
+**When `driverId` is not on the order (responses):** In **GET** checkout orders, **GET** `/api/orders/:orderId`, **GET** `/api/admin/orders`, and driver order payloads, **`driverId`** and **`driverName`** are **`null`** (or absent) until a driver has **accepted** the order. While status is **Preparing** and no driver has accepted yet—**including** when drivers are only being invited via auto-assign / `driver_requests`—there is **no** assigned driver on the order, so **`driverId`** remains unset.
+
 **Effect:** The order's `status` is set to **"On the way"**, and **`driverId`** and **`driverName`** are set on the order so Admin can track which driver is assigned (see Admin Orders).
 
 **Success Response (200):**
@@ -3668,8 +3672,10 @@ For issues or questions, please contact: `contact@arheb.app`
 | PATCH | `/api/admin/home/banners` | Admin / SuperAdmin | Replace home banners: body `{ "banners": [...] }`. |
 | GET | `/api/admin/home/offers` | Admin / SuperAdmin | Read `data.offers` for **`GET /api/home`**. |
 | PATCH | `/api/admin/home/offers` | Admin / SuperAdmin | Replace home offers: body `{ "offers": [...] }`. |
-| GET | `/api/admin/orders/:orderId/available-drivers` | Admin (Store Admin: own store orders only) | Returns non-blocked drivers that do not already have a pending request for this order. Used when assigning a driver to an order. |
-| POST | `/api/admin/orders/:orderId/request-driver` | Admin (Store Admin: own store orders only) | Sends a delivery request to one or more drivers. Body: `{ "driverIds": [1, 2, 3] }`. Allowed only when order status is "Preparing" or "Waiting confirmation" and order has no driver assigned. |
+| GET | `/api/admin/orders/:orderId/available-drivers` | Admin (Store Admin: own store orders only) | Returns non-blocked drivers that do not already have a pending request for this order. |
+| GET | `/api/admin/orders/:orderId/assignable-drivers` | Admin / SuperAdmin | All non-blocked drivers: **online** (socket presence) first, sorted by **distance to store**, then offline. Each row includes `online`, `distanceKm`, `latitude`/`longitude` when online. |
+| POST | `/api/admin/orders/:orderId/request-driver` | **Admin / SuperAdmin only** | Sends a delivery request to one or more specific drivers. Body: `{ "driverIds": [1, 2, 3] }`. Only when order status is **Preparing** and order has no driver. FCM + socket per driver. |
+| POST | `/api/driver/orders/:orderId/reject-request` | Driver | Declines a pending invite for this order. If no other pending invites remain, backend notifies the **next nearest online** driver (same chain as auto-assign). |
 | GET | `/api/admin/orders/:orderId/tracking` | Admin (Store Admin: own store orders only) | Returns order tracking state for the dashboard: `orderId`, `orderStatus`, `driverId`, `driverName`, `isTracking`, `driverConnected`, `lastLocation` (latitude, longitude, timestamp). Used with Socket.IO for live driver tracking. |
 | GET | `/api/driver/requests` | Driver | Returns pending delivery requests for the authenticated driver. Each request includes full order payload (store name/address/mapsUrl, client address, total, delivery fee, item count, etc.). Driver accepts via existing `POST /api/driver/orders/accept`. |
 | GET | `/api/admin/info` | Admin / SuperAdmin | Returns app-level contact info: `{ email, phone, cliqNumber, driverDeliveryPercent, driverDeliveryDefaultEffective }`. |
@@ -3705,7 +3711,7 @@ For issues or questions, please contact: `contact@arheb.app`
 - **Admin Orders**  
   - **GET** `/api/admin/orders`: Supports filter by **`status`** (exact value: e.g. `Waiting confirmation`, `Preparing`, `On the way`, `Delivered`, `Cancelled`) in addition to existing `orderType`, `dateFrom`, `dateTo`, `storeName`, `name`. **Admin/SuperAdmin** can filter by **`storeIds`** (comma-separated) to limit to one or more stores; Store Admin sees only their store.  
   - **GET** `/api/admin/orders/counts`: **Admin/SuperAdmin** can pass optional **`storeIds`** (comma-separated) to get active/delivered/cancelled counts for selected stores only. Returns `{ active, delivered, cancelled, complete }`.
-  - **PATCH** `/api/admin/orders/:orderId/status`: when status is set to **`Preparing`** and order has no driver, backend auto-assigns nearest active driver (if available) and sends FCM to driver with order/store details.
+  - **PATCH** `/api/admin/orders/:orderId/status`: when status is set to **`Preparing`** and order has no driver, backend invites the **nearest online** driver (if any) with FCM + **`delivery_request`** on `/driver-presence`; rejections chain to the next nearest driver.
 
 - **Driver order detail**  
   - **GET** `/api/driver/orders/:orderId` (and all driver order payloads): Response now includes **`storeName`**, **`storeAddress`**, **`storeMapsUrl`**, **`clientMapsUrl`** (Google Maps link for delivery address), **`numberOfItems`**, in addition to existing `totalPrice`, `deliveryFee`, `address`, and products.
@@ -3764,10 +3770,10 @@ For issues or questions, please contact: `contact@arheb.app`
 
 - **Driver presence (WebSocket)**  
   - Drivers connect to Socket.IO namespace **`/driver-presence`** with driver JWT and emit **`location`** `{ latitude, longitude }`.  
-  - **GET** `/api/admin/orders/:orderId/nearby-drivers` – returns active drivers with distance to store (when store has lat/long).  
-  - **POST** `/api/admin/orders/:orderId/auto-assign` – assigns the nearest active driver and sends FCM to that driver.  
-  - **POST** `/api/admin/orders/:orderId/request-driver` – sends FCM to each requested driver.
-  - **Driver assignment FCM (manual + auto):** In all cases above, plus **PATCH** `/api/admin/orders/:orderId/status` → **`Preparing`** when the backend auto-assigns the nearest driver, the driver push includes **`type: driver_request`**, **`orderId`**, **`deepLink`: `arheb://orders/{orderId}`**, **`screen: order_details`**, **`click_action`**, and store fields where applicable — tap should open the driver’s order details for that `orderId`.
+  - **GET** `/api/admin/orders/:orderId/nearby-drivers` – returns **online** drivers with distance to store (when store has lat/long).  
+  - **POST** `/api/admin/orders/:orderId/auto-assign` – Store Admin / Admin / SuperAdmin: one invite at a time to the **nearest online** driver; **409** if a driver is already pending. **POST** `/api/driver/orders/:orderId/reject-request` moves to the next nearest.  
+  - **POST** `/api/admin/orders/:orderId/request-driver` – **Admin / SuperAdmin only**: FCM + **`delivery_request`** socket to each listed driver.  
+  - **Driver assignment FCM + socket (manual + auto):** Same payload: **`type: driver_request`**, **`orderId`**, **`deepLink`**, **`screen: order_details`**, **`click_action`**, store fields. Connected drivers also receive **`delivery_request`** on `/driver-presence` with `orderId`, `status`, `storeId`, `storeName`, `type`.
   - For **`On the way`** orders, when driver gets within **0.5 km** of customer location, backend sends one-time **"order is near"** FCM notification to the user.
 
 - **Categories (icons by language + Offers)**  

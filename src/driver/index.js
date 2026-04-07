@@ -18,6 +18,8 @@ const {
   assignDriverToOrder,
   round2,
 } = require('../utils/driverCommission');
+const { getActiveFromListWithDistance } = require('../driverPresence');
+const sequentialDriverOffer = require('../utils/sequentialDriverOffer');
 
 /** Percent change in driver share vs yesterday (same driver, delivered orders). Null if not comparable. */
 function earningsGrowthPercentVsYesterday(db, driverId, todayProfitJod, todayDateStr) {
@@ -178,7 +180,7 @@ function maskPhoneForLog(phone) {
   return `${s.slice(0, 3)}***${s.slice(-2)}`;
 }
 
-module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
+module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS drivers (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -289,6 +291,12 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
   } catch (e) {
     if (!e.message || !e.message.includes('no such table')) throw e;
   }
+
+  const offerCtx = {
+    loadStores,
+    getActiveFromListWithDistance,
+    parseLatLongFromGoogleMapsUrl: sequentialDriverOffer.parseLatLongFromGoogleMapsUrl,
+  };
 
   function driverAuth(req, res, next) {
     const authHeader = req.headers.authorization;
@@ -803,6 +811,39 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET) {
       success: true,
       message: 'Order accepted successfully',
       data: { order: orderToDriverApi(updated, items, driverRow, store, db) },
+    });
+  });
+
+  // POST /api/driver/orders/:orderId/reject-request — decline a pending admin/store invite; may notify next nearest driver
+  app.post('/api/driver/orders/:orderId/reject-request', driverAuth, (req, res) => {
+    const orderId = parseInt(req.params.orderId, 10);
+    const driverId = req.driver.id;
+    if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
+    if (!updateDriverRequestStatus) {
+      return res.status(503).json({ success: false, message: 'Driver requests unavailable' });
+    }
+    const pending = db.prepare('SELECT id FROM driver_requests WHERE orderId = ? AND driverId = ? AND status = ?').get(orderId, driverId, 'pending');
+    if (!pending) {
+      return res.status(404).json({ success: false, message: 'No pending delivery request for this order' });
+    }
+    const order = findOrderById.get(orderId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (order.driverId != null) {
+      return res.status(400).json({ success: false, message: 'Order already assigned' });
+    }
+    updateDriverRequestStatus.run('rejected', orderId, driverId);
+    const remaining = sequentialDriverOffer.countPendingDriverRequests(db, orderId);
+    let nextDriverId = null;
+    if (remaining === 0) {
+      const next = sequentialDriverOffer.offerNextSequentialDriver(db, io, orderId, order, offerCtx);
+      nextDriverId = next ? next.driverId : null;
+    }
+    return res.status(200).json({
+      success: true,
+      message: nextDriverId
+        ? 'Request declined. The next nearest online driver has been notified.'
+        : 'Request declined.',
+      data: { orderId, nextDriverId },
     });
   });
 

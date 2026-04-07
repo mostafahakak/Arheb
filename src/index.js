@@ -289,8 +289,8 @@ attachHomeRoutes(app, db, JWT_SECRET);
 attachStoresRoutes(app, db);
 attachPopupRoutes(app);
 attachSearchRoutes(app);
-attachAdmin(app, db, JWT_SECRET);
-attachDriverRoutes(app, db, JWT_SECRET);
+attachAdmin(app, db, JWT_SECRET, io);
+attachDriverRoutes(app, db, JWT_SECRET, io);
 
 function extractFirebaseError(error) {
   const d = error?.response?.data;

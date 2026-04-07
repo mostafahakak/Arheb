@@ -93,6 +93,24 @@ function getActiveFromListWithDistance(driverIds, storeLat, storeLong) {
   return list;
 }
 
+/**
+ * Real-time ping on /driver-presence so the app can show a request without relying on FCM alone.
+ * @param {import('socket.io').Server} io
+ * @param {number} driverId
+ * @param {object} payload - e.g. { orderId, status, type, storeName, storeId }
+ */
+function emitDriverDeliveryRequest(io, driverId, payload) {
+  if (!io || driverId == null) return false;
+  const d = activeDrivers.get(driverId);
+  if (!d?.socketId) return false;
+  try {
+    io.of('/driver-presence').to(d.socketId).emit('delivery_request', payload);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 function round3(n) {
   return Math.round((Number(n) + Number.EPSILON) * 1000) / 1000;
 }
@@ -207,3 +225,5 @@ module.exports = function attachDriverPresence(io, db, JWT_SECRET) {
 
 module.exports.getActiveDriversWithLocation = getActiveDriversWithLocation;
 module.exports.getActiveFromListWithDistance = getActiveFromListWithDistance;
+module.exports.emitDriverDeliveryRequest = emitDriverDeliveryRequest;
+module.exports.haversineKm = haversineKm;
