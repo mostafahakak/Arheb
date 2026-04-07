@@ -779,7 +779,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       categoryAr: body.categoryAr ?? body.category ?? '',
       categoryEn: body.categoryEn ?? body.category ?? '',
       subCategories: Array.isArray(body.subCategories) ? body.subCategories : [],
-      isPremium: body.isPremium === true,
+      ...(() => {
+        const featured = body.isPremium === true || body.isExclusive === true;
+        return { isPremium: featured, isExclusive: featured };
+      })(),
       mapsUrl: body.mapsUrl ?? '',
       closingTime: closingTimeResolved,
       arhebFee: req.admin.role === ROLES.SUPERADMIN && body.arhebFee != null ? (typeof body.arhebFee === 'number' ? body.arhebFee : parseFloat(body.arhebFee)) : null,
@@ -1683,6 +1686,36 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     return nr < cr;
   }
 
+  function normalizeOrderStatusKey(status) {
+    return String(status || '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ');
+  }
+
+  /** Store Admin may cancel (reject / PATCH → Cancelled) only before the order is confirmed for preparation. */
+  function storeAdminMayCancelOrder(status) {
+    return ['pending payment', 'waiting cliq confirmation', 'waiting confirmation'].includes(normalizeOrderStatusKey(status));
+  }
+
+  /**
+   * Exact next status(es) Store Admin may set via PATCH (one step forward; no skipping).
+   * SuperAdmin/Admin are not limited by this list.
+   */
+  function storeAdminAllowedNextStatuses(currentStatus) {
+    const cur = normalizeOrderStatusKey(currentStatus);
+    if (cur === 'being prepared') return ['On the way'];
+    const nextBy = {
+      'pending payment': ['Waiting cliq confirmation', 'Waiting confirmation'],
+      'waiting cliq confirmation': ['Waiting confirmation', 'Payment rejected'],
+      'waiting confirmation': ['Preparing'],
+      'payment rejected': [],
+      preparing: ['On the way'],
+      'on the way': ['Delivered'],
+    };
+    return nextBy[cur] || [];
+  }
+
   // ——— Orders (sorted newest first; filter by date range, status, store, name, orderType, paymentType, driver) ———
   function listAdminOrdersWithDetails(req) {
     const { dateFrom, dateTo, status, storeId, storeIds, storeName, name, orderType, paymentType, driverId, unassigned } = req.query;
@@ -1863,6 +1896,30 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
       return res.status(400).json({ success: false, message: 'status is required' });
     }
     const nextStatus = status.trim();
+    const nextKey = normalizeOrderStatusKey(nextStatus);
+
+    if (req.admin.role === ROLES.STORE_ADMIN) {
+      if (nextKey === 'cancelled') {
+        if (!storeAdminMayCancelOrder(order.status)) {
+          return res.status(403).json({
+            success: false,
+            message:
+              'Store admins can only cancel before the order is confirmed for preparation. After that, move the order forward (e.g. Preparing → On the way) or contact Admin/SuperAdmin.',
+          });
+        }
+      } else {
+        const allowed = storeAdminAllowedNextStatuses(order.status);
+        const ok = allowed.some((a) => normalizeOrderStatusKey(a) === nextKey);
+        if (!ok) {
+          return res.status(403).json({
+            success: false,
+            message:
+              'Store admins can only advance the order one step in the flow (for example Waiting confirmation → Preparing). To cancel, use Reject only while the order is still awaiting confirmation or payment.',
+          });
+        }
+      }
+    }
+
     if (req.admin.role !== ROLES.SUPERADMIN && isBackwardOrderStatusTransition(order.status, nextStatus)) {
       return res.status(403).json({
         success: false,
@@ -1982,17 +2039,27 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET) {
     if (req.admin.role === ROLES.STORE_ADMIN && (order.storeId == null || !sameStoreId(order.storeId, req.admin.storeId))) {
       return res.status(403).json({ success: false, message: 'Access denied to this order' });
     }
-    const statusLower = (order.status || '').toLowerCase();
-    if (
-      !statusLower.includes('waiting') &&
-      !statusLower.includes('confirmation') &&
-      !statusLower.includes('pending payment')
-    ) {
-      return res.status(400).json({
-        success: false,
-        message:
-          'Order can only be rejected when status is Pending payment, Waiting confirmation, or Waiting cliq confirmation',
-      });
+    if (req.admin.role === ROLES.STORE_ADMIN) {
+      if (!storeAdminMayCancelOrder(order.status)) {
+        return res.status(403).json({
+          success: false,
+          message:
+            'Store admins can only reject (cancel) while the order is Pending payment, Waiting cliq confirmation, or Waiting confirmation. After the order is confirmed for preparation, use the next status steps only.',
+        });
+      }
+    } else {
+      const statusLower = (order.status || '').toLowerCase();
+      if (
+        !statusLower.includes('waiting') &&
+        !statusLower.includes('confirmation') &&
+        !statusLower.includes('pending payment')
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            'Order can only be rejected when status is Pending payment, Waiting confirmation, or Waiting cliq confirmation',
+        });
+      }
     }
     db.prepare('UPDATE orders SET status = ? WHERE id = ?').run('Cancelled', orderId);
     const updated = findOrderById.get(orderId);

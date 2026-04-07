@@ -2755,6 +2755,13 @@ Mutations across the admin API append to the `admin_activity_log` table (product
 
 **PATCH** `/api/admin/orders/:orderId/status`: if the order is already **cancelled**, only **SuperAdmin** may change status (including moving back to an earlier phase). Other roles receive **403** with a message explaining this. Non–SuperAdmin users also cannot apply **backward** status transitions on non-cancelled orders (same guard).
 
+**Store Admin** (orders for their store only):
+
+- May **reject / cancel** (**POST** `/api/admin/orders/:orderId/reject` or **PATCH** to `Cancelled`) only while status is **`Pending payment`**, **`Waiting cliq confirmation`**, or **`Waiting confirmation`**. After the order is **confirmed for preparation** (`Preparing` onward), they **cannot** cancel; they may only move status **one step forward** in the flow (e.g. `Waiting confirmation` → `Preparing`, `Preparing` → `On the way`, `On the way` → `Delivered`). Skipping steps or going backward returns **403**.
+- **SuperAdmin** and **Admin** keep broader control (subject to the backward-transition and cancelled-order rules above).
+
+**Exclusive / premium store** flags on **PATCH** `/api/admin/stores/:id`: only **SuperAdmin** and **Admin** may set **`isPremium`** / **`isExclusive`**; **Store Admin** receives **403** if they send those fields.
+
 ---
 
 ### Admins CRUD
@@ -2862,7 +2869,7 @@ Order list and order detail responses include **`driverId`** and **`driverName`*
 | GET | `/api/admin/orders/counts` | Returns `{ active, complete }`: active = orders not Delivered/Cancelled; complete = Delivered or Cancelled. Store Admin: only their store. |
 | GET | `/api/admin/orders` | List orders (Store Admin: only their store). Each order includes driverId, driverName when assigned. Query: `dateFrom`, `dateTo`, `status`, `orderType` (`active` \| `complete`), `storeId`, `storeIds`, `storeName`, `name` (customer name/phone), `paymentType` (`cash`, `Cliq`, `card`, etc.). Sorted by `createdAt DESC, id DESC`. |
 | GET | `/api/admin/orders/:orderId` | Get one order with full details (items, address, notes, paymentType, storeName, driverId, driverName, etc.). Store Admin: only their store. |
-| PATCH | `/api/admin/orders/:orderId/status` | Update order status. Body: `{ "status": "Confirmed" }`. |
+| PATCH | `/api/admin/orders/:orderId/status` | Update order status. Body: `{ "status": "Preparing" }` (exact status strings as in app). **Store Admin:** only **one step forward** in the flow, or **Cancelled** only while still awaiting payment/confirmation (see Order status section). |
 | DELETE | `/api/admin/orders/:orderId` | Delete order (Admin and SuperAdmin only). Removes order and its items. |
 
 ---
@@ -3644,7 +3651,7 @@ For issues or questions, please contact: `contact@arheb.app`
 | PATCH | `/api/admin/info` | Admin / SuperAdmin | Updates app contact info. Body: any subset of `{ email, phone, cliqNumber, driverDeliveryPercent }`. Missing fields are left unchanged. |
 | POST | `/api/admin/stores/:storeId/products/import` | Admin / SuperAdmin / Store Admin (per-store) | Imports products for a store from an Excel file. Expects `multipart/form-data` with field `file` (`.xlsx`/`.xls`). Store Admin rows go to the pending products queue; Admin/SuperAdmin rows are imported directly. Rows with an `id` column that already exists for the store are **skipped** (no duplicate). Export includes `id` column. |
 | GET | `/api/admin/stores/:storeId/products/export` | Admin / SuperAdmin / Store Admin (per-store) | Exports all products for the given store as an Excel file. Columns include `id`, `nameEn`, `nameAr`, `price`, `discount`, `unit`, `category`, `description`, `stock`, `isAvailable`. |
-| POST | `/api/admin/orders/:orderId/reject` | Admin (Store Admin: own store only) | Reject (cancel) an order when status is **Waiting confirmation** or **Waiting cliq confirmation**. Sets status to `Cancelled` and sends FCM to the customer. |
+| POST | `/api/admin/orders/:orderId/reject` | Admin / SuperAdmin / Store Admin (own store) | **Store Admin:** cancel only while **`Pending payment`**, **`Waiting cliq confirmation`**, or **`Waiting confirmation`**. **Admin/SuperAdmin:** same pre-confirmation rule as before (pending / waiting / cliq). Sets status to `Cancelled`. |
 | GET | `/api/admin/stores/pause-history` | Admin | Returns store pause history: sessions (pausedAt, unpausedAt, durationMinutes) and total duration. Query: `dateFrom`, `dateTo` (default today), optional `storeIds` (comma-separated). Store Admin sees only their store. |
 | GET | `/api/admin/notifications` | Admin / SuperAdmin | Returns list of sent broadcast notifications (id, title, body, imageUrl, successCount, failureCount, createdAt) for the dashboard history. |
 | POST | `/api/admin/notifications/broadcast` | Admin / SuperAdmin | Sends FCM to all users. Body: `{ title, body, imageUrl? }`. Each broadcast is **saved** to the `Notifications` table for later retrieval via GET `/api/admin/notifications`. |
