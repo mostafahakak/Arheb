@@ -436,6 +436,13 @@ module.exports = function attachStoresRoutes(app, db) {
       .toLowerCase()
       .replace(/\s+/g, ' ');
 
+  const keysMatchLoose = (a, b) => {
+    const x = normalizeTextKey(a);
+    const y = normalizeTextKey(b);
+    if (!x || !y) return false;
+    return x === y || x.includes(y) || y.includes(x);
+  };
+
   function productCategoryKey(p) {
     const keys = [
       p?.categoryEn,
@@ -451,9 +458,123 @@ module.exports = function attachStoresRoutes(app, db) {
     return keys.length ? keys[0] : '';
   }
 
+  /** Buckets products under store.storeCategories (+ other). Same matching as paged-categories. */
+  function buildStoreCategoryBuckets(store, storeProducts) {
+    const storeCategories = Array.isArray(store.storeCategories) ? store.storeCategories : [];
+    const categoriesForPaging = [
+      ...storeCategories.map((c, idx) => ({
+        id: c?.id != null ? String(c.id) : `cat_${idx + 1}`,
+        nameEn: c?.nameEn ?? '',
+        nameAr: c?.nameAr ?? '',
+        name: c?.name ?? '',
+      })),
+      { id: 'other', nameEn: 'Other', nameAr: 'أخرى', name: 'Other' },
+    ];
+
+    const categoryMatchers = categoriesForPaging.map((c) => ({
+      cat: c,
+      keys: new Set([c.id, c.nameEn, c.nameAr, c.name].map(normalizeTextKey).filter(Boolean)),
+    }));
+
+    const buckets = new Map(categoryMatchers.map((x) => [x.cat.id, []]));
+    for (const p of storeProducts) {
+      const pKeys = new Set(
+        [
+          p?.categoryEn,
+          p?.category,
+          p?.categoryAr,
+          p?.categoryName,
+          p?.subCategoryEn,
+          p?.subCategory,
+          p?.subCategoryAr,
+        ].map(normalizeTextKey).filter(Boolean),
+      );
+      let matchedId = 'other';
+      for (const m of categoryMatchers) {
+        if (m.cat.id === 'other') continue;
+        for (const pk of pKeys) {
+          for (const ck of m.keys) {
+            if (keysMatchLoose(pk, ck)) {
+              matchedId = m.cat.id;
+              break;
+            }
+          }
+          if (matchedId !== 'other') break;
+        }
+        if (matchedId !== 'other') break;
+      }
+      buckets.get(matchedId).push(p);
+    }
+    return { categoriesForPaging, buckets };
+  }
+
+  function computeTotalCategoryPages(buckets, perCategory) {
+    const keys = Array.from(buckets.keys());
+    const ptr = new Map(keys.map((k) => [k, 0]));
+    let active = keys.filter((k) => (buckets.get(k)?.length || 0) > 0);
+    if (!active.length) return 0;
+    let pages = 0;
+    while (active.length) {
+      pages += 1;
+      const nextActive = [];
+      for (const k of active) {
+        const list = buckets.get(k) || [];
+        const start = ptr.get(k) || 0;
+        const slice = list.slice(start, start + perCategory);
+        ptr.set(k, start + slice.length);
+        if ((ptr.get(k) || 0) < list.length) nextActive.push(k);
+      }
+      active = nextActive;
+    }
+    return pages;
+  }
+
   /**
-   * Paginated store products — 50 per page, deterministic order by product id.
-   * Use for large catalogs; avoids loading 10k+ products in one response.
+   * One "page" = take up to perCategory from each active bucket; exhausted buckets drop out.
+   * Returns empty picks if page > totalPages (when totalPages > 0).
+   */
+  function pickCategoryPageSlice(buckets, page, perCategory) {
+    const keys = Array.from(buckets.keys());
+    const totalProducts = keys.reduce((sum, k) => sum + (buckets.get(k)?.length || 0), 0);
+    const totalPages = computeTotalCategoryPages(buckets, perCategory);
+    const emptyPick = () => new Map(keys.map((k) => [k, []]));
+
+    if (totalProducts === 0) {
+      return { pagePick: emptyPick(), finished: true, totalProducts: 0, totalPages: 0 };
+    }
+    if (page > totalPages) {
+      return { pagePick: emptyPick(), finished: true, totalProducts, totalPages };
+    }
+
+    const pointers = new Map(keys.map((k) => [k, 0]));
+    let active = keys.filter((k) => (buckets.get(k)?.length || 0) > 0);
+    let currentPage = 1;
+    let pagePick = emptyPick();
+
+    while (currentPage <= page && active.length > 0) {
+      const nextPick = new Map(keys.map((k) => [k, []]));
+      const nextActive = [];
+      for (const k of active) {
+        const list = buckets.get(k) || [];
+        const start = pointers.get(k) || 0;
+        const slice = list.slice(start, start + perCategory);
+        pointers.set(k, start + slice.length);
+        nextPick.set(k, slice);
+        if ((pointers.get(k) || 0) < list.length) nextActive.push(k);
+      }
+      pagePick = nextPick;
+      active = nextActive;
+      currentPage += 1;
+    }
+
+    const finished = active.length === 0;
+    return { pagePick, finished, totalProducts, totalPages };
+  }
+
+  /**
+   * Paginated store products — same category logic as `/products/paged-categories`:
+   * all store categories (+ other) every response, up to 10 items per category per page.
+   * `data.products` is a flattened list of that page (backward compatible for clients that only read `products`).
    */
   app.get('/api/stores/:id/products/paged', (req, res) => {
     const storeId = req.params.id;
@@ -469,7 +590,7 @@ module.exports = function attachStoresRoutes(app, db) {
 
     const pageRaw = req.query.page != null ? String(req.query.page).trim() : '1';
     const page = Math.max(1, parseInt(pageRaw, 10) || 1);
-    const perPage = 50;
+    const perCategory = 10;
 
     const productsResponsePath = getJsonPath('products_listing_response.json');
     let productsResponse;
@@ -488,12 +609,18 @@ module.exports = function attachStoresRoutes(app, db) {
       .filter((p) => String(p.store?.id) === String(storeId) && p.isAvailable !== false)
       .sort(compareProductIdStable);
 
-    const total = storeProducts.length;
-    const totalPages = total === 0 ? 0 : Math.ceil(total / perPage);
-    const start = (page - 1) * perPage;
-    const pageItems = storeProducts.slice(start, start + perPage);
-
     const toClientProduct = (p) => ({ ...p, discount: p.discount ?? null, originalPrice: p.originalPrice ?? p.price ?? null });
+
+    const { categoriesForPaging, buckets } = buildStoreCategoryBuckets(store, storeProducts);
+    const { pagePick, finished, totalProducts, totalPages } = pickCategoryPageSlice(buckets, page, perCategory);
+
+    const categoriesOut = categoriesForPaging.map((c) => {
+      const total = buckets.get(c.id)?.length || 0;
+      const items = (pagePick.get(c.id) || []).map(toClientProduct);
+      return { ...c, total, items };
+    });
+
+    const flatProducts = categoriesForPaging.flatMap((c) => (pagePick.get(c.id) || []).map(toClientProduct));
 
     return res.status(200).json({
       success: true,
@@ -513,14 +640,17 @@ module.exports = function attachStoresRoutes(app, db) {
           isExclusive: store.isExclusive === true,
           isPremium: store.isPremium === true,
         },
-        products: pageItems.map(toClientProduct),
+        products: flatProducts,
+        categories: categoriesOut,
         pagination: {
           page,
-          perPage,
-          total,
+          perPage: perCategory,
+          perCategory,
+          total: totalProducts,
           totalPages,
           hasNextPage: totalPages > 0 && page < totalPages,
-          hasPrevPage: page > 1 && total > 0,
+          hasPrevPage: page > 1 && totalProducts > 0,
+          finished,
         },
       },
       timestamp: new Date().toISOString(),
@@ -562,22 +692,6 @@ module.exports = function attachStoresRoutes(app, db) {
     if (!productsResponse) return res.status(500).json({ success: false, message: 'Products payload is unavailable' });
 
     const storeCategories = Array.isArray(store.storeCategories) ? store.storeCategories : [];
-    const categoriesForPaging = [
-      ...storeCategories.map((c, idx) => ({
-        id: c?.id != null ? String(c.id) : `cat_${idx + 1}`,
-        nameEn: c?.nameEn ?? '',
-        nameAr: c?.nameAr ?? '',
-        name: c?.name ?? '',
-      })),
-      { id: 'other', nameEn: 'Other', nameAr: 'أخرى', name: 'Other' },
-    ];
-
-    const categoryMatchers = categoriesForPaging.map((c) => {
-      const keys = new Set(
-        [c.id, c.nameEn, c.nameAr, c.name].map(normalizeTextKey).filter(Boolean),
-      );
-      return { cat: c, keys };
-    });
 
     const products = productsResponse?.data?.products ?? [];
     const storeProducts = products
@@ -586,58 +700,8 @@ module.exports = function attachStoresRoutes(app, db) {
 
     const toClientProduct = (p) => ({ ...p, discount: p.discount ?? null, originalPrice: p.originalPrice ?? p.price ?? null });
 
-    // Bucket products by category (storeCategories first; everything else → other)
-    const buckets = new Map(categoryMatchers.map((x) => [x.cat.id, []]));
-    for (const p of storeProducts) {
-      const pKeys = new Set(
-        [
-          p?.categoryEn,
-          p?.category,
-          p?.categoryAr,
-          p?.categoryName,
-          p?.subCategoryEn,
-          p?.subCategory,
-          p?.subCategoryAr,
-        ].map(normalizeTextKey).filter(Boolean),
-      );
-      let matchedId = 'other';
-      for (const m of categoryMatchers) {
-        if (m.cat.id === 'other') continue;
-        for (const k of pKeys) {
-          if (m.keys.has(k)) {
-            matchedId = m.cat.id;
-            break;
-          }
-        }
-        if (matchedId !== 'other') break;
-      }
-      buckets.get(matchedId).push(p);
-    }
-
-    // Simulate "pages" as cycles of perCategory per active bucket.
-    const pointers = new Map(Array.from(buckets.keys()).map((k) => [k, 0]));
-    let active = Array.from(buckets.keys()).filter((k) => (buckets.get(k)?.length || 0) > 0);
-    let currentPage = 1;
-    let pagePick = new Map(Array.from(buckets.keys()).map((k) => [k, []]));
-
-    while (currentPage <= page && active.length > 0) {
-      const nextPick = new Map(Array.from(buckets.keys()).map((k) => [k, []]));
-      const nextActive = [];
-      for (const k of active) {
-        const list = buckets.get(k) || [];
-        const start = pointers.get(k) || 0;
-        const slice = list.slice(start, start + perCategory);
-        pointers.set(k, start + slice.length);
-        nextPick.set(k, slice);
-        if ((pointers.get(k) || 0) < list.length) nextActive.push(k);
-      }
-      pagePick = nextPick;
-      active = nextActive;
-      currentPage += 1;
-    }
-
-    const totalProducts = storeProducts.length;
-    const finished = active.length === 0;
+    const { categoriesForPaging, buckets } = buildStoreCategoryBuckets(store, storeProducts);
+    const { pagePick, finished, totalProducts, totalPages } = pickCategoryPageSlice(buckets, page, perCategory);
 
     const categoriesOut = categoriesForPaging.map((c) => {
       const total = buckets.get(c.id)?.length || 0;
@@ -667,6 +731,11 @@ module.exports = function attachStoresRoutes(app, db) {
         pagination: {
           page,
           perCategory,
+          perPage: perCategory,
+          total: totalProducts,
+          totalPages,
+          hasNextPage: totalPages > 0 && page < totalPages,
+          hasPrevPage: page > 1 && totalProducts > 0,
           totalProducts,
           finished,
         },

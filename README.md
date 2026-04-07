@@ -815,22 +815,27 @@ For stores with very large catalogs, use this endpoint instead of **`GET /api/st
 **Endpoint:** `GET /api/stores/:id/products/paged`
 
 **Query parameters:**
-- **`page`** — Page number starting at **1** (default `1` if omitted or invalid). Each page returns at most **50** products.
+- **`page`** — Page number starting at **1** (default `1` if omitted or invalid).
 
-Products are ordered by **`id`** (stable string/numeric sort) so pages do not repeat or skip items when you request `page=1`, then `page=2`, etc.
+**Behavior (same model as [paginated by store categories](#get-store-products-paginated-by-store-categories)):**
+- Always includes **all** `store.storeCategories` plus an **`other`** bucket in **`data.categories`** (each with `total` and `items[]` for that page).
+- **`data.products`** is a **flattened** list of the same items as in `categories[].items` (category order preserved), for clients that only read `products`.
+- Each page returns up to **10** products **per active category** (categories that still have remaining products). When a category is exhausted it drops out of “active” for later pages; remaining categories keep getting up to 10 until the catalog is exhausted.
+- Products are bucketed by matching product category fields to store categories (same rules as the category-specific endpoint); unmatched products go to **`other`**.
 
 **Authentication:** Not required
 
-**Success Response (200):** Same `data.store` shape as [Get Store Products](#get-store-products). `data.products` is only the current page. `data.pagination` includes:
+**Success Response (200):** Same `data.store` shape as [Get Store Products](#get-store-products). `data.pagination` includes:
 
 | Field | Description |
 |--------|-------------|
 | `page` | Current page |
-| `perPage` | Always `50` |
+| `perPage` / `perCategory` | Always **10** (max items per active category on this page) |
 | `total` | Total available products (after the same filters as the non-paginated endpoint) |
-| `totalPages` | `ceil(total / perPage)` |
+| `totalPages` | Number of pages for this per-category paging model |
 | `hasNextPage` | Whether a next page exists |
 | `hasPrevPage` | Whether a previous page exists |
+| `finished` | `true` when this page consumed the last remaining products (or when there were none) |
 
 ---
 
@@ -850,7 +855,7 @@ For very large stores where you want to **render categories always** (and avoid 
 
 **Success Response (200):**
 - `data.categories`: array of categories with `{ id, nameEn, nameAr, name, total, items[] }`
-- `data.pagination`: `{ page, perCategory: 10, totalProducts, finished }`
+- `data.pagination`: `{ page, perCategory: 10, perPage: 10, total, totalProducts, totalPages, hasNextPage, hasPrevPage, finished }`
 
 ---
 
@@ -3741,7 +3746,7 @@ For issues or questions, please contact: `contact@arheb.app`
 - **Stores (public + admin) – Store categories**  
   - All public store responses (`GET /api/stores`, `/api/stores/top-rated`, `/api/stores/premium`, `/api/stores/exclusive`, `/api/stores/category/:categoryName`) now include **`storeCategories`** (array) as part of each store.  
   - **GET** `/api/stores/:id/products` and **GET** `/api/stores/:id/products/category/:categoryName` include `store.storeCategories` so clients can know which categories belong to that store.  
-  - **GET** `/api/stores/:id/products/paged?page=1` returns **50** products per page (stable sort by `id`) for large catalogs; use instead of loading all products at once.  
+  - **GET** `/api/stores/:id/products/paged?page=1` uses **per-store-category paging** (up to **10** products per **active** category per page, all categories + `other` in `data.categories`; see [Get Store Products (paginated)](#get-store-products-paginated)) for large catalogs; use instead of loading all products at once.  
   - **Admin** store APIs allow managing `storeCategories` per store; dashboard product forms now pick categories from the store’s own `storeCategories` instead of global categories.
 
 ### FCM, driver presence, store pause/block, customer orders & tracking, Arheb Box
