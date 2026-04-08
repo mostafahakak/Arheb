@@ -55,9 +55,8 @@ const { normalizeHomeContentLinkArray } = require('../utils/homeContentLinks');
 const {
   parseLatLongFromGoogleMapsUrl,
   notifyDriverDeliveryRequest,
-  offerNextSequentialDriver,
-  countPendingDriverRequests,
 } = require('../utils/sequentialDriverOffer');
+const { runDeliveryClusterAutoAssign, ensureOrderAssignmentColumns } = require('../utils/deliveryClusterAssignment');
 
 const storesResponsePath = getJsonPath('stores_listing_response.json');
 const productsResponsePath = getJsonPath('products_listing_response.json');
@@ -195,6 +194,7 @@ function savePopup(data) {
 module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   seedAdmins(db);
   ensureActivityLogTable(db);
+  ensureOrderAssignmentColumns(db);
 
   const offerCtx = {
     loadStores,
@@ -1937,12 +1937,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       ).catch(() => {});
     }
 
-    // Auto-assign nearest **online** driver when status becomes Preparing and order has no driver yet (sequential chain).
+    // Auto-assign drivers (delivery clusters ≤1 km, online drivers, direct assignment; no driver reject flow).
     let autoAssignedDriverId = null;
+    let autoAssignResult = null;
     if (nextStatus.toLowerCase() === 'preparing' && updated.driverId == null) {
       try {
-        const offered = offerNextSequentialDriver(db, io, orderId, updated, offerCtx);
-        if (offered) autoAssignedDriverId = offered.driverId;
+        autoAssignResult = runDeliveryClusterAutoAssign(db, io, updated.storeId, offerCtx);
+        const hit = autoAssignResult.assigned.find((x) => x.orderId === orderId);
+        if (hit) autoAssignedDriverId = hit.driverId;
       } catch (e) {
         console.error('Auto-assign on preparing failed:', e);
       }
@@ -1964,6 +1966,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           items: mapOrderItemsRows(items),
         },
         autoAssignedDriverId,
+        ...(autoAssignResult ? { autoAssign: autoAssignResult } : {}),
       },
     });
   });
@@ -2193,31 +2196,25 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     if (order.driverId != null) {
       return res.status(400).json({ success: false, message: 'Order already has a driver assigned' });
     }
-    if (countPendingDriverRequests(db, orderId) > 0) {
-      let pendingRows = [];
-      try {
-        pendingRows = db.prepare('SELECT driverId FROM driver_requests WHERE orderId = ? AND status = ?').all(orderId, 'pending');
-      } catch (e) {
-        pendingRows = [];
-      }
-      return res.status(409).json({
-        success: false,
-        message: 'Driver(s) already pending for this order. Wait for accept or reject before assigning again.',
-        data: { orderId, waitingDriverIds: pendingRows.map((r) => r.driverId) },
-      });
-    }
-    const offered = offerNextSequentialDriver(db, io, orderId, order, offerCtx);
-    if (!offered) {
+    const autoAssignResult = runDeliveryClusterAutoAssign(db, io, order.storeId, offerCtx);
+    const hit = autoAssignResult.assigned.find((x) => x.orderId === orderId);
+    if (!hit) {
+      const still = findOrderById.get(orderId);
+      const reason = still?.driverAssignmentStatus === 'no_driver_online' ? 'no_driver_online' : 'no_match';
       return res.status(404).json({
         success: false,
-        message: 'No active drivers nearby. Ask drivers to open the app (socket presence) and share location.',
-        data: { orderId },
+        message:
+          reason === 'no_driver_online'
+            ? 'No online drivers available for this store. Drivers must connect to the app and share location.'
+            : 'Could not assign a driver (check delivery coordinates and driver availability).',
+        data: { orderId, autoAssign: autoAssignResult, driverAssignmentStatus: still?.driverAssignmentStatus ?? null },
       });
     }
+    const updated = findOrderById.get(orderId);
     return res.status(200).json({
       success: true,
-      message: 'Nearest online driver notified. If they reject, the next nearest will be asked automatically.',
-      data: { orderId, driverId: offered.driverId, distanceKm: offered.distanceKm },
+      message: 'Driver assigned automatically (clustered by delivery distance, max 1 km between consecutive stops).',
+      data: { orderId, driverId: hit.driverId, order: updated, autoAssign: autoAssignResult },
     });
   });
 
@@ -2257,6 +2254,91 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     });
   });
 
+  // ——— Driver + map payload for dashboard (track button: mapPreviewUrl + live location) ———
+  app.get('/api/admin/orders/:orderId/driver-map', auth, (req, res) => {
+    const orderId = parseInt(req.params.orderId, 10);
+    if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
+    const order = findOrderById.get(orderId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && !sameStoreId(order.storeId, req.admin.storeId)) {
+      return res.status(403).json({ success: false, message: 'Access denied to this order' });
+    }
+    const storesList = loadStores();
+    const store = order.storeId ? storesList.find((s) => String(s.id) === String(order.storeId)) : null;
+    const parsed = parseLatLongFromGoogleMapsUrl(store?.mapsUrl);
+    const storeLat = store && (store.latitude != null || store.lat != null) ? Number(store.latitude ?? store.lat) : (parsed?.latitude ?? null);
+    const storeLong = store && (store.longitude != null || store.long != null) ? Number(store.longitude ?? store.long) : (parsed?.longitude ?? null);
+    const dLat = Number(order.addressLat);
+    const dLng = Number(order.addressLong);
+    let driverDetail = null;
+    let liveLocation = null;
+    if (order.driverId != null) {
+      try {
+        driverDetail = db.prepare('SELECT id, name, mobile, vehicleType, vehicleNumber, photo FROM drivers WHERE id = ?').get(order.driverId);
+      } catch (e) {
+        driverDetail = null;
+      }
+      const active = getActiveDriversWithLocation();
+      const hit = active.find((x) => Number(x.driverId) === Number(order.driverId));
+      if (hit && hit.latitude != null && hit.longitude != null) {
+        liveLocation = { latitude: hit.latitude, longitude: hit.longitude, lastSeen: hit.lastSeen };
+      }
+    }
+    let getOrderTrackingState;
+    try {
+      getOrderTrackingState = require('../order').getOrderTrackingState;
+    } catch (e) {
+      getOrderTrackingState = null;
+    }
+    const tracking = getOrderTrackingState ? getOrderTrackingState(orderId) : null;
+    const lastLocation = tracking?.lastLocation || null;
+    const parts = [];
+    if (Number.isFinite(storeLat) && Number.isFinite(storeLong)) parts.push(`${storeLat},${storeLong}`);
+    if (Number.isFinite(dLat) && Number.isFinite(dLng)) parts.push(`${dLat},${dLng}`);
+    if (liveLocation && Number.isFinite(liveLocation.latitude) && Number.isFinite(liveLocation.longitude)) {
+      parts.push(`${liveLocation.latitude},${liveLocation.longitude}`);
+    }
+    const mapPreviewUrl = parts.length >= 2 ? `https://www.google.com/maps/dir/${parts.map(encodeURIComponent).join('/')}` : null;
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        orderId,
+        orderStatus: order.status,
+        driverAssignmentStatus: order.driverAssignmentStatus ?? null,
+        driverSearchStartedAt: order.driverSearchStartedAt ?? null,
+        deliveryLocation:
+          Number.isFinite(dLat) && Number.isFinite(dLng) ? { latitude: dLat, longitude: dLng } : null,
+        storeLocation:
+          Number.isFinite(storeLat) && Number.isFinite(storeLong) ? { latitude: storeLat, longitude: storeLong } : null,
+        storeName: store ? store.nameEn || store.name || store.nameAr : null,
+        driver: driverDetail
+          ? {
+              id: driverDetail.id,
+              name: driverDetail.name,
+              mobile: driverDetail.mobile,
+              vehicleType: driverDetail.vehicleType,
+              vehicleNumber: driverDetail.vehicleNumber,
+              photo: driverDetail.photo,
+              liveLocation,
+            }
+          : null,
+        tracking: {
+          isTracking: !!lastLocation,
+          driverConnected: !!(tracking && tracking.driverSocket),
+          lastLocation: lastLocation
+            ? {
+                latitude: lastLocation.latitude,
+                longitude: lastLocation.longitude,
+                timestamp: lastLocation.timestamp,
+              }
+            : null,
+        },
+        mapPreviewUrl,
+      },
+    });
+  });
+
   // ——— Live active drivers map (Aqaba dashboard) ———
   app.get('/api/admin/drivers/active-map', auth, requireAdminOrSuper, (req, res) => {
     try {
@@ -2270,8 +2352,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       const metaById = Object.fromEntries(driversMeta.map((d) => [Number(d.id), d]));
       // Include every non-stale presence entry. Drivers who connected but have not sent
       // `location` yet appear with hasLocation: false (dashboard can still list them).
-      const activeStoreOrder = db.prepare(
-        `SELECT id FROM orders WHERE driverId = ? AND status NOT IN ('Delivered', 'Cancelled') ORDER BY id DESC LIMIT 1`,
+      const activeStoreOrders = db.prepare(
+        `SELECT id FROM orders WHERE driverId = ? AND status NOT IN ('Delivered', 'Cancelled') ORDER BY id DESC LIMIT 25`,
       );
       const activeArhebBox = (() => {
         try {
@@ -2295,11 +2377,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           lonNum <= 180;
         let currentStoreOrderId = null;
         let currentArhebBoxRequestId = null;
+        let currentStoreOrderIds = [];
         try {
-          const so = activeStoreOrder.get(d.driverId);
-          currentStoreOrderId = so?.id ?? null;
+          const so = activeStoreOrders.all(d.driverId);
+          currentStoreOrderIds = (so || []).map((r) => r.id);
+          currentStoreOrderId = currentStoreOrderIds[0] ?? null;
         } catch (e) {
-          /* ignore */
+          currentStoreOrderId = null;
         }
         if (activeArhebBox) {
           try {
@@ -2320,6 +2404,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           hasLocation,
           lastSeen: d.lastSeen,
           currentStoreOrderId,
+          currentStoreOrderIds,
           currentArhebBoxRequestId,
         };
       });

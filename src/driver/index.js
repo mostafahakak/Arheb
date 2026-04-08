@@ -19,7 +19,6 @@ const {
   round2,
 } = require('../utils/driverCommission');
 const { getActiveFromListWithDistance } = require('../driverPresence');
-const sequentialDriverOffer = require('../utils/sequentialDriverOffer');
 
 /** Percent change in driver share vs yesterday (same driver, delivered orders). Null if not comparable. */
 function earningsGrowthPercentVsYesterday(db, driverId, todayProfitJod, todayDateStr) {
@@ -291,12 +290,6 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
   } catch (e) {
     if (!e.message || !e.message.includes('no such table')) throw e;
   }
-
-  const offerCtx = {
-    loadStores,
-    getActiveFromListWithDistance,
-    parseLatLongFromGoogleMapsUrl: sequentialDriverOffer.parseLatLongFromGoogleMapsUrl,
-  };
 
   function driverAuth(req, res, next) {
     const authHeader = req.headers.authorization;
@@ -775,6 +768,18 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     if (driverId !== req.driver.id) return res.status(403).json({ success: false, message: 'You can only accept orders for yourself' });
     const order = findOrderById.get(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (order.driverId != null && Number(order.driverId) === Number(driverId)) {
+      const updated = findOrderById.get(orderId);
+      const items = findOrderItems.all(orderId);
+      const driverRow = findDriverById.get(driverId);
+      const storesList = loadStores();
+      const store = updated.storeId ? storesList.find((s) => s.id === updated.storeId) : null;
+      return res.status(200).json({
+        success: true,
+        message: 'Order already assigned to you',
+        data: { order: orderToDriverApi(updated, items, driverRow, store, db) },
+      });
+    }
     if (order.driverId != null) return res.status(400).json({ success: false, message: 'Order already assigned' });
     if (updateDriverRequestStatus) {
       const existing = db.prepare('SELECT id FROM driver_requests WHERE orderId = ? AND driverId = ? AND status = ?').get(orderId, driverId, 'pending');
@@ -814,36 +819,11 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     });
   });
 
-  // POST /api/driver/orders/:orderId/reject-request — decline a pending admin/store invite; may notify next nearest driver
+  // POST /api/driver/orders/:orderId/reject-request — disabled (orders are assigned automatically by the backend)
   app.post('/api/driver/orders/:orderId/reject-request', driverAuth, (req, res) => {
-    const orderId = parseInt(req.params.orderId, 10);
-    const driverId = req.driver.id;
-    if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
-    if (!updateDriverRequestStatus) {
-      return res.status(503).json({ success: false, message: 'Driver requests unavailable' });
-    }
-    const pending = db.prepare('SELECT id FROM driver_requests WHERE orderId = ? AND driverId = ? AND status = ?').get(orderId, driverId, 'pending');
-    if (!pending) {
-      return res.status(404).json({ success: false, message: 'No pending delivery request for this order' });
-    }
-    const order = findOrderById.get(orderId);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (order.driverId != null) {
-      return res.status(400).json({ success: false, message: 'Order already assigned' });
-    }
-    updateDriverRequestStatus.run('rejected', orderId, driverId);
-    const remaining = sequentialDriverOffer.countPendingDriverRequests(db, orderId);
-    let nextDriverId = null;
-    if (remaining === 0) {
-      const next = sequentialDriverOffer.offerNextSequentialDriver(db, io, orderId, order, offerCtx);
-      nextDriverId = next ? next.driverId : null;
-    }
-    return res.status(200).json({
-      success: true,
-      message: nextDriverId
-        ? 'Request declined. The next nearest online driver has been notified.'
-        : 'Request declined.',
-      data: { orderId, nextDriverId },
+    return res.status(403).json({
+      success: false,
+      message: 'Rejecting delivery assignments is disabled. Orders are assigned automatically by the system.',
     });
   });
 
