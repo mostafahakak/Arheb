@@ -55,6 +55,7 @@ const { normalizeHomeContentLinkArray } = require('../utils/homeContentLinks');
 const {
   parseLatLongFromGoogleMapsUrl,
   notifyDriverDeliveryRequest,
+  notifyAllOnlineDrivers,
 } = require('../utils/sequentialDriverOffer');
 const { runDeliveryClusterAutoAssign, ensureOrderAssignmentColumns } = require('../utils/deliveryClusterAssignment');
 
@@ -1947,20 +1948,6 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       ).catch(() => {});
     }
 
-    // Auto-assign drivers (delivery clusters ≤1 km, online drivers, direct assignment; no driver reject flow).
-    let autoAssignedDriverId = null;
-    let autoAssignResult = null;
-    if (nextStatus.toLowerCase() === 'preparing' && updated.driverId == null) {
-      try {
-        autoAssignResult = runDeliveryClusterAutoAssign(db, io, updated.storeId, offerCtx);
-        const hit = autoAssignResult.assigned.find((x) => x.orderId === orderId);
-        if (hit) autoAssignedDriverId = hit.driverId;
-      } catch (e) {
-        console.error('Auto-assign on preparing failed:', e);
-      }
-      updated = findOrderById.get(orderId);
-    }
-
     if (nextStatus.toLowerCase() === 'delivered') {
       const { submitJofotaraInvoice } = require('../jofotara');
       submitJofotaraInvoice(db, orderId).catch((e) => {
@@ -1988,8 +1975,6 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           ...updated,
           items: mapOrderItemsRows(items),
         },
-        autoAssignedDriverId,
-        ...(autoAssignResult ? { autoAssign: autoAssignResult } : {}),
       },
     });
   });
@@ -2195,12 +2180,15 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     });
   });
 
-  // ——— Request specific driver(s) to pick up order (Admin / SuperAdmin only; Store Admin uses auto-assign) ———
-  app.post('/api/admin/orders/:orderId/request-driver', auth, requireAdminOrSuper, (req, res) => {
+  // ——— Request driver(s) to pick up order. Store Admin: send to all online drivers. Admin/SuperAdmin: pick specific or all. ———
+  app.post('/api/admin/orders/:orderId/request-driver', auth, (req, res) => {
     const orderId = parseInt(req.params.orderId, 10);
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && !sameStoreId(order.storeId, req.admin.storeId)) {
+      return res.status(403).json({ success: false, message: 'Access denied to this order' });
+    }
     const statusLower = (order.status || '').toLowerCase();
     if (!statusLower.includes('preparing')) {
       return res.status(400).json({ success: false, message: 'Can only request driver when order is Preparing' });
@@ -2208,11 +2196,28 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     if (order.driverId != null) {
       return res.status(400).json({ success: false, message: 'Order already has a driver assigned' });
     }
-    const { driverIds } = req.body || {};
-    const ids = Array.isArray(driverIds) ? driverIds.map((id) => parseInt(id, 10)).filter((n) => !isNaN(n)) : [];
-    if (ids.length === 0) return res.status(400).json({ success: false, message: 'driverIds array is required' });
     const stores = loadStores();
     const store = order.storeId ? stores.find((s) => String(s.id) === String(order.storeId)) : null;
+    const { driverIds, all } = req.body || {};
+
+    if (all === true || req.admin.role === ROLES.STORE_ADMIN) {
+      const notifiedIds = notifyAllOnlineDrivers(db, io, orderId, order, store, offerCtx);
+      if (notifiedIds.length === 0) {
+        return res.status(400).json({ success: false, message: 'No online drivers available. Drivers must open the app and go online.' });
+      }
+      try {
+        const { broadcastDriverOrdersUpdated } = require('../driverPresence');
+        broadcastDriverOrdersUpdated(io, { type: 'new_request', orderId });
+      } catch (e) { /* ignore */ }
+      return res.status(200).json({
+        success: true,
+        message: `Request sent to ${notifiedIds.length} online driver(s). They can accept in the driver app.`,
+        data: { orderId, driverIds: notifiedIds },
+      });
+    }
+
+    const ids = Array.isArray(driverIds) ? driverIds.map((id) => parseInt(id, 10)).filter((n) => !isNaN(n)) : [];
+    if (ids.length === 0) return res.status(400).json({ success: false, message: 'driverIds array is required (or send all: true)' });
     const insertedIds = [];
     for (const driverId of ids) {
       const driver = db.prepare('SELECT id FROM drivers WHERE id = ? AND isBlocked = 0').get(driverId);

@@ -138,8 +138,31 @@ function offerNextSequentialDriver(db, io, orderId, order, ctx) {
   return null;
 }
 
+/**
+ * Notify ALL non-blocked online drivers about a new order request.
+ * Creates a driver_requests row for each and sends FCM + socket.
+ */
+function notifyAllOnlineDrivers(db, io, orderId, order, store, ctx) {
+  const { getActiveFromListWithDistance } = ctx;
+  let drivers = [];
+  try {
+    drivers = db.prepare('SELECT id FROM drivers WHERE isBlocked = 0').all();
+  } catch (e) {
+    if (!e.message || !e.message.includes('no such table')) throw e;
+  }
+  const candidateIds = drivers.map((d) => d.id);
+  const online = getActiveFromListWithDistance(candidateIds, null, null);
+  const notifiedIds = [];
+  for (const d of online) {
+    const result = notifyDriverDeliveryRequest(db, io, orderId, order, d.driverId, store);
+    if (result.notified) notifiedIds.push(d.driverId);
+  }
+  return notifiedIds;
+}
+
 module.exports = {
   notifyDriverDeliveryRequest,
+  notifyAllOnlineDrivers,
   offerNextSequentialDriver,
   countPendingDriverRequests,
   getStoreForOrder,

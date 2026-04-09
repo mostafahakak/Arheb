@@ -812,7 +812,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
         data: { order: orderToDriverApi(updated, items, driverRow, store, db) },
       });
     }
-    if (order.driverId != null) return res.status(400).json({ success: false, message: 'Order already assigned' });
+    if (order.driverId != null) return res.status(400).json({ success: false, message: 'Order already assigned to another driver' });
     if (updateDriverRequestStatus) {
       const existing = db.prepare('SELECT id FROM driver_requests WHERE orderId = ? AND driverId = ? AND status = ?').get(orderId, driverId, 'pending');
       if (existing) {
@@ -822,17 +822,21 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     }
     const driverRowForAccept = findDriverById.get(driverId);
     const driverName = driverRowForAccept ? driverRowForAccept.name : null;
-    assignDriverToOrder(db, orderId, driverId, driverName, 'On the way');
-    emitOrderStatus(orderId, 'On the way');
+    const currentStatus = order.status || 'Preparing';
+    assignDriverToOrder(db, orderId, driverId, driverName, currentStatus);
+    try {
+      const { broadcastDriverOrdersUpdated } = require('../driverPresence');
+      broadcastDriverOrdersUpdated(io, { type: 'order_accepted', orderId, driverId });
+    } catch (e) { /* ignore */ }
     fcm.sendToUserByPhone(
       db,
       order.phoneNumber,
       'Driver assigned',
-      `Driver is assigned for Order #${orderId} and is on the way.`,
+      `A driver has been assigned to Order #${orderId}.`,
       null,
       {
         orderId: String(orderId),
-        status: 'On the way',
+        status: currentStatus,
         type: 'order_tracking',
         screen: 'order_details',
         deepLink: `arheb://orders/${orderId}`,
@@ -851,12 +855,28 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     });
   });
 
-  // POST /api/driver/orders/:orderId/reject-request — disabled (orders are assigned automatically by the backend)
+  // POST /api/driver/orders/:orderId/reject-request — driver rejects a pending delivery request
   app.post('/api/driver/orders/:orderId/reject-request', driverAuth, (req, res) => {
-    return res.status(403).json({
-      success: false,
-      message: 'Rejecting delivery assignments is disabled. Orders are assigned automatically by the system.',
-    });
+    const orderId = parseInt(req.params.orderId, 10);
+    if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
+    const driverId = req.driver.id;
+    try {
+      const existing = db.prepare('SELECT id, status FROM driver_requests WHERE orderId = ? AND driverId = ?').get(orderId, driverId);
+      if (!existing) {
+        return res.status(404).json({ success: false, message: 'No pending request found for this order' });
+      }
+      if (existing.status !== 'pending') {
+        return res.status(400).json({ success: false, message: `Request already ${existing.status}` });
+      }
+      db.prepare('UPDATE driver_requests SET status = ? WHERE orderId = ? AND driverId = ?').run('rejected', orderId, driverId);
+    } catch (e) {
+      return res.status(500).json({ success: false, message: 'Failed to reject request' });
+    }
+    try {
+      const { broadcastDriverOrdersUpdated } = require('../driverPresence');
+      broadcastDriverOrdersUpdated(io, { type: 'request_rejected', orderId, driverId });
+    } catch (e) { /* ignore */ }
+    return res.status(200).json({ success: true, message: 'Request rejected' });
   });
 
   function completeStoreOrderAsDriver(req, orderId, driverId, res) {
