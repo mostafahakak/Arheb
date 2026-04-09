@@ -139,6 +139,8 @@ function orderToDriverApi(order, items = [], driverRow = null, store = null, db 
     discountAmount: order.discount ?? 0,
     address,
     addressName: order.addressName || null,
+    addressLatitude: order.addressLat != null ? Number(order.addressLat) : null,
+    addressLongitude: order.addressLong != null ? Number(order.addressLong) : null,
     buildingNumber: null,
     paymentMethod: order.paymentType || 'cash',
     status: mapOrderStatus(order.status),
