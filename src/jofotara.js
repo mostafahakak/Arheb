@@ -75,120 +75,31 @@ function buildInvoiceXml(order, invoiceUUID) {
   const buyerName = order.name || 'Customer';
   const buyerPhone = order.phoneNumber || '';
 
-  const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"
-         xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
-         xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"
-         xmlns:ext="urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2">
-  <cbc:UBLVersionID>2.1</cbc:UBLVersionID>
-  <cbc:ProfileID>reporting:1.0</cbc:ProfileID>
-  <cbc:ID>${esc(invoiceId)}</cbc:ID>
-  <cbc:UUID>${esc(invoiceUUID)}</cbc:UUID>
-  <cbc:IssueDate>${esc(date)}</cbc:IssueDate>
-  <cbc:InvoiceTypeCode name="${paymentCode}">388</cbc:InvoiceTypeCode>
-  <cbc:Note>Order #${order.id}</cbc:Note>
-  <cbc:DocumentCurrencyCode>JOD</cbc:DocumentCurrencyCode>
-  <cbc:TaxCurrencyCode>JOD</cbc:TaxCurrencyCode>
-  <cac:AdditionalDocumentReference>
-    <cbc:ID>ICV</cbc:ID>
-    <cbc:UUID>${order.id}</cbc:UUID>
-  </cac:AdditionalDocumentReference>
-  <cac:AccountingSupplierParty>
-    <cac:Party>
-      <cac:PartyIdentification>
-        <cbc:ID schemeID="TIN">${esc(SELLER_TIN)}</cbc:ID>
-      </cac:PartyIdentification>
-      <cac:PartyName>
-        <cbc:Name>${esc(SELLER_NAME)}</cbc:Name>
-      </cac:PartyName>
-    </cac:Party>
-  </cac:AccountingSupplierParty>
-  <cac:AccountingCustomerParty>
-    <cac:Party>
-      <cac:PartyIdentification>
-        <cbc:ID schemeID="NIN">0</cbc:ID>
-      </cac:PartyIdentification>
-      <cac:PartyName>
-        <cbc:Name>${esc(buyerName)}</cbc:Name>
-      </cac:PartyName>
-    </cac:Party>
-  </cac:AccountingCustomerParty>
-  <cac:Delivery>
-    <cac:DeliveryParty>
-      <cac:PartyLegalEntity>
-        <cbc:RegistrationName>${esc(INCOME_SOURCE)}</cbc:RegistrationName>
-      </cac:PartyLegalEntity>
-    </cac:DeliveryParty>
-  </cac:Delivery>
-  <cac:PaymentMeans>
-    <cbc:PaymentMeansCode>${paymentCode}</cbc:PaymentMeansCode>
-  </cac:PaymentMeans>
-  <cac:TaxTotal>
-    <cbc:TaxAmount currencyID="JOD">${taxAmount.toFixed(2)}</cbc:TaxAmount>
-    <cac:TaxSubtotal>
-      <cbc:TaxableAmount currencyID="JOD">${taxableBase.toFixed(2)}</cbc:TaxableAmount>
-      <cbc:TaxAmount currencyID="JOD">${taxAmount.toFixed(2)}</cbc:TaxAmount>
-      <cac:TaxCategory>
-        <cbc:ID>S</cbc:ID>
-        <cbc:Percent>7.00</cbc:Percent>
-        <cac:TaxScheme>
-          <cbc:ID>VAT</cbc:ID>
-        </cac:TaxScheme>
-      </cac:TaxCategory>
-    </cac:TaxSubtotal>
-  </cac:TaxTotal>
-  <cac:LegalMonetaryTotal>
-    <cbc:TaxExclusiveAmount currencyID="JOD">${taxableBase.toFixed(2)}</cbc:TaxExclusiveAmount>
-    <cbc:TaxInclusiveAmount currencyID="JOD">${totalWithTax.toFixed(2)}</cbc:TaxInclusiveAmount>
-    <cbc:AllowanceTotalAmount currencyID="JOD">0.00</cbc:AllowanceTotalAmount>
-    <cbc:PayableAmount currencyID="JOD">${totalWithTax.toFixed(2)}</cbc:PayableAmount>
-  </cac:LegalMonetaryTotal>
-  <cac:InvoiceLine>
-    <cbc:ID>1</cbc:ID>
-    <cbc:InvoicedQuantity unitCode="EA">1</cbc:InvoicedQuantity>
-    <cbc:LineExtensionAmount currencyID="JOD">${deliveryFee.toFixed(2)}</cbc:LineExtensionAmount>
-    <cac:TaxTotal>
-      <cbc:TaxAmount currencyID="JOD">${round2(deliveryTax).toFixed(2)}</cbc:TaxAmount>
-      <cbc:RoundingAmount currencyID="JOD">${round2(deliveryFee + deliveryTax).toFixed(2)}</cbc:RoundingAmount>
-    </cac:TaxTotal>
-    <cac:Item>
-      <cbc:Name>Delivery Fee</cbc:Name>
-      <cac:ClassifiedTaxCategory>
-        <cbc:ID>S</cbc:ID>
-        <cbc:Percent>7.00</cbc:Percent>
-        <cac:TaxScheme>
-          <cbc:ID>VAT</cbc:ID>
-        </cac:TaxScheme>
-      </cac:ClassifiedTaxCategory>
-    </cac:Item>
-    <cac:Price>
-      <cbc:PriceAmount currencyID="JOD">${deliveryFee.toFixed(2)}</cbc:PriceAmount>
-    </cac:Price>
-  </cac:InvoiceLine>
-  <cac:InvoiceLine>
-    <cbc:ID>2</cbc:ID>
-    <cbc:InvoicedQuantity unitCode="EA">1</cbc:InvoicedQuantity>
-    <cbc:LineExtensionAmount currencyID="JOD">${serviceFee.toFixed(2)}</cbc:LineExtensionAmount>
-    <cac:TaxTotal>
-      <cbc:TaxAmount currencyID="JOD">${round2(serviceTax).toFixed(2)}</cbc:TaxAmount>
-      <cbc:RoundingAmount currencyID="JOD">${round2(serviceFee + serviceTax).toFixed(2)}</cbc:RoundingAmount>
-    </cac:TaxTotal>
-    <cac:Item>
-      <cbc:Name>Service Fee</cbc:Name>
-      <cac:ClassifiedTaxCategory>
-        <cbc:ID>S</cbc:ID>
-        <cbc:Percent>7.00</cbc:Percent>
-        <cac:TaxScheme>
-          <cbc:ID>VAT</cbc:ID>
-        </cac:TaxScheme>
-      </cac:ClassifiedTaxCategory>
-    </cac:Item>
-    <cac:Price>
-      <cbc:PriceAmount currencyID="JOD">${serviceFee.toFixed(2)}</cbc:PriceAmount>
-    </cac:Price>
-  </cac:InvoiceLine>
-</Invoice>`;
+  const parts = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2" xmlns:ext="urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2">',
+    '<cbc:UBLVersionID>2.1</cbc:UBLVersionID>',
+    '<cbc:ProfileID>reporting:1.0</cbc:ProfileID>',
+    `<cbc:ID>${esc(invoiceId)}</cbc:ID>`,
+    `<cbc:UUID>${esc(invoiceUUID)}</cbc:UUID>`,
+    `<cbc:IssueDate>${esc(date)}</cbc:IssueDate>`,
+    `<cbc:InvoiceTypeCode name="${paymentCode}">388</cbc:InvoiceTypeCode>`,
+    `<cbc:Note>Order #${order.id}</cbc:Note>`,
+    '<cbc:DocumentCurrencyCode>JOD</cbc:DocumentCurrencyCode>',
+    '<cbc:TaxCurrencyCode>JOD</cbc:TaxCurrencyCode>',
+    `<cac:AdditionalDocumentReference><cbc:ID>ICV</cbc:ID><cbc:UUID>${order.id}</cbc:UUID></cac:AdditionalDocumentReference>`,
+    `<cac:AccountingSupplierParty><cac:Party><cac:PartyIdentification><cbc:ID schemeID="TIN">${esc(SELLER_TIN)}</cbc:ID></cac:PartyIdentification><cac:PartyName><cbc:Name>${esc(SELLER_NAME)}</cbc:Name></cac:PartyName></cac:Party></cac:AccountingSupplierParty>`,
+    `<cac:AccountingCustomerParty><cac:Party><cac:PartyIdentification><cbc:ID schemeID="NIN">0</cbc:ID></cac:PartyIdentification><cac:PartyName><cbc:Name>${esc(buyerName)}</cbc:Name></cac:PartyName></cac:Party></cac:AccountingCustomerParty>`,
+    `<cac:Delivery><cac:DeliveryParty><cac:PartyLegalEntity><cbc:RegistrationName>${esc(INCOME_SOURCE)}</cbc:RegistrationName></cac:PartyLegalEntity></cac:DeliveryParty></cac:Delivery>`,
+    `<cac:PaymentMeans><cbc:PaymentMeansCode>${paymentCode}</cbc:PaymentMeansCode></cac:PaymentMeans>`,
+    `<cac:TaxTotal><cbc:TaxAmount currencyID="JOD">${taxAmount.toFixed(2)}</cbc:TaxAmount><cac:TaxSubtotal><cbc:TaxableAmount currencyID="JOD">${taxableBase.toFixed(2)}</cbc:TaxableAmount><cbc:TaxAmount currencyID="JOD">${taxAmount.toFixed(2)}</cbc:TaxAmount><cac:TaxCategory><cbc:ID>S</cbc:ID><cbc:Percent>7.00</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal></cac:TaxTotal>`,
+    `<cac:LegalMonetaryTotal><cbc:TaxExclusiveAmount currencyID="JOD">${taxableBase.toFixed(2)}</cbc:TaxExclusiveAmount><cbc:TaxInclusiveAmount currencyID="JOD">${totalWithTax.toFixed(2)}</cbc:TaxInclusiveAmount><cbc:AllowanceTotalAmount currencyID="JOD">0.00</cbc:AllowanceTotalAmount><cbc:PayableAmount currencyID="JOD">${totalWithTax.toFixed(2)}</cbc:PayableAmount></cac:LegalMonetaryTotal>`,
+    `<cac:InvoiceLine><cbc:ID>1</cbc:ID><cbc:InvoicedQuantity unitCode="EA">1</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="JOD">${deliveryFee.toFixed(2)}</cbc:LineExtensionAmount><cac:TaxTotal><cbc:TaxAmount currencyID="JOD">${round2(deliveryTax).toFixed(2)}</cbc:TaxAmount><cbc:RoundingAmount currencyID="JOD">${round2(deliveryFee + deliveryTax).toFixed(2)}</cbc:RoundingAmount></cac:TaxTotal><cac:Item><cbc:Name>Delivery Fee</cbc:Name><cac:ClassifiedTaxCategory><cbc:ID>S</cbc:ID><cbc:Percent>7.00</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:ClassifiedTaxCategory></cac:Item><cac:Price><cbc:PriceAmount currencyID="JOD">${deliveryFee.toFixed(2)}</cbc:PriceAmount></cac:Price></cac:InvoiceLine>`,
+    `<cac:InvoiceLine><cbc:ID>2</cbc:ID><cbc:InvoicedQuantity unitCode="EA">1</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="JOD">${serviceFee.toFixed(2)}</cbc:LineExtensionAmount><cac:TaxTotal><cbc:TaxAmount currencyID="JOD">${round2(serviceTax).toFixed(2)}</cbc:TaxAmount><cbc:RoundingAmount currencyID="JOD">${round2(serviceFee + serviceTax).toFixed(2)}</cbc:RoundingAmount></cac:TaxTotal><cac:Item><cbc:Name>Service Fee</cbc:Name><cac:ClassifiedTaxCategory><cbc:ID>S</cbc:ID><cbc:Percent>7.00</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:ClassifiedTaxCategory></cac:Item><cac:Price><cbc:PriceAmount currencyID="JOD">${serviceFee.toFixed(2)}</cbc:PriceAmount></cac:Price></cac:InvoiceLine>`,
+    '</Invoice>',
+  ];
 
+  const xml = parts.join('');
   return xml;
 }
 
