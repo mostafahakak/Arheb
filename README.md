@@ -1700,6 +1700,38 @@ So the stored average always matches the arithmetic mean of every per-order rati
 
 ---
 
+### Cancel Order (Customer)
+
+Allows a customer to cancel their own order. Only works when the order status is **Waiting confirmation**, **Waiting cliq confirmation**, **Pending payment**, or **Preparing**.
+
+**Endpoint:** `POST /api/orders/:orderId/cancel`
+
+**Authentication:** Required (Bearer token)
+
+**Path Parameters:**
+- `orderId` - Order ID
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "message": "Order #123 has been cancelled",
+  "data": {
+    "orderId": 123,
+    "status": "Cancelled"
+  }
+}
+```
+
+**Error Responses:**
+- `400` - Order status is On the way / Delivered / Cancelled (cannot cancel)
+- `403` - Order does not belong to the authenticated user
+- `404` - Order not found
+
+**Note:** Once an order is **On the way** or **Delivered**, the customer cannot cancel. They should contact support.
+
+---
+
 ## Payment (Card / Online)
 
 Online card payments are processed via **Madfoat (PayTabs)**. The flow is:
@@ -3888,6 +3920,7 @@ For issues or questions, please contact: `contact@arheb.app`
 - **Order snapshot:** On **POST /api/driver/orders/accept**, the order stores **`driverCommissionType`**, **`driverCommissionValue`**, **`driverEarnings`**.
 - **Driver app:** Order payloads include **`storeName`**, **`customerName`**, **`deliveryFee`**, **`profitJod`** (and **`driverShare`**), **`orderDate`** / **`createdAt`**, plus **`driverShare`** `{ commissionType, commissionValue, earningsJod }`. **GET /api/driver/home** and **GET /api/driver/stats** use **profit** (driver share), not raw delivery fee. **GET /api/driver/orders/assigned**, **GET /api/driver/earnings/today**, **GET /api/driver/earnings/summary** document earnings for drivers.
 - **Customer:** **POST /api/orders/:orderId/rate-driver** — rate the driver 1–5 + optional notes; one rating per order; updates **`drivers.rating`** and **`ratingCount`**. See [Rate Driver (Customer)](#rate-driver-customer).
+- **Customer:** **POST /api/orders/:orderId/cancel** — cancel own order when status is **Waiting confirmation**, **Preparing**, **Pending payment**, or **Waiting cliq confirmation**. Returns 400 if On the way / Delivered. See [Cancel Order (Customer)](#cancel-order-customer).
 - **Admin dashboard:** **GET /api/admin/drivers/:id/profile** — filters, paginated orders with **`driverShare`**, **`earningsForFilteredDelivered`**, full **`ratings`** list. UI: **Drivers** → **Profile** → `/dashboard/drivers/profile/?id=` (static export–friendly URL).
 
 <div align="center">

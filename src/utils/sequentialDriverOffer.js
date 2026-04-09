@@ -64,30 +64,41 @@ function fcmPayloadForDriverRequest(order, store, orderId) {
 function notifyDriverDeliveryRequest(db, io, orderId, order, driverId, store) {
   const existing = db.prepare('SELECT status FROM driver_requests WHERE orderId = ? AND driverId = ?').get(orderId, driverId);
   if (existing?.status === 'pending') {
+    console.log(`[driver-notify] Skip driver ${driverId} for order ${orderId}: already_pending`);
     return { notified: false, reason: 'already_pending' };
   }
   if (existing?.status === 'rejected' || existing?.status === 'accepted') {
+    console.log(`[driver-notify] Skip driver ${driverId} for order ${orderId}: already_${existing.status}`);
     return { notified: false, reason: `already_${existing.status}` };
   }
   db.prepare('INSERT INTO driver_requests (orderId, driverId, status) VALUES (?, ?, ?)').run(orderId, driverId, 'pending');
+
+  const storeName = store?.nameEn || store?.name || store?.nameAr || 'store';
+  console.log(`[driver-notify] Sending FCM to driver ${driverId} for order ${orderId} (store: ${storeName})`);
 
   fcm
     .sendToDriver(
       db,
       driverId,
-      'New delivery assigned',
-      `Order #${orderId} from ${store?.nameEn || store?.name || store?.nameAr || 'store'} has been auto-assigned to you. Open the app to accept.`,
+      'New delivery request',
+      `Order #${orderId} from ${storeName}. Open the app to accept or reject.`,
       fcmPayloadForDriverRequest(order, store, orderId)
     )
-    .catch(() => {});
+    .then((result) => {
+      console.log(`[driver-notify] FCM result for driver ${driverId}, order ${orderId}:`, JSON.stringify(result));
+    })
+    .catch((err) => {
+      console.error(`[driver-notify] FCM FAILED for driver ${driverId}, order ${orderId}:`, err?.message || err);
+    });
 
-  emitDriverDeliveryRequest(io, driverId, {
+  const socketSent = emitDriverDeliveryRequest(io, driverId, {
     orderId,
     status: 'Preparing',
     storeId: order.storeId,
-    storeName: store?.nameEn || store?.name || store?.nameAr || '',
+    storeName,
     type: 'driver_request',
   });
+  console.log(`[driver-notify] Socket emit for driver ${driverId}, order ${orderId}: ${socketSent ? 'sent' : 'driver not connected'}`);
 
   return { notified: true };
 }
@@ -152,11 +163,13 @@ function notifyAllOnlineDrivers(db, io, orderId, order, store, ctx) {
   }
   const candidateIds = drivers.map((d) => d.id);
   const online = getActiveFromListWithDistance(candidateIds, null, null);
+  console.log(`[driver-notify] Broadcasting order ${orderId} to ${online.length} online drivers (${candidateIds.length} total non-blocked)`);
   const notifiedIds = [];
   for (const d of online) {
     const result = notifyDriverDeliveryRequest(db, io, orderId, order, d.driverId, store);
     if (result.notified) notifiedIds.push(d.driverId);
   }
+  console.log(`[driver-notify] Notified ${notifiedIds.length} drivers for order ${orderId}: [${notifiedIds.join(', ')}]`);
   return notifiedIds;
 }
 

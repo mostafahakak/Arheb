@@ -360,6 +360,46 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
     }
   });
 
+  // POST /api/orders/:orderId/cancel — customer cancels their own order (only Waiting/Preparing)
+  app.post('/api/orders/:orderId/cancel', authenticateRequest, (req, res) => {
+    try {
+      const orderId = parseInt(req.params.orderId, 10);
+      const userId = req.user.userId || req.user.phoneNumber;
+      if (isNaN(orderId)) {
+        return res.status(400).json({ success: false, message: 'Invalid order ID' });
+      }
+      const order = findOrderById.get(orderId);
+      if (!order) {
+        return res.status(404).json({ success: false, message: 'Order not found' });
+      }
+      if (order.userId !== userId) {
+        return res.status(403).json({ success: false, message: 'This order does not belong to you' });
+      }
+      const statusLower = String(order.status || '').trim().toLowerCase();
+      const canCancel =
+        statusLower.includes('waiting') ||
+        statusLower.includes('confirmation') ||
+        statusLower.includes('pending') ||
+        statusLower === 'preparing';
+      if (!canCancel) {
+        return res.status(400).json({
+          success: false,
+          message: 'You can only cancel orders that are Waiting confirmation or Preparing. Contact support for other statuses.',
+        });
+      }
+      db.prepare('UPDATE orders SET status = ? WHERE id = ?').run('Cancelled', orderId);
+      emitOrderStatus(orderId, 'Cancelled');
+      return res.status(200).json({
+        success: true,
+        message: `Order #${orderId} has been cancelled`,
+        data: { orderId, status: 'Cancelled' },
+      });
+    } catch (error) {
+      console.error('Cancel order error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to cancel order' });
+    }
+  });
+
   // POST /api/orders/:orderId/rate-driver — customer rates the assigned driver (once per order)
   app.post('/api/orders/:orderId/rate-driver', authenticateRequest, (req, res) => {
     try {

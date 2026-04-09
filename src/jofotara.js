@@ -111,9 +111,6 @@ function buildInvoiceXml(order, invoiceUUID) {
       <cac:PartyName>
         <cbc:Name>${esc(buyerName)}</cbc:Name>
       </cac:PartyName>
-      <cac:Contact>
-        <cbc:Telephone>${esc(buyerPhone)}</cbc:Telephone>
-      </cac:Contact>
     </cac:Party>
   </cac:AccountingCustomerParty>
   <cac:Delivery>
@@ -250,14 +247,20 @@ async function submitJofotaraInvoice(db, orderId) {
   } catch (error) {
     const status = error.response?.status;
     const errData = error.response?.data;
+    const fullBody = typeof errData === 'string' ? errData : JSON.stringify(errData, null, 2);
     console.error(`[jofotara] FAILED order ${orderId} — HTTP ${status || 'N/A'}`);
-    console.error(`[jofotara] Response body:`, typeof errData === 'string' ? errData : JSON.stringify(errData, null, 2));
-    console.error(`[jofotara] Generated XML (first 2000 chars):`, xml.slice(0, 2000));
+    console.error(`[jofotara] Response body:`, fullBody);
+    console.error(`[jofotara] Generated XML:\n`, xml);
 
-    const errMsg = typeof errData === 'string'
-      ? errData
-      : (errData?.message || errData?.error || JSON.stringify(errData) || error.message || 'Unknown error');
-    const shortErr = String(errMsg).slice(0, 500);
+    let errMsg;
+    if (errData?.EINV_RESULTS?.ERRORS?.length) {
+      errMsg = errData.EINV_RESULTS.ERRORS.map((e) => `${e.code || e.type || 'ERROR'}: ${e.message || e.category || JSON.stringify(e)}`).join('; ');
+    } else if (typeof errData === 'string') {
+      errMsg = errData;
+    } else {
+      errMsg = errData?.message || errData?.error || fullBody || error.message || 'Unknown error';
+    }
+    const shortErr = String(errMsg).slice(0, 1000);
 
     try {
       db.prepare(
