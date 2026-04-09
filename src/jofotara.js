@@ -15,13 +15,19 @@ const { JORDAN_IANA_TIMEZONE } = require('./utils/jordanTime');
 
 const JOFOTARA_API_URL = 'https://backend.jofotara.gov.jo/core/invoices/';
 const TAX_RATE = 0.07;
-
-function round2(n) {
-  return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
-}
+/** JoFotara PHP SDK uses JO on all monetary amounts; document-level codes stay JOD */
+const AMT_CCY = 'JO';
+const DOC_CCY = 'JOD';
 
 function round9(n) {
   return Math.round((Number(n) + Number.EPSILON) * 1e9) / 1e9;
+}
+
+/** Activity / income-source serial: digits only, 1–15 chars (JoFotara rule). */
+function incomeSourceDigits(raw) {
+  const s = String(raw || '').replace(/\D/g, '');
+  if (!s) return '';
+  return s.length > 15 ? s.slice(0, 15) : s;
 }
 
 function jordanNow() {
@@ -52,62 +58,67 @@ function esc(str) {
  * Two invoice lines: (1) Delivery Fee, (2) Service Fee — both taxed at 7%.
  */
 function buildInvoiceXml(order, invoiceUUID) {
-  const CLIENT_ID = process.env.JOFOTARA_CLIENT_ID || '';
   const INCOME_SOURCE = process.env.JOFOTARA_INCOME_SOURCE || '';
   const SELLER_TIN = process.env.JOFOTARA_SELLER_TIN || '';
   const SELLER_NAME = process.env.JOFOTARA_SELLER_NAME || '';
 
-  const { date, time } = jordanNow();
+  const { date } = jordanNow();
   const invoiceId = `ARHEB-${order.id}`;
+  const activitySerial = incomeSourceDigits(INCOME_SOURCE);
 
   const deliveryFee = Number(order.deliveryFee) || 0;
   const serviceFee = Number(order.serviceFee) || 0.65;
-  const taxableBase = deliveryFee + serviceFee;
+  const taxableBase = round9(deliveryFee + serviceFee);
 
-  const deliveryTax = deliveryFee * TAX_RATE;
-  const serviceTax = serviceFee * TAX_RATE;
-  const taxAmount = deliveryTax + serviceTax;
+  const deliveryTax = round9(deliveryFee * TAX_RATE);
+  const serviceTax = round9(serviceFee * TAX_RATE);
+  const taxAmount = round9(deliveryTax + serviceTax);
 
-  const deliveryInclTax = deliveryFee + deliveryTax;
-  const serviceInclTax = serviceFee + serviceTax;
-  const totalWithTax = taxableBase + taxAmount;
+  const deliveryInclTax = round9(deliveryFee + deliveryTax);
+  const serviceInclTax = round9(serviceFee + serviceTax);
+  const totalWithTax = round9(taxableBase + taxAmount);
   const payableAmount = totalWithTax;
 
-  const f9 = (n) => n.toFixed(9);
+  const f9 = (n) => Number(n).toFixed(9);
 
   const isCash = String(order.paymentType || '').toLowerCase() !== 'card';
   const paymentCode = isCash ? '011' : '021';
   const buyerName = order.name || 'Customer';
 
-  function lineXml(id, name, unitPrice, qty, discount, tax, inclTax) {
-    return `<cac:InvoiceLine><cbc:ID>${id}</cbc:ID><cbc:InvoicedQuantity unitCode="EA">${f9(qty)}</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="JOD">${f9(unitPrice * qty - discount)}</cbc:LineExtensionAmount><cac:TaxTotal><cbc:TaxAmount currencyID="JOD">${f9(tax)}</cbc:TaxAmount><cbc:RoundingAmount currencyID="JOD">${f9(inclTax)}</cbc:RoundingAmount><cac:TaxSubtotal><cbc:TaxAmount currencyID="JOD">${f9(tax)}</cbc:TaxAmount><cac:TaxCategory><cbc:ID>S</cbc:ID><cbc:Percent>${f9(7)}</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal></cac:TaxTotal><cac:Item><cbc:Name>${esc(name)}</cbc:Name></cac:Item><cac:Price><cbc:PriceAmount currencyID="JOD">${f9(unitPrice)}</cbc:PriceAmount><cac:AllowanceCharge><cbc:ChargeIndicator>false</cbc:ChargeIndicator><cbc:AllowanceChargeReason>DISCOUNT</cbc:AllowanceChargeReason><cbc:Amount currencyID="JOD">${f9(discount)}</cbc:Amount></cac:AllowanceCharge></cac:Price></cac:InvoiceLine>`;
+  /** Matches jafar-albadarneh/jofotara InvoiceLineItem::toXml (income / 7% standard). */
+  function lineXml(lineId, itemName, qty, unitPrice, discount, lineTax, lineIncl) {
+    const taxExcl = round9(qty * unitPrice - discount);
+    return `<cac:InvoiceLine><cbc:ID>${esc(lineId)}</cbc:ID><cbc:InvoicedQuantity unitCode="PCE">${f9(qty)}</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="${AMT_CCY}">${f9(taxExcl)}</cbc:LineExtensionAmount><cac:TaxTotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(lineTax)}</cbc:TaxAmount><cbc:RoundingAmount currencyID="${AMT_CCY}">${f9(lineIncl)}</cbc:RoundingAmount><cac:TaxSubtotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(lineTax)}</cbc:TaxAmount><cac:TaxCategory><cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5305">S</cbc:ID><cbc:Percent>${f9(7)}</cbc:Percent><cac:TaxScheme><cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5153">VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal></cac:TaxTotal><cac:Item><cbc:Name>${esc(itemName)}</cbc:Name></cac:Item><cac:Price><cbc:PriceAmount currencyID="${AMT_CCY}">${f9(unitPrice)}</cbc:PriceAmount><cac:AllowanceCharge><cbc:ChargeIndicator>false</cbc:ChargeIndicator><cbc:AllowanceChargeReason>DISCOUNT</cbc:AllowanceChargeReason><cbc:Amount currencyID="${AMT_CCY}">${f9(discount)}</cbc:Amount></cac:AllowanceCharge></cac:Price></cac:InvoiceLine>`;
   }
+
+  // JoFotara PHP SDK: SellerSupplierParty holds activity serial (not cac:Delivery).
+  const sellerSupplierXml = activitySerial
+    ? `<cac:SellerSupplierParty><cac:Party><cac:PartyIdentification><cbc:ID>${esc(activitySerial)}</cbc:ID></cac:PartyIdentification></cac:Party></cac:SellerSupplierParty>`
+    : '';
 
   const parts = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2" xmlns:ext="urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2">',
     '<cbc:UBLVersionID>2.1</cbc:UBLVersionID>',
-    '<cbc:ProfileID>reporting:1.0</cbc:ProfileID>',
     `<cbc:ID>${esc(invoiceId)}</cbc:ID>`,
     `<cbc:UUID>${esc(invoiceUUID)}</cbc:UUID>`,
     `<cbc:IssueDate>${esc(date)}</cbc:IssueDate>`,
     `<cbc:InvoiceTypeCode name="${paymentCode}">388</cbc:InvoiceTypeCode>`,
     `<cbc:Note>Order #${order.id}</cbc:Note>`,
-    '<cbc:DocumentCurrencyCode>JOD</cbc:DocumentCurrencyCode>',
-    '<cbc:TaxCurrencyCode>JOD</cbc:TaxCurrencyCode>',
+    `<cbc:DocumentCurrencyCode>${DOC_CCY}</cbc:DocumentCurrencyCode>`,
+    `<cbc:TaxCurrencyCode>${DOC_CCY}</cbc:TaxCurrencyCode>`,
     `<cac:AdditionalDocumentReference><cbc:ID>ICV</cbc:ID><cbc:UUID>${order.id}</cbc:UUID></cac:AdditionalDocumentReference>`,
-    `<cac:AccountingSupplierParty><cac:Party><cac:PartyTaxScheme><cbc:CompanyID>${esc(SELLER_TIN)}</cbc:CompanyID><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:PartyTaxScheme><cac:PartyLegalEntity><cbc:RegistrationName>${esc(SELLER_NAME)}</cbc:RegistrationName></cac:PartyLegalEntity></cac:Party></cac:AccountingSupplierParty>`,
-    `<cac:AccountingCustomerParty><cac:Party><cac:PartyTaxScheme><cbc:CompanyID>0</cbc:CompanyID><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:PartyTaxScheme><cac:PartyLegalEntity><cbc:RegistrationName>${esc(buyerName)}</cbc:RegistrationName></cac:PartyLegalEntity></cac:Party></cac:AccountingCustomerParty>`,
-    `<cac:Delivery><cac:DeliveryParty><cac:PartyLegalEntity><cbc:RegistrationName>${esc(INCOME_SOURCE)}</cbc:RegistrationName></cac:PartyLegalEntity></cac:DeliveryParty></cac:Delivery>`,
-    `<cac:PaymentMeans><cbc:PaymentMeansCode>${paymentCode}</cbc:PaymentMeansCode></cac:PaymentMeans>`,
-    `<cac:TaxTotal><cbc:TaxAmount currencyID="JOD">${f9(taxAmount)}</cbc:TaxAmount></cac:TaxTotal>`,
-    `<cac:LegalMonetaryTotal><cbc:TaxExclusiveAmount currencyID="JOD">${f9(taxableBase)}</cbc:TaxExclusiveAmount><cbc:TaxInclusiveAmount currencyID="JOD">${f9(totalWithTax)}</cbc:TaxInclusiveAmount><cbc:PayableAmount currencyID="JOD">${f9(payableAmount)}</cbc:PayableAmount></cac:LegalMonetaryTotal>`,
-    lineXml('1', 'Delivery Fee', deliveryFee, 1, 0, deliveryTax, deliveryInclTax),
-    lineXml('2', 'Service Fee', serviceFee, 1, 0, serviceTax, serviceInclTax),
+    `<cac:AccountingSupplierParty><cac:Party><cac:PostalAddress><cac:Country><cbc:IdentificationCode>JO</cbc:IdentificationCode></cac:Country></cac:PostalAddress><cac:PartyTaxScheme><cbc:CompanyID>${esc(SELLER_TIN)}</cbc:CompanyID><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:PartyTaxScheme><cac:PartyLegalEntity><cbc:RegistrationName>${esc(SELLER_NAME)}</cbc:RegistrationName></cac:PartyLegalEntity></cac:Party></cac:AccountingSupplierParty>`,
+    `<cac:AccountingCustomerParty><cac:Party><cac:PartyIdentification><cbc:ID schemeID="NIN"></cbc:ID></cac:PartyIdentification><cac:PartyLegalEntity><cbc:RegistrationName>${esc(buyerName)}</cbc:RegistrationName></cac:PartyLegalEntity></cac:Party></cac:AccountingCustomerParty>`,
+    sellerSupplierXml,
+    `<cac:TaxTotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(taxAmount)}</cbc:TaxAmount></cac:TaxTotal>`,
+    `<cac:LegalMonetaryTotal><cbc:TaxExclusiveAmount currencyID="${AMT_CCY}">${f9(taxableBase)}</cbc:TaxExclusiveAmount><cbc:TaxInclusiveAmount currencyID="${AMT_CCY}">${f9(totalWithTax)}</cbc:TaxInclusiveAmount><cbc:PayableAmount currencyID="${AMT_CCY}">${f9(payableAmount)}</cbc:PayableAmount></cac:LegalMonetaryTotal>`,
+    lineXml('1', 'Delivery Fee', 1, deliveryFee, 0, deliveryTax, deliveryInclTax),
+    lineXml('2', 'Service Fee', 1, serviceFee, 0, serviceTax, serviceInclTax),
     '</Invoice>',
   ];
 
-  const xml = parts.join('');
+  const xml = parts.filter(Boolean).join('');
   return xml;
 }
 
@@ -122,6 +133,16 @@ async function submitJofotaraInvoice(db, orderId) {
 
   if (!CLIENT_ID || !SECRET_KEY) {
     const msg = 'JOFOTARA credentials not configured';
+    console.warn(`[jofotara] ${msg} — skipping order ${orderId}`);
+    try {
+      db.prepare(`UPDATE orders SET einvoiceStatus = 'skipped', einvoiceError = ? WHERE id = ?`).run(msg, orderId);
+    } catch (e) { /* ignore */ }
+    return { ok: false, error: msg, uuid: '' };
+  }
+
+  const activitySerial = incomeSourceDigits(process.env.JOFOTARA_INCOME_SOURCE || '');
+  if (!activitySerial) {
+    const msg = 'JOFOTARA_INCOME_SOURCE must be digits only (activity serial, 1–15 digits)';
     console.warn(`[jofotara] ${msg} — skipping order ${orderId}`);
     try {
       db.prepare(`UPDATE orders SET einvoiceStatus = 'skipped', einvoiceError = ? WHERE id = ?`).run(msg, orderId);
@@ -173,7 +194,7 @@ async function submitJofotaraInvoice(db, orderId) {
 
     let errMsg;
     if (errData?.EINV_RESULTS?.ERRORS?.length) {
-      errMsg = errData.EINV_RESULTS.ERRORS.map((e) => `${e.code || e.type || 'ERROR'}: ${e.message || e.category || JSON.stringify(e)}`).join('; ');
+      errMsg = errData.EINV_RESULTS.ERRORS.map((e) => `${e.EINV_CODE || e.code || e.type || 'ERROR'}: ${e.EINV_MESSAGE || e.message || e.EINV_CATEGORY || JSON.stringify(e)}`).join('; ');
     } else if (typeof errData === 'string') {
       errMsg = errData;
     } else {
