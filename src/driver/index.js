@@ -20,6 +20,24 @@ const {
 } = require('../utils/driverCommission');
 const { getActiveFromListWithDistance } = require('../driverPresence');
 
+function parseMapsUrl(url) {
+  if (!url || typeof url !== 'string') return null;
+  const patterns = [
+    /[?&]q=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
+    /[?&]query=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
+    /@(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
+  ];
+  for (const re of patterns) {
+    const m = url.match(re);
+    if (m) {
+      const latitude = Number(m[1]);
+      const longitude = Number(m[2]);
+      if (Number.isFinite(latitude) && Number.isFinite(longitude)) return { latitude, longitude };
+    }
+  }
+  return null;
+}
+
 /** Percent change in driver share vs yesterday (same driver, delivered orders). Null if not comparable. */
 function earningsGrowthPercentVsYesterday(db, driverId, todayProfitJod, todayDateStr) {
   const parts = String(todayDateStr || '').split('-').map(Number);
@@ -139,6 +157,18 @@ function orderToDriverApi(order, items = [], driverRow = null, store = null, db 
   };
   out.storeAddress = store ? store.addressEn || store.address || store.addressAr || null : null;
   out.storeMapsUrl = store ? store.mapsUrl || null : null;
+  out.storeLatitude = null;
+  out.storeLongitude = null;
+  if (store) {
+    if (store.latitude != null) out.storeLatitude = Number(store.latitude);
+    else if (store.lat != null) out.storeLatitude = Number(store.lat);
+    if (store.longitude != null) out.storeLongitude = Number(store.longitude);
+    else if (store.long != null) out.storeLongitude = Number(store.long);
+    if (out.storeLatitude == null && store.mapsUrl) {
+      const parsed = parseMapsUrl(store.mapsUrl);
+      if (parsed) { out.storeLatitude = parsed.latitude; out.storeLongitude = parsed.longitude; }
+    }
+  }
   if (db && order) {
     const share = resolveOrderDriverShare(db, order);
     out.driverShare = {

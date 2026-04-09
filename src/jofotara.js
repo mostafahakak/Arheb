@@ -70,7 +70,7 @@ function buildInvoiceXml(order, invoiceUUID) {
   const serviceTax = round9(serviceFee * TAX_RATE);
 
   const isCash = String(order.paymentType || '').toLowerCase() !== 'card';
-  const paymentCode = isCash ? '012' : '022';
+  const paymentCode = isCash ? '011' : '021';
 
   const buyerName = order.name || 'Customer';
   const buyerPhone = order.phoneNumber || '';
@@ -85,18 +85,13 @@ function buildInvoiceXml(order, invoiceUUID) {
   <cbc:ID>${esc(invoiceId)}</cbc:ID>
   <cbc:UUID>${esc(invoiceUUID)}</cbc:UUID>
   <cbc:IssueDate>${esc(date)}</cbc:IssueDate>
-  <cbc:IssueTime>${esc(time)}</cbc:IssueTime>
-  <cbc:InvoiceTypeCode name="0211001">${isCash ? '012' : '022'}1</cbc:InvoiceTypeCode>
+  <cbc:InvoiceTypeCode name="${paymentCode}">388</cbc:InvoiceTypeCode>
   <cbc:Note>Order #${order.id}</cbc:Note>
   <cbc:DocumentCurrencyCode>JOD</cbc:DocumentCurrencyCode>
   <cbc:TaxCurrencyCode>JOD</cbc:TaxCurrencyCode>
   <cac:AdditionalDocumentReference>
     <cbc:ID>ICV</cbc:ID>
     <cbc:UUID>${order.id}</cbc:UUID>
-  </cac:AdditionalDocumentReference>
-  <cac:AdditionalDocumentReference>
-    <cbc:ID>ISS</cbc:ID>
-    <cbc:UUID>${esc(INCOME_SOURCE)}</cbc:UUID>
   </cac:AdditionalDocumentReference>
   <cac:AccountingSupplierParty>
     <cac:Party>
@@ -121,6 +116,13 @@ function buildInvoiceXml(order, invoiceUUID) {
       </cac:Contact>
     </cac:Party>
   </cac:AccountingCustomerParty>
+  <cac:Delivery>
+    <cac:DeliveryParty>
+      <cac:PartyLegalEntity>
+        <cbc:RegistrationName>${esc(INCOME_SOURCE)}</cbc:RegistrationName>
+      </cac:PartyLegalEntity>
+    </cac:DeliveryParty>
+  </cac:Delivery>
   <cac:PaymentMeans>
     <cbc:PaymentMeansCode>${paymentCode}</cbc:PaymentMeansCode>
   </cac:PaymentMeans>
@@ -223,6 +225,9 @@ async function submitJofotaraInvoice(db, orderId) {
   try {
     db.prepare(`UPDATE orders SET einvoiceStatus = 'pending', einvoiceUUID = ? WHERE id = ?`).run(invoiceUUID, orderId);
 
+    const isCashLog = String(order.paymentType || '').toLowerCase() !== 'card';
+    console.log(`[jofotara] Submitting order ${orderId} — UUID ${invoiceUUID}, type=income, payment=${isCashLog ? '011' : '021'}, deliveryFee=${order.deliveryFee}, serviceFee=${order.serviceFee}`);
+
     const response = await axios.post(JOFOTARA_API_URL, { invoice: base64Invoice }, {
       headers: {
         'Client-Id': CLIENT_ID,
@@ -233,6 +238,7 @@ async function submitJofotaraInvoice(db, orderId) {
     });
 
     const data = response.data || {};
+    console.log(`[jofotara] Response for order ${orderId}:`, JSON.stringify(data).slice(0, 1000));
     const qr = data.EINV_QR || data.qrCode || '';
 
     db.prepare(
@@ -242,13 +248,17 @@ async function submitJofotaraInvoice(db, orderId) {
     console.log(`[jofotara] Invoice submitted for order ${orderId} — UUID ${invoiceUUID}`);
     return { ok: true, qr, uuid: invoiceUUID };
   } catch (error) {
+    const status = error.response?.status;
     const errData = error.response?.data;
+    console.error(`[jofotara] FAILED order ${orderId} — HTTP ${status || 'N/A'}`);
+    console.error(`[jofotara] Response body:`, typeof errData === 'string' ? errData : JSON.stringify(errData, null, 2));
+    console.error(`[jofotara] Generated XML (first 2000 chars):`, xml.slice(0, 2000));
+
     const errMsg = typeof errData === 'string'
       ? errData
-      : (errData?.message || errData?.error || error.message || 'Unknown error');
+      : (errData?.message || errData?.error || JSON.stringify(errData) || error.message || 'Unknown error');
     const shortErr = String(errMsg).slice(0, 500);
 
-    console.error(`[jofotara] Failed for order ${orderId}:`, shortErr);
     try {
       db.prepare(
         `UPDATE orders SET einvoiceStatus = 'failed', einvoiceError = ? WHERE id = ?`,

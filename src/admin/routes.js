@@ -1786,6 +1786,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         {
           ...order,
           storeName: store ? (store.nameEn || store.name || store.nameAr) : (order.storeId || '-'),
+          storeAddress: store ? (store.addressEn || store.address || store.addressAr || null) : null,
+          storeMapsUrl: store ? (store.mapsUrl || null) : null,
+          storeLatitude: store?.latitude ?? store?.lat ?? null,
+          storeLongitude: store?.longitude ?? store?.long ?? null,
           items: mapOrderItemsRows(items),
         },
         ['createdAt'],
@@ -1853,6 +1857,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           {
             ...order,
             storeName,
+            storeAddress: store ? (store.addressEn || store.address || store.addressAr || null) : null,
+            storeMapsUrl: store ? (store.mapsUrl || null) : null,
+            storeLatitude: store?.latitude ?? store?.lat ?? null,
+            storeLongitude: store?.longitude ?? store?.long ?? null,
             items: mapOrderItemsRows(items),
           },
           ['createdAt'],
@@ -1960,6 +1968,11 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       });
     }
 
+    try {
+      const { broadcastDriverOrdersUpdated } = require('../driverPresence');
+      broadcastDriverOrdersUpdated(io, { type: 'status_change', orderId, status: nextStatus });
+    } catch (e) { /* ignore */ }
+
     logActivity(db, req, {
       action: 'edit',
       resourceType: 'order',
@@ -2034,8 +2047,35 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     });
   });
 
-  // ——— Get available drivers for assigning to an order (Store Admin / Admin / SuperAdmin) ———
-  app.get('/api/admin/orders/:orderId/available-drivers', auth, (req, res) => {
+  // ——— Delete order permanently (SuperAdmin only) ———
+  app.delete('/api/admin/orders/:orderId', auth, (req, res) => {
+    if (req.admin.role !== ROLES.SUPERADMIN) {
+      return res.status(403).json({ success: false, message: 'Only SuperAdmin can delete orders' });
+    }
+    const orderId = parseInt(req.params.orderId, 10);
+    if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
+    const order = findOrderById.get(orderId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    try {
+      db.prepare('DELETE FROM order_items WHERE orderId = ?').run(orderId);
+      db.prepare('DELETE FROM orders WHERE id = ?').run(orderId);
+      try { db.prepare('DELETE FROM driver_requests WHERE orderId = ?').run(orderId); } catch (e) { /* table may not exist */ }
+      try { db.prepare('DELETE FROM payment_transactions WHERE orderId = ?').run(orderId); } catch (e) { /* ignore */ }
+    } catch (e) {
+      return res.status(500).json({ success: false, message: 'Failed to delete order' });
+    }
+    logActivity(db, req, {
+      action: 'delete',
+      resourceType: 'order',
+      resourceId: String(orderId),
+      storeScopeId: order.storeId != null ? String(order.storeId) : null,
+      summary: `Order #${orderId} deleted permanently`,
+    });
+    return res.status(200).json({ success: true, message: `Order #${orderId} deleted permanently` });
+  });
+
+  // ——— Get available drivers for assigning to an order (Admin / SuperAdmin only) ———
+  app.get('/api/admin/orders/:orderId/available-drivers', auth, requireAdminOrSuper, (req, res) => {
     const orderId = parseInt(req.params.orderId, 10);
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
@@ -2062,8 +2102,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     return res.status(200).json({ success: true, data: { drivers: list } });
   });
 
-  // ——— Get nearby active drivers for an order (presence + distance to store; Store Admin / Admin / SuperAdmin) ———
-  app.get('/api/admin/orders/:orderId/nearby-drivers', auth, (req, res) => {
+  // ——— Get nearby active drivers for an order (presence + distance to store; Admin / SuperAdmin only) ———
+  app.get('/api/admin/orders/:orderId/nearby-drivers', auth, requireAdminOrSuper, (req, res) => {
     const orderId = parseInt(req.params.orderId, 10);
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
@@ -2190,8 +2230,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     });
   });
 
-  // ——— Auto-assign: nearest online driver first; on reject, next nearest (Store Admin / Admin / SuperAdmin) ———
-  app.post('/api/admin/orders/:orderId/auto-assign', auth, (req, res) => {
+  // ——— Auto-assign: nearest online driver first (Admin / SuperAdmin only for manual trigger) ———
+  app.post('/api/admin/orders/:orderId/auto-assign', auth, requireAdminOrSuper, (req, res) => {
     const orderId = parseInt(req.params.orderId, 10);
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);

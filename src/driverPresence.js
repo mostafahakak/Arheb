@@ -111,6 +111,17 @@ function emitDriverDeliveryRequest(io, driverId, payload) {
   }
 }
 
+/**
+ * Broadcast to ALL online drivers that available orders have changed.
+ * The driver app should re-fetch its orders list on receiving this event.
+ */
+function broadcastDriverOrdersUpdated(io, payload) {
+  if (!io) return;
+  try {
+    io.of('/driver-presence').emit('orders_updated', payload || { type: 'refresh' });
+  } catch (e) { /* ignore */ }
+}
+
 function round3(n) {
   return Math.round((Number(n) + Number.EPSILON) * 1000) / 1000;
 }
@@ -226,4 +237,5 @@ module.exports = function attachDriverPresence(io, db, JWT_SECRET) {
 module.exports.getActiveDriversWithLocation = getActiveDriversWithLocation;
 module.exports.getActiveFromListWithDistance = getActiveFromListWithDistance;
 module.exports.emitDriverDeliveryRequest = emitDriverDeliveryRequest;
+module.exports.broadcastDriverOrdersUpdated = broadcastDriverOrdersUpdated;
 module.exports.haversineKm = haversineKm;
