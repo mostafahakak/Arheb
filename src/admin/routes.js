@@ -1952,6 +1952,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       }
       updated = findOrderById.get(orderId);
     }
+
+    if (nextStatus.toLowerCase() === 'delivered') {
+      const { submitJofotaraInvoice } = require('../jofotara');
+      submitJofotaraInvoice(db, orderId).catch((e) => {
+        console.error(`[jofotara] Async submission failed for order ${orderId}:`, e.message || e);
+      });
+    }
+
     logActivity(db, req, {
       action: 'edit',
       resourceType: 'order',
@@ -3580,6 +3588,90 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       summary: `Deleted promo code ${target.name}`,
     });
     return res.status(200).json({ success: true, message: 'Promo code deleted' });
+  });
+
+  // ——— E-Invoice (JOFOTARA) ———
+  app.get('/api/admin/einvoices', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      const { status, dateFrom, dateTo } = req.query;
+      const conditions = ["einvoiceStatus IS NOT NULL AND einvoiceStatus != ''"];
+      const params = [];
+      if (status) {
+        conditions.push('einvoiceStatus = ?');
+        params.push(String(status).trim());
+      }
+      if (dateFrom) {
+        conditions.push("date(createdAt) >= date(?)");
+        params.push(String(dateFrom).trim());
+      }
+      if (dateTo) {
+        conditions.push("date(createdAt) <= date(?)");
+        params.push(String(dateTo).trim());
+      }
+      const where = conditions.length ? ' WHERE ' + conditions.join(' AND ') : '';
+      const rows = db.prepare(
+        `SELECT id, storeId, phoneNumber, name, totalAmount, deliveryFee, serviceFee, feesTax, status, paymentType,
+                einvoiceStatus, einvoiceQR, einvoiceUUID, einvoiceError, einvoiceSubmittedAt, createdAt
+         FROM orders${where} ORDER BY createdAt DESC LIMIT 500`,
+      ).all(...params);
+
+      const storesList = loadStores();
+      const storeMap = Object.fromEntries(storesList.map((s) => [String(s.id), s]));
+
+      const enriched = rows.map((o) => {
+        const store = storeMap[String(o.storeId)] || null;
+        return {
+          ...o,
+          storeName: store ? (store.nameEn || store.name || store.nameAr || '') : '',
+        };
+      });
+
+      const counts = {
+        submitted: rows.filter((r) => r.einvoiceStatus === 'submitted').length,
+        failed: rows.filter((r) => r.einvoiceStatus === 'failed').length,
+        pending: rows.filter((r) => r.einvoiceStatus === 'pending').length,
+        skipped: rows.filter((r) => r.einvoiceStatus === 'skipped').length,
+      };
+
+      return res.status(200).json({ success: true, data: { invoices: enriched, counts } });
+    } catch (e) {
+      return res.status(500).json({ success: false, message: 'Failed to load e-invoices' });
+    }
+  });
+
+  app.get('/api/admin/orders/:orderId/einvoice', auth, requireAdminOrSuper, (req, res) => {
+    const orderId = parseInt(req.params.orderId, 10);
+    if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
+    const order = findOrderById.get(orderId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    return res.status(200).json({
+      success: true,
+      data: {
+        orderId,
+        einvoiceStatus: order.einvoiceStatus || null,
+        einvoiceQR: order.einvoiceQR || null,
+        einvoiceUUID: order.einvoiceUUID || null,
+        einvoiceError: order.einvoiceError || null,
+        einvoiceSubmittedAt: order.einvoiceSubmittedAt || null,
+      },
+    });
+  });
+
+  app.post('/api/admin/orders/:orderId/einvoice/retry', auth, requireAdminOrSuper, async (req, res) => {
+    const orderId = parseInt(req.params.orderId, 10);
+    if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
+    const order = findOrderById.get(orderId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (order.einvoiceStatus === 'submitted') {
+      return res.status(400).json({ success: false, message: 'E-invoice already submitted successfully' });
+    }
+    try {
+      const { submitJofotaraInvoice } = require('../jofotara');
+      const result = await submitJofotaraInvoice(db, orderId);
+      return res.status(200).json({ success: result.ok, data: result });
+    } catch (e) {
+      return res.status(500).json({ success: false, message: e.message || 'E-invoice submission failed' });
+    }
   });
 
   // ——— Online merchants (merchant presence) ———

@@ -39,6 +39,13 @@ PAYTABS_SERVER_KEY=S9JNLKHZRK-JMRR6BJ2RN-DZ69WH62JK
 PAYTABS_CLIENT_KEY=CBKMDV-VR626N-RRG26M-HBNT7P
 PAYTABS_CURRENCY=JOD
 BASE_URL=https://arheb-backend.onrender.com
+
+# JOFOTARA e-invoicing (Jordan tax)
+JOFOTARA_CLIENT_ID=your-client-id
+JOFOTARA_SECRET_KEY=your-secret-key
+JOFOTARA_INCOME_SOURCE=your-income-source-sequence
+JOFOTARA_SELLER_TIN=your-tax-id-number
+JOFOTARA_SELLER_NAME=your-company-name
 ```
 
 - **Run locally**:
@@ -2695,6 +2702,69 @@ UPDATE users SET type = 'admin' WHERE phoneNumber = '+201500157920';
 
 ---
 
+## E-Invoicing (JOFOTARA — Jordan National Electronic Invoicing)
+
+Arheb integrates with Jordan's **JOFOTARA** system to automatically submit **Income Bills** (فاتورة دخل) to the Income and Sales Tax Department (ISTD) when orders are delivered.
+
+### How it works
+
+1. When an order status changes to **`Delivered`** (via admin dashboard or store admin), the backend **automatically** submits an e-invoice to JOFOTARA.
+2. The invoice covers **delivery fee + service fee** at **7% tax** (same calculation used in checkout).
+3. The submission is **asynchronous** — order status updates are never blocked by JOFOTARA API issues.
+4. On success, JOFOTARA returns a **QR code** (`EINV_QR`) that is saved on the order.
+5. On failure, the error is saved and the admin can **retry** via the dashboard or API.
+
+### Invoice details
+
+| Field | Value |
+|-------|-------|
+| Invoice type | `021` — Income Bill (فاتورة دخل) |
+| Tax rate | 7% on delivery fee + service fee |
+| Payment method | `012` (cash) or `022` (card) based on order `paymentType` |
+| Currency | JOD |
+| Format | UBL 2.1 XML, base64-encoded |
+| API endpoint | `https://backend.jofotara.gov.jo/core/invoices/` |
+
+### Environment variables (set on Render)
+
+| Variable | Description |
+|----------|-------------|
+| `JOFOTARA_CLIENT_ID` | Client identifier from JOFOTARA portal (رقم المستخدم) |
+| `JOFOTARA_SECRET_KEY` | Secret key from JOFOTARA portal (المفتاح السري) |
+| `JOFOTARA_INCOME_SOURCE` | Income source sequence number (تسلسل مصدر الدخل) |
+| `JOFOTARA_SELLER_TIN` | Seller Tax ID Number (الرقم الضريبي) |
+| `JOFOTARA_SELLER_NAME` | Seller company name (اسم الشركة) |
+
+If credentials are not configured, submissions are **skipped** (status `skipped`) and logged.
+
+### Admin endpoints
+
+- **`GET /api/admin/einvoices`** — List all orders with e-invoice data. Filters: `status` (`submitted`/`failed`/`pending`/`skipped`), `dateFrom`, `dateTo`. Returns `data.invoices` + `data.counts`.
+- **`GET /api/admin/orders/:orderId/einvoice`** — E-invoice details for a single order.
+- **`POST /api/admin/orders/:orderId/einvoice/retry`** — Retry a failed submission.
+
+All e-invoice endpoints are **Admin / SuperAdmin only**. Store admins can trigger invoice submission (by marking order Delivered) but cannot view e-invoice details.
+
+### Dashboard
+
+The **E-Invoices** page (sidebar, Admin/SuperAdmin only) shows:
+- Summary counts: Submitted, Failed, Pending, Skipped
+- Filterable table with order ID, store, customer, fees, tax, invoice status, UUID, date
+- Retry button for failed/skipped invoices
+- Order detail modal also shows e-invoice status badge + QR when applicable
+
+### Order columns added
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `einvoiceStatus` | TEXT | `pending`, `submitted`, `failed`, `skipped` |
+| `einvoiceQR` | TEXT | QR code string from JOFOTARA |
+| `einvoiceUUID` | TEXT | UUID used for the invoice |
+| `einvoiceError` | TEXT | Error message if failed |
+| `einvoiceSubmittedAt` | TEXT | ISO timestamp of submission |
+
+---
+
 ## Admin API
 
 All admin endpoints require **Admin JWT** authentication. Send the token in the `Authorization` header as `Bearer <token>`. The token is obtained from `POST /api/admin/login`. Roles: **SuperAdmin**, **Admin**, **Store Admin**. Store Admin can only access their assigned store.
@@ -3695,6 +3765,10 @@ For issues or questions, please contact: `contact@arheb.app`
 | GET | `/api/payment/transactions` | User (Bearer) | List payment transactions with optional filters (`orderId`, `status`, `page`, `perPage`). |
 | POST | `/api/payment/callback` | None (Madfoat server-to-server) | Receives payment result from Madfoat after hosted page completion. Verifies HMAC signature. Not called by client. |
 | GET | `/api/payment/return` | None (browser redirect) | Browser landing page after payment. Shows HTML success/failure. |
+| GET | `/api/admin/einvoices` | Admin / SuperAdmin | List all orders with e-invoice data. Optional query: `status` (`submitted`/`failed`/`pending`/`skipped`), `dateFrom`, `dateTo`. Returns `data.invoices` array + `data.counts`. |
+| GET | `/api/admin/orders/:orderId/einvoice` | Admin / SuperAdmin | Returns e-invoice details for a specific order: `einvoiceStatus`, `einvoiceQR`, `einvoiceUUID`, `einvoiceError`, `einvoiceSubmittedAt`. |
+| POST | `/api/admin/orders/:orderId/einvoice/retry` | Admin / SuperAdmin | Manually retry a failed/skipped JOFOTARA e-invoice submission. Returns `{ ok, qr?, error?, uuid }`. |
+| GET | `/api/admin/merchants/online` | Admin / SuperAdmin | Returns list of online merchant/store admins (from `/merchant-presence` socket). |
 
 ### Adjusted / Updated APIs
 

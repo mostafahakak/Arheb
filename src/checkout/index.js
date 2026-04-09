@@ -207,6 +207,11 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   }
   try { db.exec(`ALTER TABLE orders ADD COLUMN paymentTranRef TEXT`); } catch (e) { /* exists */ }
   try { db.exec(`ALTER TABLE orders ADD COLUMN paymentCartId TEXT`); } catch (e) { /* exists */ }
+  try { db.exec(`ALTER TABLE orders ADD COLUMN einvoiceStatus TEXT`); } catch (e) { /* exists */ }
+  try { db.exec(`ALTER TABLE orders ADD COLUMN einvoiceQR TEXT`); } catch (e) { /* exists */ }
+  try { db.exec(`ALTER TABLE orders ADD COLUMN einvoiceUUID TEXT`); } catch (e) { /* exists */ }
+  try { db.exec(`ALTER TABLE orders ADD COLUMN einvoiceError TEXT`); } catch (e) { /* exists */ }
+  try { db.exec(`ALTER TABLE orders ADD COLUMN einvoiceSubmittedAt TEXT`); } catch (e) { /* exists */ }
 
   const findUserByPhone = db.prepare('SELECT * FROM users WHERE phoneNumber = ?');
   const findOrderById = db.prepare('SELECT * FROM orders WHERE id = ?');
