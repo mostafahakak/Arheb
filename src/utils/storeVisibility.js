@@ -26,13 +26,15 @@ function isStoreVisibleToCustomers(store) {
 }
 
 /**
- * Listed in public store browse (GET /api/stores, etc.): not blocked, not hidden by Admin/SuperAdmin.
- * Each store still has `status` open | paused | closed from {@link getAdminStoreDashboardBucket}-style logic.
+ * Listed in public store browse (GET /api/stores, etc.): must be open and visible.
+ * Blocked, paused, closed (isOpen=false), hidden, and outside opening hours are all excluded.
  */
 function isStoreListedForCustomerBrowse(store) {
   if (!store || store.blocked === true) return false;
   if (store.hiddenFromCustomers === true) return false;
-  return true;
+  if (store.paused === true) return false;
+  if (store.isOpen === false) return false;
+  return isWithinOpeningHours(store);
 }
 
 /** Admin dashboard bucket: open (customer-visible) → paused → closed. */

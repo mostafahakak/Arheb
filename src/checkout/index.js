@@ -461,6 +461,21 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       return { ok: false, statusCode: 400, message: 'totalAmount must be a valid number' };
     }
 
+    if (finalStoreId != null && String(finalStoreId).trim() !== '') {
+      const storeCheck = loadStoreFromJsonById(finalStoreId);
+      if (storeCheck) {
+        if (storeCheck.blocked === true) {
+          return { ok: false, statusCode: 400, message: 'This store is currently unavailable' };
+        }
+        if (storeCheck.paused === true) {
+          return { ok: false, statusCode: 400, message: 'This store is currently paused and not accepting orders' };
+        }
+        if (storeCheck.isOpen === false) {
+          return { ok: false, statusCode: 400, message: 'This store is currently closed' };
+        }
+      }
+    }
+
     if (fcmToken != null && typeof fcmToken === 'string' && phoneNumber) {
       const trimmed = fcmToken.trim();
       if (trimmed) {
