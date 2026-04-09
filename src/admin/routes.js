@@ -585,6 +585,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       return na.localeCompare(nb, undefined, { sensitivity: 'base' });
     });
 
+    const { isStoreAdminOnline } = require('../merchantPresence');
     const mapStore = (s) => {
       const dashboardStatus = bucket(s);
       const base =
@@ -602,6 +603,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         isExclusive: base.isExclusive === true,
         isPremium: base.isPremium === true,
         hiddenFromCustomers: base.hiddenFromCustomers === true,
+        merchantOnline: isStoreAdminOnline(s.id),
       };
     };
 
@@ -3578,5 +3580,18 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       summary: `Deleted promo code ${target.name}`,
     });
     return res.status(200).json({ success: true, message: 'Promo code deleted' });
+  });
+
+  // ——— Online merchants (merchant presence) ———
+  app.get('/api/admin/merchants/online', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      const { getOnlineMerchants } = require('../merchantPresence');
+      return res.status(200).json({
+        success: true,
+        data: { onlineMerchants: getOnlineMerchants() },
+      });
+    } catch (e) {
+      return res.status(500).json({ success: false, message: 'Failed to load merchant presence' });
+    }
   });
 };

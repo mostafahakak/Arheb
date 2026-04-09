@@ -175,11 +175,10 @@ function toPublicStore(store) {
   const openingHours = store.openingHours
     ? enrichOpeningHoursObject(store.openingHours)
     : enrichOpeningHoursObject(null);
-  const exclusive = !!(store.isExclusive ?? store.isPremium);
   return {
     ...rest,
-    isPremium: exclusive,
-    isExclusive: exclusive,
+    isPremium: store.isPremium === true,
+    isExclusive: store.isExclusive === true,
     closingTime: store.closingTime ?? null,
     openingTime: store.openingHours?.open ?? store.openingTime ?? null,
     openingHours,
@@ -508,35 +507,14 @@ module.exports = function attachStoresRoutes(app, db) {
     return { categoriesForPaging, buckets };
   }
 
-  function computeTotalCategoryPages(buckets, perCategory) {
-    const keys = Array.from(buckets.keys());
-    const ptr = new Map(keys.map((k) => [k, 0]));
-    let active = keys.filter((k) => (buckets.get(k)?.length || 0) > 0);
-    if (!active.length) return 0;
-    let pages = 0;
-    while (active.length) {
-      pages += 1;
-      const nextActive = [];
-      for (const k of active) {
-        const list = buckets.get(k) || [];
-        const start = ptr.get(k) || 0;
-        const slice = list.slice(start, start + perCategory);
-        ptr.set(k, start + slice.length);
-        if ((ptr.get(k) || 0) < list.length) nextActive.push(k);
-      }
-      active = nextActive;
-    }
-    return pages;
-  }
-
   /**
-   * One "page" = take up to perCategory from each active bucket; exhausted buckets drop out.
-   * Returns empty picks if page > totalPages (when totalPages > 0).
+   * Flat pagination: each page contains up to `perPage` items total (not per category).
+   * Items are taken round-robin across categories so every category gets representation.
    */
-  function pickCategoryPageSlice(buckets, page, perCategory) {
+  function pickFlatPageSlice(buckets, page, perPage) {
     const keys = Array.from(buckets.keys());
     const totalProducts = keys.reduce((sum, k) => sum + (buckets.get(k)?.length || 0), 0);
-    const totalPages = computeTotalCategoryPages(buckets, perCategory);
+    const totalPages = totalProducts > 0 ? Math.ceil(totalProducts / perPage) : 0;
     const emptyPick = () => new Map(keys.map((k) => [k, []]));
 
     if (totalProducts === 0) {
@@ -546,28 +524,32 @@ module.exports = function attachStoresRoutes(app, db) {
       return { pagePick: emptyPick(), finished: true, totalProducts, totalPages };
     }
 
+    const allFlat = [];
     const pointers = new Map(keys.map((k) => [k, 0]));
     let active = keys.filter((k) => (buckets.get(k)?.length || 0) > 0);
-    let currentPage = 1;
-    let pagePick = emptyPick();
-
-    while (currentPage <= page && active.length > 0) {
-      const nextPick = new Map(keys.map((k) => [k, []]));
+    while (active.length > 0) {
       const nextActive = [];
       for (const k of active) {
         const list = buckets.get(k) || [];
-        const start = pointers.get(k) || 0;
-        const slice = list.slice(start, start + perCategory);
-        pointers.set(k, start + slice.length);
-        nextPick.set(k, slice);
-        if ((pointers.get(k) || 0) < list.length) nextActive.push(k);
+        const ptr = pointers.get(k) || 0;
+        if (ptr < list.length) {
+          allFlat.push({ key: k, item: list[ptr] });
+          pointers.set(k, ptr + 1);
+          if (ptr + 1 < list.length) nextActive.push(k);
+        }
       }
-      pagePick = nextPick;
       active = nextActive;
-      currentPage += 1;
     }
 
-    const finished = active.length === 0;
+    const start = (page - 1) * perPage;
+    const slice = allFlat.slice(start, start + perPage);
+
+    const pagePick = emptyPick();
+    for (const { key, item } of slice) {
+      pagePick.get(key).push(item);
+    }
+
+    const finished = start + perPage >= allFlat.length;
     return { pagePick, finished, totalProducts, totalPages };
   }
 
@@ -590,7 +572,7 @@ module.exports = function attachStoresRoutes(app, db) {
 
     const pageRaw = req.query.page != null ? String(req.query.page).trim() : '1';
     const page = Math.max(1, parseInt(pageRaw, 10) || 1);
-    const perCategory = 10;
+    const perPage = 10;
 
     const productsResponsePath = getJsonPath('products_listing_response.json');
     let productsResponse;
@@ -612,7 +594,7 @@ module.exports = function attachStoresRoutes(app, db) {
     const toClientProduct = (p) => ({ ...p, discount: p.discount ?? null, originalPrice: p.originalPrice ?? p.price ?? null });
 
     const { categoriesForPaging, buckets } = buildStoreCategoryBuckets(store, storeProducts);
-    const { pagePick, finished, totalProducts, totalPages } = pickCategoryPageSlice(buckets, page, perCategory);
+    const { pagePick, finished, totalProducts, totalPages } = pickFlatPageSlice(buckets, page, perPage);
 
     const categoriesOut = categoriesForPaging.map((c) => {
       const total = buckets.get(c.id)?.length || 0;
@@ -644,8 +626,7 @@ module.exports = function attachStoresRoutes(app, db) {
         categories: categoriesOut,
         pagination: {
           page,
-          perPage: perCategory,
-          perCategory,
+          perPage,
           total: totalProducts,
           totalPages,
           hasNextPage: totalPages > 0 && page < totalPages,
@@ -660,14 +641,12 @@ module.exports = function attachStoresRoutes(app, db) {
   /**
    * Paginated store products by store categories.
    *
-   * Rules:
-   * - Always returns ALL `store.storeCategories` (plus an `other` bucket).
-   * - Each "page" returns up to 10 items per active category.
-   * - When a category is finished, it is removed from next pages, so remaining categories keep returning 10 until all products are exhausted.
+   * Returns ALL `store.storeCategories` (plus an `other` bucket).
+   * Each page returns up to 10 items total (flat), distributed round-robin across categories.
    *
    * Response shape:
    * - `data.categories`: array of categories with `{ id, nameEn, nameAr, name, items, total }`
-   * - `data.pagination`: `{ page, perCategory, totalProducts, finished }`
+   * - `data.pagination`: `{ page, perPage, totalProducts, finished }`
    */
   app.get('/api/stores/:id/products/paged-categories', (req, res) => {
     const storeId = req.params.id;
@@ -679,7 +658,7 @@ module.exports = function attachStoresRoutes(app, db) {
 
     const pageRaw = req.query.page != null ? String(req.query.page).trim() : '1';
     const page = Math.max(1, parseInt(pageRaw, 10) || 1);
-    const perCategory = 10;
+    const perPage = 10;
 
     const productsResponsePath = getJsonPath('products_listing_response.json');
     let productsResponse;
@@ -701,7 +680,7 @@ module.exports = function attachStoresRoutes(app, db) {
     const toClientProduct = (p) => ({ ...p, discount: p.discount ?? null, originalPrice: p.originalPrice ?? p.price ?? null });
 
     const { categoriesForPaging, buckets } = buildStoreCategoryBuckets(store, storeProducts);
-    const { pagePick, finished, totalProducts, totalPages } = pickCategoryPageSlice(buckets, page, perCategory);
+    const { pagePick, finished, totalProducts, totalPages } = pickFlatPageSlice(buckets, page, perPage);
 
     const categoriesOut = categoriesForPaging.map((c) => {
       const total = buckets.get(c.id)?.length || 0;
@@ -730,8 +709,7 @@ module.exports = function attachStoresRoutes(app, db) {
         categories: categoriesOut,
         pagination: {
           page,
-          perCategory,
-          perPage: perCategory,
+          perPage,
           total: totalProducts,
           totalPages,
           hasNextPage: totalPages > 0 && page < totalPages,

@@ -17,6 +17,7 @@ const attachCheckoutRoutes = require('./checkout');
 const attachContactRoutes = require('./contact');
 const attachOrderTrackingRoutes = require('./order');
 const attachDriverPresence = require('./driverPresence');
+const attachMerchantPresence = require('./merchantPresence');
 const attachAdmin = require('./admin');
 const attachPopupRoutes = require('./popup');
 const attachArhebBoxRoutes = require('./arhebBox');
@@ -540,6 +541,7 @@ attachContactRoutes(app, db, authenticateRequest);
 attachArhebBoxRoutes(app, db, authenticateRequest);
 attachOrderTrackingRoutes(io, app, db, authenticateRequest, JWT_SECRET);
 attachDriverPresence(io, db, JWT_SECRET);
+attachMerchantPresence(io, db, JWT_SECRET);
 
 /**
  * Preferred for mobile apps: client completes Firebase Phone Auth on device, then exchanges idToken for your JWT.
