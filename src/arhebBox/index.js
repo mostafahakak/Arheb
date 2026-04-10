@@ -108,7 +108,7 @@ function enrichRequestRow(row, db) {
   return enrichWithJordanTime(base, ['createdAt']);
 }
 
-module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest) {
+function ensureArhebBoxTable(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS arheb_box_requests (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -152,26 +152,94 @@ module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest) {
     'ALTER TABLE arheb_box_requests ADD COLUMN minAmountJod REAL',
   ];
   for (const sql of alters) {
-    try {
-      db.exec(sql);
-    } catch (e) { /* exists */ }
+    try { db.exec(sql); } catch (e) { /* exists */ }
+  }
+}
+
+/**
+ * Reusable: validate + insert an Arheb Box request. Used by POST /api/arheb-box and the card
+ * payment module (POST /api/payment/arheb-box/initiate).
+ * @returns {{ ok: boolean, statusCode?: number, message?: string, requestId?: number, row?: object }}
+ */
+function createArhebBoxRequest(db, phoneNumber, body, statusOverride) {
+  const user = db.prepare('SELECT * FROM users WHERE phoneNumber = ?').get(phoneNumber);
+  const userName = user?.name || null;
+
+  const {
+    pickup, dropoff, notes, fcmToken,
+    receiverPhone, receiverName, paymentMethod, whoPays, amount, weightKg,
+  } = body || {};
+  const fcmTokenStr = typeof fcmToken === 'string' ? fcmToken.trim() || null : null;
+  if (fcmTokenStr) {
+    try { db.prepare('UPDATE users SET fcmToken = ? WHERE phoneNumber = ?').run(fcmTokenStr, phoneNumber); } catch (e) { /* ignore */ }
   }
 
-  const findUserByPhone = db.prepare('SELECT * FROM users WHERE phoneNumber = ?');
+  if (!pickup || typeof pickup !== 'object') return { ok: false, statusCode: 400, message: 'pickup is required and must be an object with latitude, longitude, address' };
+  if (typeof pickup.latitude !== 'number' || isNaN(pickup.latitude)) return { ok: false, statusCode: 400, message: 'pickup.latitude must be a valid number' };
+  if (typeof pickup.longitude !== 'number' || isNaN(pickup.longitude)) return { ok: false, statusCode: 400, message: 'pickup.longitude must be a valid number' };
+  if (!dropoff || typeof dropoff !== 'object') return { ok: false, statusCode: 400, message: 'dropoff is required and must be an object with latitude, longitude, address' };
+  if (typeof dropoff.latitude !== 'number' || isNaN(dropoff.latitude)) return { ok: false, statusCode: 400, message: 'dropoff.latitude must be a valid number' };
+  if (typeof dropoff.longitude !== 'number' || isNaN(dropoff.longitude)) return { ok: false, statusCode: 400, message: 'dropoff.longitude must be a valid number' };
+
+  const recvPhoneStr = receiverPhone != null ? String(receiverPhone).trim() : '';
+  const recvNameStr = receiverName != null ? String(receiverName).trim() : '';
+  if (!recvPhoneStr) return { ok: false, statusCode: 400, message: 'receiverPhone is required' };
+  if (!recvNameStr) return { ok: false, statusCode: 400, message: 'receiverName is required' };
+
+  const payMethod = paymentMethod != null ? String(paymentMethod).trim() : '';
+  if (!payMethod) return { ok: false, statusCode: 400, message: 'paymentMethod is required (e.g. cash, Cliq, card)' };
+  const who = whoPays != null ? String(whoPays).trim().toLowerCase() : '';
+  if (who !== 'sender' && who !== 'receiver') return { ok: false, statusCode: 400, message: 'whoPays is required and must be "sender" or "receiver"' };
+
+  const quote = quoteFromPickupDropoff(pickup, dropoff);
+  if (!quote) return { ok: false, statusCode: 400, message: 'Could not compute route distance' };
+  const dKm = haversineKm(pickup.latitude, pickup.longitude, dropoff.latitude, dropoff.longitude);
+  const minJod = minAmountJod(dKm);
+  const amountNum = amount != null ? Number(amount) : NaN;
+  if (Number.isNaN(amountNum) || amountNum < minJod) {
+    return { ok: false, statusCode: 400, message: `amount must be at least ${minJod} JOD for this distance (${quote.distanceKm} km). Call POST /api/arheb-box/quote first.`, data: { minAmountJod: minJod, distanceKm: quote.distanceKm } };
+  }
+
+  const pickupJson = JSON.stringify({ latitude: pickup.latitude, longitude: pickup.longitude, address: pickup.address != null ? String(pickup.address) : '' });
+  const dropoffJson = JSON.stringify({ latitude: dropoff.latitude, longitude: dropoff.longitude, address: dropoff.address != null ? String(dropoff.address) : '' });
+  const notesStr = notes != null ? String(notes) : '';
+  const weightKgNum = Math.max(0, safeNumber(weightKg, 0));
+  const computedDeliveryFee = calcDeliveryFeeFromDistanceAndWeight(quote.distanceKm, weightKgNum);
+  const computedServiceFee = SERVICE_FEE_JOD;
+  const computedFeesTax = calcFeesTaxJod(computedDeliveryFee, computedServiceFee);
+
   const insertRequest = db.prepare(`
     INSERT INTO arheb_box_requests (
       phoneNumber, userName, pickup, dropoff, notes, status, fcmToken,
       receiverPhone, receiverName, paymentMethod, whoPays, amount,
       weightKg, deliveryFee, serviceFee, feesTax,
       distanceKm, minAmountJod
-    )
-    VALUES (
+    ) VALUES (
       @phoneNumber, @userName, @pickup, @dropoff, @notes, @status, @fcmToken,
       @receiverPhone, @receiverName, @paymentMethod, @whoPays, @amount,
       @weightKg, @deliveryFee, @serviceFee, @feesTax,
       @distanceKm, @minAmountJod
     )
   `);
+
+  const result = insertRequest.run({
+    phoneNumber, userName,
+    pickup: pickupJson, dropoff: dropoffJson,
+    notes: notesStr, status: statusOverride || 'pending',
+    fcmToken: fcmTokenStr,
+    receiverPhone: recvPhoneStr, receiverName: recvNameStr,
+    paymentMethod: payMethod, whoPays: who,
+    amount: amountNum, weightKg: round3(weightKgNum),
+    deliveryFee: computedDeliveryFee, serviceFee: computedServiceFee,
+    feesTax: computedFeesTax, distanceKm: quote.distanceKm, minAmountJod: minJod,
+  });
+
+  const row = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(result.lastInsertRowid);
+  return { ok: true, requestId: row.id, row };
+}
+
+module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest) {
+  ensureArhebBoxTable(db);
 
   // Quote: distance + minimum JOD (no auth)
   app.post('/api/arheb-box/quote', (req, res) => {
@@ -227,149 +295,30 @@ module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest) {
   app.post('/api/arheb-box', authenticateRequest, (req, res) => {
     try {
       const phoneNumber = req.user.phoneNumber;
-      const user = findUserByPhone.get(phoneNumber);
-      const userName = user?.name || null;
-
-      const {
-        pickup,
-        dropoff,
-        notes,
-        fcmToken,
-        receiverPhone,
-        receiverName,
-        paymentMethod,
-        whoPays,
-        amount,
-        weightKg,
-      } = req.body || {};
-      const fcmTokenStr = typeof fcmToken === 'string' ? fcmToken.trim() || null : null;
-      if (fcmTokenStr) {
-        try {
-          db.prepare('UPDATE users SET fcmToken = ? WHERE phoneNumber = ?').run(fcmTokenStr, phoneNumber);
-        } catch (e) { /* ignore */ }
-      }
-
-      if (!pickup || typeof pickup !== 'object') {
-        return res.status(400).json({
+      const result = createArhebBoxRequest(db, phoneNumber, req.body);
+      if (!result.ok) {
+        return res.status(result.statusCode || 400).json({
           success: false,
-          message: 'pickup is required and must be an object with latitude, longitude, address',
+          message: result.message,
+          ...(result.data ? { data: result.data } : {}),
         });
       }
-      if (typeof pickup.latitude !== 'number' || isNaN(pickup.latitude)) {
-        return res.status(400).json({ success: false, message: 'pickup.latitude must be a valid number' });
-      }
-      if (typeof pickup.longitude !== 'number' || isNaN(pickup.longitude)) {
-        return res.status(400).json({ success: false, message: 'pickup.longitude must be a valid number' });
-      }
-
-      if (!dropoff || typeof dropoff !== 'object') {
-        return res.status(400).json({
-          success: false,
-          message: 'dropoff is required and must be an object with latitude, longitude, address',
-        });
-      }
-      if (typeof dropoff.latitude !== 'number' || isNaN(dropoff.latitude)) {
-        return res.status(400).json({ success: false, message: 'dropoff.latitude must be a valid number' });
-      }
-      if (typeof dropoff.longitude !== 'number' || isNaN(dropoff.longitude)) {
-        return res.status(400).json({ success: false, message: 'dropoff.longitude must be a valid number' });
-      }
-
-      const recvPhoneStr = receiverPhone != null ? String(receiverPhone).trim() : '';
-      const recvNameStr = receiverName != null ? String(receiverName).trim() : '';
-      if (!recvPhoneStr) {
-        return res.status(400).json({ success: false, message: 'receiverPhone is required' });
-      }
-      if (!recvNameStr) {
-        return res.status(400).json({ success: false, message: 'receiverName is required' });
-      }
-
-      const payMethod = paymentMethod != null ? String(paymentMethod).trim() : '';
-      if (!payMethod) {
-        return res.status(400).json({ success: false, message: 'paymentMethod is required (e.g. cash, Cliq, card)' });
-      }
-      const who = whoPays != null ? String(whoPays).trim().toLowerCase() : '';
-      if (who !== 'sender' && who !== 'receiver') {
-        return res.status(400).json({
-          success: false,
-          message: 'whoPays is required and must be "sender" or "receiver"',
-        });
-      }
-
-      const quote = quoteFromPickupDropoff(pickup, dropoff);
-      if (!quote) {
-        return res.status(400).json({ success: false, message: 'Could not compute route distance' });
-      }
-      const dKm = haversineKm(pickup.latitude, pickup.longitude, dropoff.latitude, dropoff.longitude);
-      const minJod = minAmountJod(dKm);
-      const amountNum = amount != null ? Number(amount) : NaN;
-      if (Number.isNaN(amountNum) || amountNum < minJod) {
-        return res.status(400).json({
-          success: false,
-          message: `amount must be at least ${minJod} JOD for this distance (${quote.distanceKm} km). Call POST /api/arheb-box/quote first.`,
-          data: { minAmountJod: minJod, distanceKm: quote.distanceKm },
-        });
-      }
-
-      const pickupJson = JSON.stringify({
-        latitude: pickup.latitude,
-        longitude: pickup.longitude,
-        address: pickup.address != null ? String(pickup.address) : '',
-      });
-      const dropoffJson = JSON.stringify({
-        latitude: dropoff.latitude,
-        longitude: dropoff.longitude,
-        address: dropoff.address != null ? String(dropoff.address) : '',
-      });
-      const notesStr = notes != null ? String(notes) : '';
-
-      const weightKgNum = Math.max(0, safeNumber(weightKg, 0));
-      const computedDeliveryFee = calcDeliveryFeeFromDistanceAndWeight(quote.distanceKm, weightKgNum);
-      const computedServiceFee = SERVICE_FEE_JOD;
-      const computedFeesTax = calcFeesTaxJod(computedDeliveryFee, computedServiceFee);
-
-      const result = insertRequest.run({
-        phoneNumber,
-        userName,
-        pickup: pickupJson,
-        dropoff: dropoffJson,
-        notes: notesStr,
-        status: 'pending',
-        fcmToken: fcmTokenStr,
-        receiverPhone: recvPhoneStr,
-        receiverName: recvNameStr,
-        paymentMethod: payMethod,
-        whoPays: who,
-        amount: amountNum,
-        weightKg: round3(weightKgNum),
-        deliveryFee: computedDeliveryFee,
-        serviceFee: computedServiceFee,
-        feesTax: computedFeesTax,
-        distanceKm: quote.distanceKm,
-        minAmountJod: minJod,
-      });
-
-      const row = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(result.lastInsertRowid);
-
       return res.status(201).json({
         success: true,
         message: 'Arheb box request received successfully',
-        data: {
-          request: enrichRequestRow(row, null),
-        },
+        data: { request: enrichRequestRow(result.row, null) },
         timestamp: new Date().toISOString(),
       });
     } catch (error) {
       console.error('Arheb box error:', error);
-      return res.status(500).json({
-        success: false,
-        message: 'Internal server error',
-      });
+      return res.status(500).json({ success: false, message: 'Internal server error' });
     }
   });
 };
 
 module.exports.enrichArhebBoxRow = enrichRequestRow;
+module.exports.createArhebBoxRequest = createArhebBoxRequest;
+module.exports.ensureArhebBoxTable = ensureArhebBoxTable;
 module.exports.calcArhebBoxDeliveryFeeJod = calcArhebBoxDeliveryFeeJod;
 module.exports.calcDeliveryFeeFromDistanceAndWeight = calcDeliveryFeeFromDistanceAndWeight;
 /** @deprecated Store-order max (3 JOD). Arheb Box delivery fee has no cap. */

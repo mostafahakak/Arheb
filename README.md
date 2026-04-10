@@ -3908,10 +3908,31 @@ For issues or questions, please contact: `contact@arheb.app`
   - **POST** `/api/arheb-box` accepts optional **`fcmToken`**; stored on the request and used for status notifications, and **requires `receiverPhone` + `receiverName`** so drivers can contact the receiver.  
   - **PATCH** `/api/admin/arheb-box/:id` (status) – sends FCM to the user on status change.  
   - **POST** `/api/admin/arheb-box/:id/assign-driver` – body `{ driverId }`; sets request to **assigned** and sends FCM to the driver.  
+  - **POST** `/api/admin/arheb-box/:id/request-driver` – body `{ driverIds: [...] }` or `{ all: true }`. Broadcasts FCM + socket notifications to specified drivers (or all online drivers). Updates status to **confirmed**. Same accept/reject flow as store orders.  
   - **GET** `/api/driver/arheb-box` – list Arheb Box requests assigned to the driver, including **sender/receiver names & phones** and pickup/dropoff with `mapsUrl`.  
-  - **POST** `/api/driver/arheb-box/:id/accept` – driver accepts; status → **in_progress**, FCM sent to user.  
+  - **POST** `/api/driver/arheb-box/:id/accept` – driver accepts; sets `driverId`/`driverName`, status → **in_progress**, FCM sent to user. Now accepts from **assigned**, **confirmed** (broadcast), or **pending** status.  
+  - **POST** `/api/driver/arheb-box/:id/reject-request` – driver rejects a broadcast request; status stays **confirmed** (available for other drivers).  
   - **POST** `/api/driver/arheb-box/:id/complete` – Bearer + request id; only assigned driver; **in_progress** → **delivered**, FCM to sender.  
   - **POST** `/api/driver/orders/:orderId/complete` or **POST** `/api/driver/orders/complete` with `{ orderId }` – store order **On the way** → **Delivered** (Bearer verifies driver).
+
+- **Arheb Box: Card Payment**  
+  - **POST** `/api/payment/arheb-box/initiate` (authenticated) – body: `{ arhebBox: { pickup, dropoff, receiverPhone, receiverName, paymentMethod, whoPays, amount, weightKg, notes, fcmToken }, currency?, customerName?, customerEmail?, customerPhone? }`. Creates an Arheb Box request with status **pending_payment**, initiates a PayTabs session (cart_id `ARHEBBOX-{id}-{timestamp}`). On callback/return success, status updates to **pending**.  
+  - The existing **`/api/payment/callback`** and **`/api/payment/return`** handlers detect `ARHEBBOX-` prefix in cartId and update `arheb_box_requests` instead of `orders`.
+
+- **Unified Admin Orders (Store + Arheb Box)**  
+  - **GET** `/api/admin/orders` now returns both store orders and Arheb Box requests merged in a single list sorted by `createdAt DESC`. Each order includes an **`orderType`** field: `"store"` or `"arheb_box"`.  
+  - Query param **`orderType=store`** returns only store orders; **`orderType=arheb_box`** returns only Arheb Box requests.  
+  - Query param **`statusFilter`** replaces the old `orderType` for active/complete/delivered/cancelled filtering (backward compatible).  
+  - **GET** `/api/admin/orders/counts` now includes Arheb Box counts in the totals.  
+  - **GET** `/api/admin/orders/:orderId?type=arheb_box`** fetches Arheb Box request detail by ID.  
+  - The admin dashboard orders page shows a **Type** column (Store Order / Arheb Box), **Payment Type** column, and an **Order Type** filter dropdown.
+
+- **Driver Available Orders: Arheb Box**  
+  - **GET** `/api/driver/home` and **GET** `/api/driver/orders?filter=available`** now include Arheb Box requests with status **confirmed** (broadcast, no driver assigned) alongside `assigned`/`in_progress` requests for the driver.  
+  - **GET** `/api/driver/requests` returns both store order requests and Arheb Box requests in separate arrays: `requests` (store) and `arhebBoxRequests` (box).
+
+- **Customer My Orders: Arheb Box**  
+  - **GET** `/api/checkout` already returns **`arhebBoxRequests`** alongside store orders for the authenticated user.
 
 ### Driver commission, earnings APIs, customer driver ratings, delivery fees
 

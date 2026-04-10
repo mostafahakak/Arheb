@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const axios = require('axios');
 const express = require('express');
 const attachCheckoutRoutes = require('../checkout');
+const { createArhebBoxRequest, ensureArhebBoxTable, enrichArhebBoxRow } = require('../arhebBox');
 
 const PAYTABS_API_URL = 'https://madfoat-secure.paytabs.com';
 const PROFILE_ID = 47149;
@@ -47,6 +48,9 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
   `);
   try { db.exec('ALTER TABLE payment_transactions ADD COLUMN orderId INTEGER'); } catch (e) { /* exists */ }
   try { db.exec('ALTER TABLE payment_transactions ADD COLUMN token TEXT'); } catch (e) { /* exists */ }
+  try { db.exec('ALTER TABLE payment_transactions ADD COLUMN arhebBoxRequestId INTEGER'); } catch (e) { /* exists */ }
+
+  ensureArhebBoxTable(db);
 
   function paytabsHeaders() {
     return {
@@ -67,6 +71,121 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
       console.error('applyCardPaymentSuccessToOrder:', e);
     }
   }
+
+  function applyCardPaymentSuccessToArhebBox(requestId, tranRef) {
+    if (requestId == null) return;
+    try {
+      db.prepare("UPDATE arheb_box_requests SET paymentMethod = 'card', status = 'pending' WHERE id = ? AND status = 'pending_payment'").run(requestId);
+    } catch (e) {
+      console.error('applyCardPaymentSuccessToArhebBox:', e);
+    }
+  }
+
+  // --- Initiate Arheb Box card payment ---
+  app.post('/api/payment/arheb-box/initiate', authenticateRequest, async (req, res) => {
+    try {
+      const { arhebBox, currency, customerName, customerEmail, customerPhone } = req.body || {};
+      if (!arhebBox || typeof arhebBox !== 'object') {
+        return res.status(400).json({ success: false, message: 'arhebBox object is required with pickup, dropoff, receiverPhone, receiverName, paymentMethod, whoPays, amount' });
+      }
+
+      const phoneNumber = req.user.phoneNumber;
+      const boxBody = { ...arhebBox, paymentMethod: 'card' };
+      const createResult = createArhebBoxRequest(db, phoneNumber, boxBody, 'pending_payment');
+      if (!createResult.ok) {
+        return res.status(createResult.statusCode || 400).json({ success: false, message: createResult.message, ...(createResult.data ? { data: createResult.data } : {}) });
+      }
+      const requestId = createResult.requestId;
+      const enriched = enrichArhebBoxRow(createResult.row, db);
+      const amount = enriched.invoice.total;
+
+      if (!Number.isFinite(amount) || amount <= 0) {
+        try { db.prepare('DELETE FROM arheb_box_requests WHERE id = ?').run(requestId); } catch (e) { /* ignore */ }
+        return res.status(400).json({ success: false, message: 'Invalid total amount' });
+      }
+
+      const cartId = `ARHEBBOX-${requestId}-${Date.now()}`;
+      const cartCurrency = currency || CART_CURRENCY;
+      const cartDescription = `Arheb Box #${requestId}`;
+      const callbackUrl = BASE_URL ? `${BASE_URL}/api/payment/callback` : '';
+      const returnUrl = BASE_URL ? `${BASE_URL}/api/payment/return` : '';
+
+      const payload = {
+        profile_id: PROFILE_ID,
+        tran_type: 'sale',
+        tran_class: 'ecom',
+        cart_id: cartId,
+        cart_description: cartDescription,
+        cart_currency: cartCurrency,
+        cart_amount: amount,
+        hide_shipping: true,
+      };
+      if (callbackUrl) payload.callback = callbackUrl;
+      if (returnUrl) payload.return = returnUrl;
+
+      const cName = customerName || enriched.userName || undefined;
+      const cEmail = customerEmail || undefined;
+      const cPhone = customerPhone || phoneNumber || undefined;
+      if (cName || cEmail || cPhone) {
+        payload.customer_details = {};
+        if (cName) payload.customer_details.name = cName;
+        if (cEmail) payload.customer_details.email = cEmail;
+        if (cPhone) payload.customer_details.phone = cPhone;
+      }
+
+      let data;
+      try {
+        const response = await axios.post(`${PAYTABS_API_URL}/payment/request`, payload, { headers: paytabsHeaders(), timeout: 30000 });
+        data = response.data;
+      } catch (error) {
+        try { db.prepare('DELETE FROM arheb_box_requests WHERE id = ?').run(requestId); } catch (e) { /* ignore */ }
+        const errData = error.response?.data;
+        console.error('Payment arheb-box initiate error:', errData || error.message);
+        return res.status(error.response?.status || 500).json({ success: false, message: errData?.message || error.message || 'Payment request failed' });
+      }
+
+      const tranRef = data.tran_ref || null;
+
+      db.prepare(`
+        INSERT INTO payment_transactions (arhebBoxRequestId, tranRef, cartId, cartAmount, cartCurrency, tranType, status, redirectUrl, rawResponse)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(requestId, tranRef, cartId, amount, cartCurrency, 'sale',
+        data.redirect_url ? 'pending_redirect' : (data.payment_result?.response_status === 'A' ? 'completed' : 'initiated'),
+        data.redirect_url || null, JSON.stringify(data));
+
+      const paymentBlock = { tranRef, cartId, cartAmount: amount, cartCurrency };
+
+      if (data.payment_result && data.payment_result.response_status === 'A') {
+        applyCardPaymentSuccessToArhebBox(requestId, tranRef);
+        const updatedRow = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
+        return res.status(201).json({
+          success: true,
+          message: 'Arheb Box request created and payment completed',
+          data: { request: enrichArhebBoxRow(updatedRow, db), payment: { ...paymentBlock, status: 'completed', paymentResult: data.payment_result } },
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      if (data.redirect_url) {
+        return res.status(201).json({
+          success: true,
+          message: 'Arheb Box request created; redirect to complete card payment',
+          data: { request: enriched, payment: { ...paymentBlock, status: 'pending_redirect', redirectUrl: data.redirect_url, redirectMethod: 'GET' } },
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      return res.status(201).json({
+        success: true,
+        message: 'Arheb Box request created; payment submitted',
+        data: { request: enriched, payment: { ...paymentBlock, status: 'initiated', rawResponse: data } },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error('Payment arheb-box initiate error:', error);
+      return res.status(500).json({ success: false, message: error.message || 'Internal server error' });
+    }
+  });
 
   // --- Initiate payment: creates order (checkout) + Madfoat session; paymentType is always Card ---
   app.post('/api/payment/initiate', authenticateRequest, async (req, res) => {
@@ -302,8 +421,12 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
           WHERE tranRef = ?
         `).run(status, respStatus, respCode, respMessage, token || null, customerEmail || null, JSON.stringify(body), tranRef);
 
-        if (status === 'completed' && existing.orderId) {
-          applyCardPaymentSuccessToOrder(existing.orderId, tranRef);
+        if (status === 'completed') {
+          if (existing.arhebBoxRequestId) {
+            applyCardPaymentSuccessToArhebBox(existing.arhebBoxRequestId, tranRef);
+          } else if (existing.orderId) {
+            applyCardPaymentSuccessToOrder(existing.orderId, tranRef);
+          }
         }
       } else {
         db.prepare(`
@@ -332,8 +455,12 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
         db.prepare(`
           UPDATE payment_transactions SET status = ?, responseStatus = ?, responseMessage = ?, updatedAt = CURRENT_TIMESTAMP WHERE tranRef = ?
         `).run(status, respStatus || null, respMessage || null, tranRef);
-        if (respStatus === 'A' && existing.orderId) {
-          applyCardPaymentSuccessToOrder(existing.orderId, tranRef);
+        if (respStatus === 'A') {
+          if (existing.arhebBoxRequestId) {
+            applyCardPaymentSuccessToArhebBox(existing.arhebBoxRequestId, tranRef);
+          } else if (existing.orderId) {
+            applyCardPaymentSuccessToOrder(existing.orderId, tranRef);
+          }
         }
       }
     }
@@ -387,8 +514,12 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
           JSON.stringify(data),
           tranRef,
         );
-        if (status === 'completed' && existing.orderId) {
-          applyCardPaymentSuccessToOrder(existing.orderId, tranRef);
+        if (status === 'completed') {
+          if (existing.arhebBoxRequestId) {
+            applyCardPaymentSuccessToArhebBox(existing.arhebBoxRequestId, tranRef);
+          } else if (existing.orderId) {
+            applyCardPaymentSuccessToOrder(existing.orderId, tranRef);
+          }
         }
       }
 

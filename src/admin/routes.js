@@ -56,6 +56,8 @@ const {
   parseLatLongFromGoogleMapsUrl,
   notifyDriverDeliveryRequest,
   notifyAllOnlineDrivers,
+  notifyDriverArhebBoxRequest,
+  notifyAllOnlineDriversArhebBox,
 } = require('../utils/sequentialDriverOffer');
 const { runDeliveryClusterAutoAssign, ensureOrderAssignmentColumns } = require('../utils/deliveryClusterAssignment');
 
@@ -1646,9 +1648,21 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     const activeSql = 'SELECT COUNT(*) AS n FROM orders' + wherePrefix + "(status IS NULL OR status NOT IN ('Delivered', 'Cancelled'))";
     const deliveredSql = "SELECT COUNT(*) AS n FROM orders" + wherePrefix + "status = 'Delivered'";
     const cancelledSql = "SELECT COUNT(*) AS n FROM orders" + wherePrefix + "status = 'Cancelled'";
-    const active = db.prepare(activeSql).get(...params)?.n ?? 0;
-    const delivered = db.prepare(deliveredSql).get(...params)?.n ?? 0;
-    const cancelled = db.prepare(cancelledSql).get(...params)?.n ?? 0;
+    let active = db.prepare(activeSql).get(...params)?.n ?? 0;
+    let delivered = db.prepare(deliveredSql).get(...params)?.n ?? 0;
+    let cancelled = db.prepare(cancelledSql).get(...params)?.n ?? 0;
+
+    if (req.admin.role !== ROLES.STORE_ADMIN) {
+      try {
+        const boxActive = db.prepare("SELECT COUNT(*) AS n FROM arheb_box_requests WHERE status NOT IN ('delivered', 'cancelled')").get()?.n ?? 0;
+        const boxDelivered = db.prepare("SELECT COUNT(*) AS n FROM arheb_box_requests WHERE status = 'delivered'").get()?.n ?? 0;
+        const boxCancelled = db.prepare("SELECT COUNT(*) AS n FROM arheb_box_requests WHERE status = 'cancelled'").get()?.n ?? 0;
+        active += boxActive;
+        delivered += boxDelivered;
+        cancelled += boxCancelled;
+      } catch (e) { /* table may not exist */ }
+    }
+
     return res.status(200).json({ success: true, data: { active, delivered, cancelled, complete: delivered + cancelled } });
   });
 
@@ -1705,97 +1719,160 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
 
   // ——— Orders (sorted newest first; filter by date range, status, store, name, orderType, paymentType, driver) ———
   function listAdminOrdersWithDetails(req) {
-    const { dateFrom, dateTo, status, storeId, storeIds, storeName, name, orderType, paymentType, driverId, unassigned } = req.query;
-    const conditions = [];
-    const params = [];
+    const { dateFrom, dateTo, status, storeId, storeIds, storeName, name, orderType, statusFilter, paymentType, driverId, unassigned } = req.query;
+    const onlyArhebBox = orderType === 'arheb_box';
+    const onlyStore = orderType === 'store';
 
-    if (req.admin.role === ROLES.STORE_ADMIN) {
-      conditions.push('(CAST(storeId AS TEXT) = ? OR storeId IS NULL)');
-      params.push(String(req.admin.storeId));
-    } else if (req.admin.role === ROLES.ADMIN || req.admin.role === ROLES.SUPERADMIN) {
-      const storeIdsRaw = storeIds || storeId;
-      if (storeIdsRaw) {
-        const ids = (Array.isArray(storeIdsRaw) ? storeIdsRaw : String(storeIdsRaw).split(',')).map((s) => String(s).trim()).filter(Boolean);
-        if (ids.length > 0) {
-          conditions.push('(CAST(storeId AS TEXT) IN (' + ids.map(() => '?').join(',') + '))');
-          params.push(...ids);
+    let storeOrders = [];
+    if (!onlyArhebBox) {
+      const conditions = [];
+      const params = [];
+
+      if (req.admin.role === ROLES.STORE_ADMIN) {
+        conditions.push('(CAST(storeId AS TEXT) = ? OR storeId IS NULL)');
+        params.push(String(req.admin.storeId));
+      } else if (req.admin.role === ROLES.ADMIN || req.admin.role === ROLES.SUPERADMIN) {
+        const storeIdsRaw = storeIds || storeId;
+        if (storeIdsRaw) {
+          const ids = (Array.isArray(storeIdsRaw) ? storeIdsRaw : String(storeIdsRaw).split(',')).map((s) => String(s).trim()).filter(Boolean);
+          if (ids.length > 0) {
+            conditions.push('(CAST(storeId AS TEXT) IN (' + ids.map(() => '?').join(',') + '))');
+            params.push(...ids);
+          }
         }
       }
-    }
-    if (dateFrom) {
-      conditions.push("date(createdAt) >= date(?)");
-      params.push(String(dateFrom).trim());
-    }
-    if (dateTo) {
-      conditions.push("date(createdAt) <= date(?)");
-      params.push(String(dateTo).trim());
-    }
-    if (orderType === 'active') {
-      conditions.push("(status IS NULL OR status NOT IN ('Delivered', 'Cancelled'))");
-    } else if (orderType === 'complete') {
-      conditions.push("status IN ('Delivered', 'Cancelled')");
-    } else if (orderType === 'delivered') {
-      conditions.push("status = 'Delivered'");
-    } else if (orderType === 'cancelled') {
-      conditions.push("status = 'Cancelled'");
-    }
-    if (status && String(status).trim()) {
-      conditions.push('status = ?');
-      params.push(String(status).trim());
-    }
-    if (paymentType && String(paymentType).trim()) {
-      conditions.push('paymentType = ?');
-      params.push(String(paymentType).trim());
-    }
-    if (unassigned === 'true' || unassigned === '1') {
-      conditions.push('driverId IS NULL');
-    } else if (driverId !== undefined && driverId !== null && String(driverId).trim() !== '') {
-      const did = parseInt(String(driverId).trim(), 10);
-      if (!isNaN(did)) {
-        conditions.push('driverId = ?');
-        params.push(did);
+      if (dateFrom) { conditions.push("date(createdAt) >= date(?)"); params.push(String(dateFrom).trim()); }
+      if (dateTo) { conditions.push("date(createdAt) <= date(?)"); params.push(String(dateTo).trim()); }
+      if (statusFilter === 'active') {
+        conditions.push("(status IS NULL OR status NOT IN ('Delivered', 'Cancelled'))");
+      } else if (statusFilter === 'complete') {
+        conditions.push("status IN ('Delivered', 'Cancelled')");
+      } else if (statusFilter === 'delivered') {
+        conditions.push("status = 'Delivered'");
+      } else if (statusFilter === 'cancelled') {
+        conditions.push("status = 'Cancelled'");
       }
+      if (status && String(status).trim()) { conditions.push('status = ?'); params.push(String(status).trim()); }
+      if (paymentType && String(paymentType).trim()) { conditions.push('paymentType = ?'); params.push(String(paymentType).trim()); }
+      if (unassigned === 'true' || unassigned === '1') {
+        conditions.push('driverId IS NULL');
+      } else if (driverId !== undefined && driverId !== null && String(driverId).trim() !== '') {
+        const did = parseInt(String(driverId).trim(), 10);
+        if (!isNaN(did)) { conditions.push('driverId = ?'); params.push(did); }
+      }
+      if (name && String(name).trim()) {
+        const term = '%' + String(name).trim() + '%';
+        conditions.push('(name LIKE ? OR phoneNumber LIKE ?)');
+        params.push(term, term);
+      }
+
+      const where = conditions.length ? ' WHERE ' + conditions.join(' AND ') : '';
+      const sql = 'SELECT * FROM orders' + where + ' ORDER BY createdAt DESC, id DESC';
+      let orders = db.prepare(sql).all(...params);
+
+      if (storeName && String(storeName).trim()) {
+        const stores = loadStores();
+        const storeNameLower = String(storeName).trim().toLowerCase();
+        const matchingStoreIds = new Set(
+          stores.filter((s) => (s.nameEn || s.name || '').toLowerCase().includes(storeNameLower) || (s.nameAr || '').toLowerCase().includes(storeNameLower)).map((s) => String(s.id))
+        );
+        orders = orders.filter((o) => o.storeId != null && matchingStoreIds.has(String(o.storeId)));
+      }
+
+      const storesList = loadStores();
+      const storeById = Object.fromEntries(storesList.map((s) => [String(s.id), s]));
+
+      storeOrders = orders.map((order) => {
+        const items = findOrderItems.all(order.id);
+        const store = order.storeId != null ? storeById[String(order.storeId)] : null;
+        return enrichWithJordanTime(
+          {
+            ...order,
+            orderType: 'store',
+            storeName: store ? (store.nameEn || store.name || store.nameAr) : (order.storeId || '-'),
+            storeAddress: store ? (store.addressEn || store.address || store.addressAr || null) : null,
+            storeMapsUrl: store ? (store.mapsUrl || null) : null,
+            storeLatitude: store?.latitude ?? store?.lat ?? null,
+            storeLongitude: store?.longitude ?? store?.long ?? null,
+            items: mapOrderItemsRows(items),
+          },
+          ['createdAt'],
+        );
+      });
     }
-    if (name && String(name).trim()) {
-      const term = '%' + String(name).trim() + '%';
-      conditions.push('(name LIKE ? OR phoneNumber LIKE ?)');
-      params.push(term, term);
+
+    let boxOrders = [];
+    if (!onlyStore && req.admin.role !== ROLES.STORE_ADMIN) {
+      try {
+        const boxCond = [];
+        const boxParams = [];
+        if (dateFrom) { boxCond.push("date(createdAt) >= date(?)"); boxParams.push(String(dateFrom).trim()); }
+        if (dateTo) { boxCond.push("date(createdAt) <= date(?)"); boxParams.push(String(dateTo).trim()); }
+        if (status && String(status).trim()) { boxCond.push('status = ?'); boxParams.push(String(status).trim()); }
+        if (statusFilter === 'active') {
+          boxCond.push("status NOT IN ('delivered', 'cancelled')");
+        } else if (statusFilter === 'complete') {
+          boxCond.push("status IN ('delivered', 'cancelled')");
+        } else if (statusFilter === 'delivered') {
+          boxCond.push("status = 'delivered'");
+        } else if (statusFilter === 'cancelled') {
+          boxCond.push("status = 'cancelled'");
+        }
+        if (paymentType && String(paymentType).trim()) { boxCond.push('paymentMethod = ?'); boxParams.push(String(paymentType).trim()); }
+        if (unassigned === 'true' || unassigned === '1') {
+          boxCond.push('driverId IS NULL');
+        } else if (driverId !== undefined && driverId !== null && String(driverId).trim() !== '') {
+          const did = parseInt(String(driverId).trim(), 10);
+          if (!isNaN(did)) { boxCond.push('driverId = ?'); boxParams.push(did); }
+        }
+        if (name && String(name).trim()) {
+          const term = '%' + String(name).trim() + '%';
+          boxCond.push('(userName LIKE ? OR phoneNumber LIKE ?)');
+          boxParams.push(term, term);
+        }
+        const boxWhere = boxCond.length ? ' WHERE ' + boxCond.join(' AND ') : '';
+        const boxRows = db.prepare('SELECT * FROM arheb_box_requests' + boxWhere + ' ORDER BY createdAt DESC, id DESC').all(...boxParams);
+        boxOrders = boxRows.map((r) => {
+          const enriched = enrichArhebBoxRow(r, db);
+          return enrichWithJordanTime({
+            id: r.id,
+            orderType: 'arheb_box',
+            storeName: 'Arheb Box',
+            name: r.userName,
+            phoneNumber: r.phoneNumber,
+            totalAmount: enriched.invoice.total,
+            deliveryFee: enriched.deliveryFee,
+            serviceFee: enriched.serviceFee,
+            feesTax: enriched.feesTax,
+            status: r.status,
+            paymentType: r.paymentMethod || 'cash',
+            driverId: r.driverId,
+            driverName: r.driverName,
+            createdAt: r.createdAt,
+            pickup: enriched.pickup,
+            dropoff: enriched.dropoff,
+            receiverPhone: enriched.receiverPhone,
+            receiverName: enriched.receiverName,
+            whoPays: enriched.whoPays,
+            amount: enriched.amount,
+            weightKg: enriched.weightKg,
+            distanceKm: enriched.distanceKm,
+            notes: r.notes,
+            invoice: enriched.invoice,
+            items: [],
+          }, ['createdAt']);
+        });
+      } catch (e) { /* table may not exist yet */ }
     }
 
-    const where = conditions.length ? ' WHERE ' + conditions.join(' AND ') : '';
-    const sql = 'SELECT * FROM orders' + where + ' ORDER BY createdAt DESC, id DESC';
-    let orders = db.prepare(sql).all(...params);
-
-    if (storeName && String(storeName).trim()) {
-      const stores = loadStores();
-      const storeNameLower = String(storeName).trim().toLowerCase();
-      const matchingStoreIds = new Set(
-        stores
-          .filter((s) => (s.nameEn || s.name || '').toLowerCase().includes(storeNameLower) || (s.nameAr || '').toLowerCase().includes(storeNameLower))
-          .map((s) => String(s.id))
-      );
-      orders = orders.filter((o) => o.storeId != null && matchingStoreIds.has(String(o.storeId)));
-    }
-
-    const storesList = loadStores();
-    const storeById = Object.fromEntries(storesList.map((s) => [String(s.id), s]));
-
-    return orders.map((order) => {
-      const items = findOrderItems.all(order.id);
-      const store = order.storeId != null ? storeById[String(order.storeId)] : null;
-      return enrichWithJordanTime(
-        {
-          ...order,
-          storeName: store ? (store.nameEn || store.name || store.nameAr) : (order.storeId || '-'),
-          storeAddress: store ? (store.addressEn || store.address || store.addressAr || null) : null,
-          storeMapsUrl: store ? (store.mapsUrl || null) : null,
-          storeLatitude: store?.latitude ?? store?.lat ?? null,
-          storeLongitude: store?.longitude ?? store?.long ?? null,
-          items: mapOrderItemsRows(items),
-        },
-        ['createdAt'],
-      );
+    const merged = [...storeOrders, ...boxOrders];
+    merged.sort((a, b) => {
+      const da = new Date(a.createdAt || 0).getTime();
+      const db2 = new Date(b.createdAt || 0).getTime();
+      if (db2 !== da) return db2 - da;
+      return (b.id || 0) - (a.id || 0);
     });
+    return merged;
   }
 
   app.get('/api/admin/orders', auth, (req, res) => {
@@ -1842,6 +1919,18 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   app.get('/api/admin/orders/:orderId', auth, (req, res) => {
     const orderId = parseInt(req.params.orderId, 10);
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
+
+    if (req.query.type === 'arheb_box') {
+      try {
+        const row = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(orderId);
+        if (!row) return res.status(404).json({ success: false, message: 'Arheb box request not found' });
+        const enriched = enrichArhebBoxRow(row, db);
+        return res.status(200).json({ success: true, data: { order: { ...enriched, orderType: 'arheb_box', storeName: 'Arheb Box', paymentType: row.paymentMethod || 'cash' } } });
+      } catch (e) {
+        return res.status(404).json({ success: false, message: 'Arheb box request not found' });
+      }
+    }
+
     const order = findOrderById.get(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && !sameStoreId(order.storeId, req.admin.storeId)) {
@@ -1857,6 +1946,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         order: enrichWithJordanTime(
           {
             ...order,
+            orderType: 'store',
             storeName,
             storeAddress: store ? (store.addressEn || store.address || store.addressAr || null) : null,
             storeMapsUrl: store ? (store.mapsUrl || null) : null,
@@ -2708,6 +2798,54 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     } catch (e) {
       console.error('Arheb box assign driver error:', e);
       return res.status(500).json({ success: false, message: 'Failed to assign driver' });
+    }
+  });
+
+  // ——— Arheb Box: request driver (broadcast to all or specific drivers) ———
+  app.post('/api/admin/arheb-box/:id/request-driver', auth, (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
+    try {
+      const row = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(id);
+      if (!row) return res.status(404).json({ success: false, message: 'Arheb box request not found' });
+
+      const { driverIds, all } = req.body || {};
+      let notifiedIds = [];
+
+      if (row.status === 'pending' || row.status === 'pending_payment') {
+        db.prepare("UPDATE arheb_box_requests SET status = 'confirmed' WHERE id = ?").run(id);
+      }
+      const updatedRow = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(id);
+
+      if (all === true || (req.admin.role === ROLES.STORE_ADMIN)) {
+        notifiedIds = notifyAllOnlineDriversArhebBox(db, io, id, updatedRow, { getActiveFromListWithDistance });
+      } else if (Array.isArray(driverIds) && driverIds.length > 0) {
+        for (const did of driverIds) {
+          const dNum = parseInt(did, 10);
+          if (!isNaN(dNum)) {
+            const result = notifyDriverArhebBoxRequest(db, io, id, updatedRow, dNum);
+            if (result.notified) notifiedIds.push(dNum);
+          }
+        }
+      } else {
+        notifiedIds = notifyAllOnlineDriversArhebBox(db, io, id, updatedRow, { getActiveFromListWithDistance });
+      }
+
+      if (io) io.emit('orders_updated', { source: 'arheb_box_request_driver', requestId: id });
+
+      logActivity(db, req, {
+        action: 'edit', resourceType: 'arheb_box', resourceId: String(id), storeScopeId: null,
+        summary: `Arheb Box #${id}: requested driver (${notifiedIds.length} notified)`,
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: `Driver request sent to ${notifiedIds.length} driver(s)`,
+        data: { notifiedDriverIds: notifiedIds, request: enrichArhebBoxRow(updatedRow, db) },
+      });
+    } catch (e) {
+      console.error('Arheb box request-driver error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to request driver' });
     }
   });
 
