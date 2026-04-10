@@ -2020,6 +2020,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     } else {
       db.prepare('UPDATE orders SET status = ? WHERE id = ?').run(nextStatus, orderId);
     }
+    try {
+      const { emitOrderEvent } = require('../order');
+      if (emitOrderEvent) emitOrderEvent(orderId, 'status_update', { status: nextStatus });
+    } catch (e) { /* ignore */ }
     let updated = findOrderById.get(orderId);
     const items = findOrderItems.all(orderId);
     // User notifications for tracking flow:
@@ -2105,6 +2109,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       }
     }
     db.prepare('UPDATE orders SET status = ? WHERE id = ?').run('Cancelled', orderId);
+    try {
+      const { emitOrderEvent } = require('../order');
+      if (emitOrderEvent) emitOrderEvent(orderId, 'status_update', { status: 'Cancelled' });
+    } catch (e) { /* ignore */ }
     const updated = findOrderById.get(orderId);
     const items = findOrderItems.all(orderId);
     logActivity(db, req, {

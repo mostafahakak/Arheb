@@ -836,6 +836,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     const driverName = driverRowForAccept ? driverRowForAccept.name : null;
     const currentStatus = order.status || 'Preparing';
     assignDriverToOrder(db, orderId, driverId, driverName, currentStatus);
+    emitOrderStatus(orderId, currentStatus);
     try {
       const { broadcastDriverOrdersUpdated } = require('../driverPresence');
       broadcastDriverOrdersUpdated(io, { type: 'order_accepted', orderId, driverId });

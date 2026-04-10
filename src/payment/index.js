@@ -70,6 +70,10 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
       db.prepare(
         "UPDATE orders SET paymentType = 'Card', status = 'Waiting confirmation', paymentTranRef = COALESCE(?, paymentTranRef) WHERE id = ?",
       ).run(tranRef || null, orderId);
+      try {
+        const { emitOrderEvent } = require('../order');
+        if (emitOrderEvent) emitOrderEvent(orderId, 'status_update', { status: 'Waiting confirmation' });
+      } catch (_) { /* ignore */ }
     } catch (e) {
       console.error('applyCardPaymentSuccessToOrder:', e);
     }
@@ -78,7 +82,13 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
   function applyCardPaymentSuccessToArhebBox(requestId, tranRef) {
     if (requestId == null) return;
     try {
-      db.prepare("UPDATE arheb_box_requests SET paymentMethod = 'card', status = 'pending' WHERE id = ? AND status = 'pending_payment'").run(requestId);
+      const info = db.prepare("UPDATE arheb_box_requests SET paymentMethod = 'card', status = 'pending' WHERE id = ? AND status = 'pending_payment'").run(requestId);
+      if (info.changes > 0) {
+        try {
+          const { emitArhebBoxEvent } = require('../order');
+          if (emitArhebBoxEvent) emitArhebBoxEvent(requestId, 'status_update', { status: 'pending' });
+        } catch (_) { /* ignore */ }
+      }
     } catch (e) {
       console.error('applyCardPaymentSuccessToArhebBox:', e);
     }
