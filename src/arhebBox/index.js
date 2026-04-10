@@ -1,10 +1,10 @@
 const fcm = require('../fcm');
 const { enrichWithJordanTime } = require('../utils/jordanTime');
-const { arhebBoxDeliveryFeeFromDistanceJod, STORE_MAX_JOD } = require('../utils/deliveryFees');
+const { arhebBoxDeliveryFeeFromDistanceJod, STORE_MAX_JOD, ARHEB_BOX_SERVICE_FEE_JOD } = require('../utils/deliveryFees');
 const { quoteFromPickupDropoff, minAmountJod, distanceKm: haversineKm } = require('./pricing');
 const { isArhebBoxOrdersPaused } = require('./pause');
 
-const SERVICE_FEE_JOD = 0;
+const SERVICE_FEE_JOD = ARHEB_BOX_SERVICE_FEE_JOD;
 const FEES_TAX_RATE = 0.07;
 
 function round3(n) {

@@ -1834,13 +1834,15 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         const boxRows = db.prepare('SELECT * FROM arheb_box_requests' + boxWhere + ' ORDER BY createdAt DESC, id DESC').all(...boxParams);
         boxOrders = boxRows.map((r) => {
           const enriched = enrichArhebBoxRow(r, db);
+          const parcelAmount = enriched.amount != null ? Number(enriched.amount) : 0;
           return enrichWithJordanTime({
             id: r.id,
             orderType: 'arheb_box',
             storeName: 'Arheb Box',
             name: r.userName,
             phoneNumber: r.phoneNumber,
-            totalAmount: enriched.invoice.total,
+            // Same meaning as store rows: line-item / subtotal before delivery (parcel declared value).
+            totalAmount: parcelAmount,
             deliveryFee: enriched.deliveryFee,
             serviceFee: enriched.serviceFee,
             feesTax: enriched.feesTax,

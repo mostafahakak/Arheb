@@ -1,6 +1,9 @@
 /**
  * Store orders: 1 JOD for the first km + 0.1 JOD per additional km, max 3 JOD.
  * Arheb Box: 1 JOD for the first km + 0.5 JOD per additional km, no cap.
+ *
+ * Service fee: applies to store orders only (added to taxable base with delivery).
+ * Arheb Box: service fee is always 0; VAT is 7% on delivery fee only.
  */
 
 function round2(n) {
@@ -8,6 +11,12 @@ function round2(n) {
 }
 
 const STORE_MAX_JOD = 3;
+
+/** Platform service fee (JOD) on store checkout — not charged on Arheb Box. */
+const STORE_ORDER_SERVICE_FEE_JOD = 0.65;
+
+/** Arheb Box has no platform service fee. */
+const ARHEB_BOX_SERVICE_FEE_JOD = 0;
 
 /** @param {number} distanceKm */
 function storeOrderDeliveryFeeJod(distanceKm) {
@@ -26,6 +35,8 @@ function arhebBoxDeliveryFeeFromDistanceJod(distanceKm) {
 
 module.exports = {
   STORE_MAX_JOD,
+  STORE_ORDER_SERVICE_FEE_JOD,
+  ARHEB_BOX_SERVICE_FEE_JOD,
   storeOrderDeliveryFeeJod,
   arhebBoxDeliveryFeeFromDistanceJod,
   round2,

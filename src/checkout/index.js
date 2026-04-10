@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { enrichArhebBoxRow, calcArhebBoxDeliveryFeeJod } = require('../arhebBox');
 const { quoteFromPickupDropoff } = require('../arhebBox/pricing');
-const { storeOrderDeliveryFeeJod, STORE_MAX_JOD } = require('../utils/deliveryFees');
+const { storeOrderDeliveryFeeJod, STORE_MAX_JOD, STORE_ORDER_SERVICE_FEE_JOD } = require('../utils/deliveryFees');
 const { mapOrderItemsRows } = require('../utils/orderItemApi');
 const { enrichWithJordanTime } = require('../utils/jordanTime');
 const { promoAppliesToStore } = require('../utils/promoCode');
@@ -12,7 +12,7 @@ const { canonicalStoreId } = require('../storeFcm');
 
 module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   const { getJsonPath } = require('../config/jsonPaths');
-  const SERVICE_FEE_JOD = 0.65;
+  const SERVICE_FEE_JOD = STORE_ORDER_SERVICE_FEE_JOD;
   const FEES_TAX_RATE = 0.07;
 
   function round3(n) {

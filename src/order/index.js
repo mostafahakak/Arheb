@@ -4,6 +4,7 @@ const { setOrderTrackingIo, emitOrderEvent } = require('./trackingEmitter');
 const { mapOrderItemsRows } = require('../utils/orderItemApi');
 const { enrichWithJordanTime } = require('../utils/jordanTime');
 const { ensureDriverRatingsTable, round2 } = require('../utils/driverCommission');
+const { STORE_ORDER_SERVICE_FEE_JOD } = require('../utils/deliveryFees');
 
 function isDeliveredOrderStatus(status) {
   return String(status || '').trim().toLowerCase() === 'delivered';
@@ -293,7 +294,7 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
           driverPhone = dr?.mobile ?? null;
         } catch (e) { /* ignore */ }
       }
-      const serviceFee = order.serviceFee != null ? Number(order.serviceFee) : 0.65;
+      const serviceFee = order.serviceFee != null ? Number(order.serviceFee) : STORE_ORDER_SERVICE_FEE_JOD;
       const deliveryNum = Number(order.deliveryFee) || 0;
       const feesTax =
         order.feesTax != null
