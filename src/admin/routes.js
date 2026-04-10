@@ -25,6 +25,7 @@ const { getJsonPath } = require('../config/jsonPaths');
 const fcm = require('../fcm');
 const { getActiveFromListWithDistance, getActiveDriversWithLocation } = require('../driverPresence');
 const enrichArhebBoxRow = require('../arhebBox').enrichArhebBoxRow;
+const { getArhebBoxPublicFlags } = require('../arhebBox/flags');
 const { mapOrderItemsRows, formatAddOnsSummary } = require('../utils/orderItemApi');
 const { sanitizeAddOnGroups } = require('../utils/productAddOns');
 const {
@@ -48,6 +49,7 @@ const {
   normalizeDriverCommissionPercent,
   getDriverDeliveryDefaultPercent,
   ensureContactUsDriverDeliveryPercentColumn,
+  ensureContactUsArhebBoxComingSoonColumn,
 } = require('../utils/driverCommission');
 const { getStoreFcmToken } = require('../storeFcm');
 const { enrichWithJordanTime } = require('../utils/jordanTime');
@@ -3543,13 +3545,15 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   app.get('/api/admin/info', auth, requireAdminOrSuper, (req, res) => {
     try {
       ensureContactUsDriverDeliveryPercentColumn(db);
+      ensureContactUsArhebBoxComingSoonColumn(db);
       const row = db
-        .prepare('SELECT email, phone, cliqNumber, driverDeliveryPercent FROM contact_us ORDER BY id DESC LIMIT 1')
+        .prepare('SELECT email, phone, cliqNumber, driverDeliveryPercent, arhebBoxComingSoon FROM contact_us ORDER BY id DESC LIMIT 1')
         .get();
       const fallbackPct = getDriverCommissionSettings(db);
       const defaultPct =
         fallbackPct.type === 'percent' ? fallbackPct.value : 0.65;
       const effectiveDefault = getDriverDeliveryDefaultPercent(db);
+      const arhebBox = getArhebBoxPublicFlags(db);
       if (!row) {
         return res.status(200).json({
           success: true,
@@ -3560,6 +3564,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
               cliqNumber: '',
               driverDeliveryPercent: null,
               driverDeliveryDefaultEffective: effectiveDefault,
+              arhebBoxComingSoon: false,
+              arhebBox,
             },
           },
         });
@@ -3568,6 +3574,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         row.driverDeliveryPercent != null && String(row.driverDeliveryPercent).trim() !== ''
           ? normalizeDriverCommissionPercent(Number(row.driverDeliveryPercent), defaultPct)
           : null;
+      const comingSoonDb = row.arhebBoxComingSoon === 1 || row.arhebBoxComingSoon === true;
       return res.status(200).json({
         success: true,
         data: {
@@ -3577,6 +3584,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             cliqNumber: row.cliqNumber != null ? row.cliqNumber : '',
             driverDeliveryPercent: driverDeliveryPercentAppInfo,
             driverDeliveryDefaultEffective: effectiveDefault,
+            arhebBoxComingSoon: comingSoonDb,
+            arhebBox,
           },
         },
       });
@@ -3595,11 +3604,17 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     const phone = body.phone !== undefined ? String(body.phone).trim() : undefined;
     const cliqNumber = body.cliqNumber !== undefined ? String(body.cliqNumber).trim() : undefined;
     const driverDeliveryPercentRaw = body.driverDeliveryPercent;
+    const comingSoonRaw = body.arhebBoxComingSoon;
+    let comingSoonToStore = null;
+    if (comingSoonRaw !== undefined) {
+      comingSoonToStore = comingSoonRaw === true || comingSoonRaw === 1 || comingSoonRaw === '1' || String(comingSoonRaw).toLowerCase() === 'true' ? 1 : 0;
+    }
     if (email !== undefined && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).json({ success: false, message: 'Invalid email format' });
     }
     try {
       ensureContactUsDriverDeliveryPercentColumn(db);
+      ensureContactUsArhebBoxComingSoonColumn(db);
       let driverPctToStore = null;
       if (driverDeliveryPercentRaw !== undefined) {
         try {
@@ -3613,11 +3628,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       }
       const row = db.prepare('SELECT id, email, phone, cliqNumber FROM contact_us ORDER BY id DESC LIMIT 1').get();
       if (!row) {
-        db.prepare('INSERT INTO contact_us (email, phone, cliqNumber, driverDeliveryPercent) VALUES (?, ?, ?, ?)').run(
+        db.prepare(
+          'INSERT INTO contact_us (email, phone, cliqNumber, driverDeliveryPercent, arhebBoxComingSoon) VALUES (?, ?, ?, ?, ?)',
+        ).run(
           email ?? 'contact@arheb.com',
           phone ?? '+201234567890',
           cliqNumber ?? '',
           driverPctToStore,
+          comingSoonToStore != null ? comingSoonToStore : 0,
         );
       } else {
         db.prepare(`
@@ -3626,6 +3644,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             phone = COALESCE(?, phone),
             cliqNumber = COALESCE(?, cliqNumber),
             driverDeliveryPercent = CASE WHEN ? = 1 THEN ? ELSE driverDeliveryPercent END,
+            arhebBoxComingSoon = CASE WHEN ? = 1 THEN ? ELSE arhebBoxComingSoon END,
             updatedAt = CURRENT_TIMESTAMP
           WHERE id = ?
         `).run(
@@ -3634,13 +3653,15 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           cliqNumber ?? null,
           driverDeliveryPercentRaw !== undefined ? 1 : 0,
           driverPctToStore,
+          comingSoonToStore !== null ? 1 : 0,
+          comingSoonToStore !== null ? comingSoonToStore : 0,
           row.id,
         );
       }
       const fallbackPct = getDriverCommissionSettings(db);
       const defaultPct = fallbackPct.type === 'percent' ? fallbackPct.value : 0.65;
       const updated = db
-        .prepare('SELECT email, phone, cliqNumber, driverDeliveryPercent FROM contact_us ORDER BY id DESC LIMIT 1')
+        .prepare('SELECT email, phone, cliqNumber, driverDeliveryPercent, arhebBoxComingSoon FROM contact_us ORDER BY id DESC LIMIT 1')
         .get();
       const driverDeliveryPercentAppInfo =
         updated.driverDeliveryPercent != null && String(updated.driverDeliveryPercent).trim() !== ''
@@ -3654,6 +3675,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         summary: 'Updated app info / contact',
         details: { keys: Object.keys(body) },
       });
+      const comingSoonDb = updated.arhebBoxComingSoon === 1 || updated.arhebBoxComingSoon === true;
       return res.status(200).json({
         success: true,
         data: {
@@ -3663,6 +3685,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             cliqNumber: updated.cliqNumber != null ? updated.cliqNumber : '',
             driverDeliveryPercent: driverDeliveryPercentAppInfo,
             driverDeliveryDefaultEffective: getDriverDeliveryDefaultPercent(db),
+            arhebBoxComingSoon: comingSoonDb,
+            arhebBox: getArhebBoxPublicFlags(db),
           },
         },
       });

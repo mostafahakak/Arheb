@@ -77,6 +77,15 @@ function ensureContactUsDriverDeliveryPercentColumn(db) {
   }
 }
 
+/** App info: show Arheb Box as “coming soon” in GET /api/contact (also set via PATCH /api/admin/info). */
+function ensureContactUsArhebBoxComingSoonColumn(db) {
+  try {
+    db.exec(`ALTER TABLE contact_us ADD COLUMN arhebBoxComingSoon INTEGER DEFAULT 0`);
+  } catch (e) {
+    /* exists */
+  }
+}
+
 /**
  * Default driver share of delivery fee (0–1) when `drivers.commissionPercent` is NULL:
  * use **App info** (`contact_us.driverDeliveryPercent`); if unset, fall back to global commission settings (percent mode) or 0.65.
@@ -261,6 +270,7 @@ module.exports = {
   ensureDriverRatingsTable,
   ensureDriverCommissionPercentColumn,
   ensureContactUsDriverDeliveryPercentColumn,
+  ensureContactUsArhebBoxComingSoonColumn,
   getDriverDeliveryDefaultPercent,
   normalizeDriverCommissionPercent,
   parseDriverCommissionPercentForStorage,

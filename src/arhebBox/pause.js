@@ -14,4 +14,4 @@ function isArhebBoxOrdersPaused() {
   return envTruthy('ARHEB_BOX_PAUSED');
 }
 
-module.exports = { isArhebBoxOrdersPaused };
+module.exports = { isArhebBoxOrdersPaused, envTruthy };

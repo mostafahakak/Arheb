@@ -1,4 +1,10 @@
-const { getDriverDeliveryDefaultPercent, normalizeDriverCommissionPercent, getDriverCommissionSettings } = require('../utils/driverCommission');
+const {
+  getDriverDeliveryDefaultPercent,
+  normalizeDriverCommissionPercent,
+  getDriverCommissionSettings,
+  ensureContactUsArhebBoxComingSoonColumn,
+} = require('../utils/driverCommission');
+const { getArhebBoxPublicFlags } = require('../arhebBox/flags');
 
 module.exports = function attachContactRoutes(app, db, authenticateRequest) {
   // Create contact_us table
@@ -17,6 +23,7 @@ module.exports = function attachContactRoutes(app, db, authenticateRequest) {
   try {
     db.exec('ALTER TABLE contact_us ADD COLUMN driverDeliveryPercent REAL');
   } catch (e) { /* column already exists */ }
+  ensureContactUsArhebBoxComingSoonColumn(db);
 
   // Add dummy data if table is empty
   const checkContactData = db.prepare('SELECT COUNT(*) as count FROM contact_us');
@@ -75,7 +82,8 @@ module.exports = function attachContactRoutes(app, db, authenticateRequest) {
             cliqNumber: contact.cliqNumber != null ? contact.cliqNumber : '',
             driverDeliveryPercent: driverDeliveryPercentAppInfo,
             driverDeliveryDefaultEffective: getDriverDeliveryDefaultPercent(db),
-          }
+          },
+          arhebBox: getArhebBoxPublicFlags(db),
         },
         timestamp: new Date().toISOString()
       });

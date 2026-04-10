@@ -49,6 +49,9 @@ JOFOTARA_SELLER_NAME=your-company-name
 
 # Pause new Arheb Box orders (quote, POST /api/arheb-box, card initiate). Values: true | 1 | yes (case-insensitive). Omit or set false to allow orders.
 # ARHEB_BOX_PAUSED=true
+
+# Show Arheb Box as “coming soon” in GET /api/contact → data.arhebBox.comingSoon (OR with DB flag from PATCH /api/admin/info). Not hardcoded in app code.
+# ARHEB_BOX_COMING_SOON=true
 ```
 
 - **Run locally**:
@@ -2616,6 +2619,8 @@ console.log(data.data.popup);
 
 **Pausing new orders:** Set **`ARHEB_BOX_PAUSED=true`** (or `1` / `yes`) in the server environment. While paused, **`POST /api/arheb-box/quote`**, **`POST /api/arheb-box`**, and **`POST /api/payment/arheb-box/initiate`** respond with **503** and `code: "ARHEB_BOX_PAUSED"`. Existing requests still work (**GET** customer/admin, driver accept/complete, admin assign). Card payments that already succeeded still create the request via the payment callback (`allowWhenPaused`). Remove the variable or set it to `false` to turn Arheb Box back on.
 
+**“Coming soon” flag (for the app UI, not hardcoded):** **`GET /api/contact`** returns **`data.arhebBox`**: `{ comingSoon, paused, acceptingNewOrders }`. **`comingSoon`** is **`true`** if **`ARHEB_BOX_COMING_SOON`** is set on the server **or** **`arhebBoxComingSoon`** is enabled in **`PATCH /api/admin/info`** (stored in **`contact_us`**). Use it to show a badge or hide entry points; it does **not** block APIs by itself (use **`ARHEB_BOX_PAUSED`** for that).
+
 Requests are stored in `arheb_box_requests` with **sender/receiver** contacts, pickup & dropoff (lat/lng + address + `mapsUrl`), **payment** (`paymentMethod`, `whoPays`: `sender` | `receiver`), **trip amount** (`amount` in JOD), **distance** and **minimum price** (`distanceKm`, `minAmountJod`). **Arheb Box pricing is separate from store orders:** minimum parcel amount / delivery fee basis is **1 JOD for the first km + 0.5 JOD per additional km** (no cap). **`minAmountJod`** from **`POST /api/arheb-box/quote`** matches that formula. The client must call **quote** first, then send an `amount` ≥ `minAmountJod`. After a driver is assigned, **customer** `GET /api/arheb-box/:id` and list/detail responses include **`driverPhone`**. Order objects and Arheb Box rows may include **`createdAtJordan`** (human-readable **Asia/Amman** time) alongside UTC `createdAt`.
 
 **Store vs Arheb Box (backend rules):** **Delivery fee** — store orders use **1 JOD first km + 0.1 JOD per extra km, max 3 JOD** (`storeOrderDeliveryFeeJod`). Arheb Box uses **1 JOD first km + 0.5 JOD per extra km, no cap** (`arhebBoxDeliveryFeeFromDistanceJod`). **Service fee** — store orders use **`STORE_ORDER_SERVICE_FEE_JOD` (0.65 JOD)** in checkout; Arheb Box uses **`ARHEB_BOX_SERVICE_FEE_JOD` (0)**. **VAT 7%** — on store orders it applies to **delivery + service**; on Arheb Box **delivery fee only**. Constants live in `src/utils/deliveryFees.js`. Admin unified **`GET /api/admin/orders`** uses **`totalAmount`** = cart subtotal for stores and **parcel `amount`** for Arheb Box rows; **`deliveryFee` / `serviceFee` / `feesTax` / `invoice`** on each row reflect the correct tier.
@@ -2690,6 +2695,11 @@ Retrieves contact information (email and phone).
       "cliqNumber": "",
       "driverDeliveryPercent": 0.65,
       "driverDeliveryDefaultEffective": 0.65
+    },
+    "arhebBox": {
+      "comingSoon": false,
+      "paused": false,
+      "acceptingNewOrders": true
     }
   },
   "timestamp": "2024-01-15T10:30:00Z"
@@ -2698,6 +2708,7 @@ Retrieves contact information (email and phone).
 
 - **`driverDeliveryPercent`**: App-wide default **share of the delivery fee** for drivers when **`drivers.commissionPercent`** is unset (`null`–`1` or `0`–`100` style values normalized on read). Mirrors **GET/PATCH /api/admin/info**.
 - **`driverDeliveryDefaultEffective`**: Resolved default after fallbacks (App info → legacy global [driver commission settings](#admin-driver-commission)).
+- **`arhebBox`**: Feature flags for the mobile app — **`comingSoon`** (DB and/or env), **`paused`** (env **`ARHEB_BOX_PAUSED`** only), **`acceptingNewOrders`** (`!paused`).
 
 ---
 
@@ -3112,8 +3123,8 @@ Same backing row as public contact info, plus **default driver delivery percent*
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/admin/info` | Returns `{ email, phone, cliqNumber, driverDeliveryPercent, driverDeliveryDefaultEffective }`. |
-| PATCH | `/api/admin/info` | Body: any of `email`, `phone`, `cliqNumber`, **`driverDeliveryPercent`**. Missing fields unchanged. |
+| GET | `/api/admin/info` | Returns `{ email, phone, cliqNumber, driverDeliveryPercent, driverDeliveryDefaultEffective, arhebBoxComingSoon, arhebBox }`. |
+| PATCH | `/api/admin/info` | Body: any of `email`, `phone`, `cliqNumber`, **`driverDeliveryPercent`**, **`arhebBoxComingSoon`** (boolean). Missing fields unchanged. |
 
 ### Admin Home Banners & Offers
 
@@ -3771,7 +3782,7 @@ For issues or questions, please contact: `contact@arheb.app`
 - **Checkout quote:** **`POST /api/checkout/quote-fees`** uses **store** delivery only: **1 JOD first km + 0.1 JOD per extra km, max 3 JOD**; tax **7% × (delivery + service fee)**; **`deliveryFeeMaxJod`** in response.
 - **Arheb Box:** Quote / minimum amount uses **1 JOD first km + 0.5 JOD per extra km, no cap** (different from store orders). **`GET /api/admin/arheb-box/:id`** for dashboard detail.
 - **Drivers:** **`commissionPercent`** on driver rows; **`GET /api/admin/drivers/export`**; **`GET /api/admin/drivers/active-map`** includes **`currentStoreOrderId`** and **`currentArhebBoxRequestId`** per driver.
-- **App info:** **`GET/PATCH /api/admin/info`** includes **`driverDeliveryPercent`** and **`driverDeliveryDefaultEffective`**; **`GET /api/contact`** exposes the same defaults for clients.
+- **App info:** **`GET/PATCH /api/admin/info`** includes **`driverDeliveryPercent`**, **`driverDeliveryDefaultEffective`**, **`arhebBoxComingSoon`**, and **`arhebBox`** (effective flags); **`GET /api/contact`** exposes contact fields and **`arhebBox`** for clients.
 - **Home admin:** **`GET/PATCH /api/admin/home/offers`** (and existing banners endpoints) edit **`GET /api/home`** `offers` / `banners`.
 - **Timestamps:** Orders and related payloads often include **`createdAtJordan`** (**Asia/Amman**) for display.
 
@@ -3795,8 +3806,8 @@ For issues or questions, please contact: `contact@arheb.app`
 | GET | `/api/admin/orders/:orderId/driver-map` | Admin (Store Admin: own store orders only) | **Track** payload: `deliveryLocation`, `storeLocation`, `storeName`, assigned **`driver`** (id, name, mobile, vehicle, photo, **`liveLocation`**), `tracking`, **`mapPreviewUrl`**, `driverAssignmentStatus`, `driverSearchStartedAt`. |
 | GET | `/api/admin/orders/:orderId/tracking` | Admin (Store Admin: own store orders only) | Returns order tracking state for the dashboard: `orderId`, `orderStatus`, `driverId`, `driverName`, `isTracking`, `driverConnected`, `lastLocation` (latitude, longitude, timestamp). Used with Socket.IO for live driver tracking. |
 | GET | `/api/driver/requests` | Driver | Returns pending delivery requests for the authenticated driver. Each request includes full order payload (store name/address/mapsUrl, client address, total, delivery fee, item count, etc.). Driver accepts via existing `POST /api/driver/orders/accept`. |
-| GET | `/api/admin/info` | Admin / SuperAdmin | Returns app-level contact info: `{ email, phone, cliqNumber, driverDeliveryPercent, driverDeliveryDefaultEffective }`. |
-| PATCH | `/api/admin/info` | Admin / SuperAdmin | Updates app contact info. Body: any subset of `{ email, phone, cliqNumber, driverDeliveryPercent }`. Missing fields are left unchanged. |
+| GET | `/api/admin/info` | Admin / SuperAdmin | Returns app-level contact info including **`arhebBoxComingSoon`** (DB) and **`arhebBox`** (`{ comingSoon, paused, acceptingNewOrders }`). |
+| PATCH | `/api/admin/info` | Admin / SuperAdmin | Updates app contact info. Body: any subset of `{ email, phone, cliqNumber, driverDeliveryPercent, arhebBoxComingSoon }`. Missing fields are left unchanged. |
 | POST | `/api/admin/stores/:storeId/products/import` | Admin / SuperAdmin / Store Admin (per-store) | Imports products for a store from an Excel file. Expects `multipart/form-data` with field `file` (`.xlsx`/`.xls`). Store Admin rows go to the pending products queue; Admin/SuperAdmin rows are imported directly. Rows with an `id` column that already exists for the store are **skipped** (no duplicate). Export includes `id` column. |
 | GET | `/api/admin/stores/:storeId/products/export` | Admin / SuperAdmin / Store Admin (per-store) | Exports all products for the given store as an Excel file. Columns include `id`, `nameEn`, `nameAr`, `price`, `discount`, `unit`, `category`, `description`, `stock`, `isAvailable`. |
 | POST | `/api/admin/orders/:orderId/reject` | Admin / SuperAdmin / Store Admin (own store) | **Store Admin:** cancel only while **`Pending payment`**, **`Waiting cliq confirmation`**, or **`Waiting confirmation`**. **Admin/SuperAdmin:** same pre-confirmation rule as before (pending / waiting / cliq). Sets status to `Cancelled`. |
