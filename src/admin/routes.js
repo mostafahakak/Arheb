@@ -2787,6 +2787,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       if (run.changes === 0) {
         return res.status(404).json({ success: false, message: 'Arheb box request not found' });
       }
+      try {
+        const { emitArhebBoxEvent } = require('../order');
+        if (emitArhebBoxEvent) emitArhebBoxEvent(id, 'status_update', { status: nextStatus });
+      } catch (e) { /* ignore */ }
       fcm.sendToToken(rowBefore.fcmToken, 'Arheb Box update', `Your request #${id} is now: ${nextStatus}`, null, { type: 'arheb_box_status', requestId: String(id), status: nextStatus }).catch(() => {});
       if (!rowBefore.fcmToken) {
         fcm.sendToUserByPhone(db, rowBefore.phoneNumber, 'Arheb Box update', `Your request #${id} is now: ${nextStatus}`, null, { type: 'arheb_box_status', requestId: String(id), status: nextStatus }).catch(() => {});
@@ -2827,6 +2831,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       const driver = db.prepare('SELECT id, name FROM drivers WHERE id = ? AND isBlocked = 0').get(driverIdNum);
       if (!driver) return res.status(404).json({ success: false, message: 'Driver not found or blocked' });
       db.prepare('UPDATE arheb_box_requests SET driverId = ?, driverName = ?, status = ? WHERE id = ?').run(driverIdNum, driver.name, 'assigned', id);
+      try { const { emitArhebBoxEvent } = require('../order'); if (emitArhebBoxEvent) emitArhebBoxEvent(id, 'status_update', { status: 'assigned' }); } catch (e) { /* ignore */ }
       fcm.sendToDriver(db, driverIdNum, 'New Arheb Box delivery', `Request #${id} has been assigned to you. Open the app to accept.`, { type: 'arheb_box_assigned', requestId: String(id) }).catch(() => {});
       const updated = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(id);
       logActivity(db, req, {
@@ -2863,6 +2868,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
 
       if (row.status === 'pending' || row.status === 'pending_payment') {
         db.prepare("UPDATE arheb_box_requests SET status = 'confirmed' WHERE id = ?").run(id);
+        try { const { emitArhebBoxEvent } = require('../order'); if (emitArhebBoxEvent) emitArhebBoxEvent(id, 'status_update', { status: 'confirmed' }); } catch (e) { /* ignore */ }
       }
       const updatedRow = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(id);
       if (String(updatedRow?.status || '').toLowerCase() === 'confirmed') {

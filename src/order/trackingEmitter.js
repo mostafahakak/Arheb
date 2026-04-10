@@ -9,13 +9,25 @@ function setOrderTrackingIo(io) {
   _io = io;
 }
 
+function getTrackingIo() {
+  return _io;
+}
+
 function emitOrderEvent(orderId, event, data) {
   if (_io && orderId != null) {
     _io.to(`order:${orderId}`).emit(event, { orderId, ...data });
   }
 }
 
+function emitArhebBoxEvent(requestId, event, data) {
+  if (_io && requestId != null) {
+    _io.to(`arheb_box:${requestId}`).emit(event, { requestId, ...data });
+  }
+}
+
 module.exports = {
   setOrderTrackingIo,
+  getTrackingIo,
   emitOrderEvent,
+  emitArhebBoxEvent,
 };

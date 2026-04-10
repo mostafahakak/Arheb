@@ -65,6 +65,13 @@ function emitOrderStatus(orderId, status) {
   }
 }
 
+function emitBoxStatus(requestId, status) {
+  try {
+    const { emitArhebBoxEvent } = require('../order');
+    if (emitArhebBoxEvent) emitArhebBoxEvent(requestId, 'status_update', { status });
+  } catch (e) { /* ignore */ }
+}
+
 function loadStores() {
   try {
     const path = getJsonPath('stores_listing_response.json');
@@ -1010,6 +1017,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     const driverRow = findDriverById.get(driverId);
     const driverName = driverRow ? driverRow.name : null;
     db.prepare('UPDATE arheb_box_requests SET driverId = ?, driverName = ?, status = ? WHERE id = ?').run(driverId, driverName, 'in_progress', requestId);
+    emitBoxStatus(requestId, 'in_progress');
 
     const pseudoOrderId = -requestId;
     try {
@@ -1088,6 +1096,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
       });
     }
     db.prepare('UPDATE arheb_box_requests SET status = ? WHERE id = ?').run('delivered', requestId);
+    emitBoxStatus(requestId, 'delivered');
     try {
       const { submitJofotaraInvoiceForArhebBox } = require('../jofotara');
       submitJofotaraInvoiceForArhebBox(db, requestId).catch((e) => {

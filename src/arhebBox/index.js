@@ -166,6 +166,7 @@ function ensureArhebBoxTable(db) {
     'ALTER TABLE arheb_box_requests ADD COLUMN einvoiceSubmittedAt TEXT',
     'ALTER TABLE arheb_box_requests ADD COLUMN distanceKm REAL',
     'ALTER TABLE arheb_box_requests ADD COLUMN minAmountJod REAL',
+    'ALTER TABLE arheb_box_requests ADD COLUMN nearArrivalNotified INTEGER DEFAULT 0',
   ];
   for (const sql of alters) {
     try { db.exec(sql); } catch (e) { /* exists */ }
@@ -354,6 +355,46 @@ module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest) {
       });
     } catch (e) {
       console.error('Arheb box get error:', e);
+      return res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  });
+
+  app.get('/api/arheb-box/:id/tracking', authenticateRequest, (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
+      const row = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(id);
+      if (!row) return res.status(404).json({ success: false, message: 'Request not found' });
+      if (row.phoneNumber !== req.user.phoneNumber) {
+        return res.status(403).json({ success: false, message: 'Access denied' });
+      }
+      let driverPhone = null;
+      if (row.driverId != null) {
+        try {
+          const dr = db.prepare('SELECT mobile FROM drivers WHERE id = ?').get(row.driverId);
+          driverPhone = dr?.mobile ?? null;
+        } catch (_) { /* ignore */ }
+      }
+      const { getArhebBoxTrackingState } = require('../order');
+      const tracking = getArhebBoxTrackingState(id);
+      return res.status(200).json({
+        success: true,
+        message: tracking?.lastLocation ? 'Tracking data retrieved successfully' : 'No tracking data available yet',
+        data: {
+          requestId: id,
+          status: row.status,
+          driverPhone,
+          isTracking: !!(tracking?.lastLocation),
+          location: tracking?.lastLocation
+            ? { longitude: tracking.lastLocation.longitude, latitude: tracking.lastLocation.latitude, timestamp: tracking.lastLocation.timestamp }
+            : null,
+          driverConnected: !!(tracking?.driverSocket),
+          customerConnected: !!(tracking?.customerSocket),
+        },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (e) {
+      console.error('Arheb box tracking error:', e);
       return res.status(500).json({ success: false, message: 'Internal server error' });
     }
   });

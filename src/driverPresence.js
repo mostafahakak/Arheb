@@ -182,7 +182,7 @@ module.exports = function attachDriverPresence(io, db, JWT_SECRET) {
       } catch (e) {
         /* ignore */
       }
-      // Notify customer once when driver is within 0.5km of delivery location.
+      // Notify customer once when driver is within 0.5km of delivery location (store orders).
       try {
         const rows = db.prepare(`
           SELECT id, phoneNumber, addressLat, addressLong, nearArrivalNotified
@@ -218,6 +218,46 @@ module.exports = function attachDriverPresence(io, db, JWT_SECRET) {
         }
       } catch (e) {
         /* ignore near-arrival notifications */
+      }
+
+      // Notify customer once when driver is within 0.5km of dropoff location (Arheb Box).
+      try {
+        const boxRows = db.prepare(`
+          SELECT id, phoneNumber, dropoff, nearArrivalNotified
+          FROM arheb_box_requests
+          WHERE driverId = ?
+            AND LOWER(status) = 'in_progress'
+        `).all(driverId);
+        for (const box of boxRows) {
+          if (Number(box.nearArrivalNotified || 0) === 1) continue;
+          let dropoff;
+          try { dropoff = JSON.parse(box.dropoff); } catch (_) { continue; }
+          const dLat = Number(dropoff?.latitude);
+          const dLon = Number(dropoff?.longitude);
+          if (!Number.isFinite(dLat) || !Number.isFinite(dLon)) continue;
+          const distanceKm = haversineKm(lat, lon, dLat, dLon);
+          if (distanceKm <= 0.5) {
+            db.prepare('UPDATE arheb_box_requests SET nearArrivalNotified = 1 WHERE id = ?').run(box.id);
+            fcm.sendToUserByPhone(
+              db,
+              box.phoneNumber,
+              'Your parcel is almost there!',
+              `Arheb Box #${box.id} is about ${round3(distanceKm)} km away and will arrive soon.`,
+              null,
+              {
+                requestId: String(box.id),
+                status: 'in_progress',
+                type: 'arheb_box_near_arrival',
+                distanceKm: String(round3(distanceKm)),
+                screen: 'arheb_box_details',
+                deepLink: `arheb://arheb-box/${box.id}`,
+                click_action: 'FLUTTER_NOTIFICATION_CLICK',
+              }
+            ).catch(() => {});
+          }
+        }
+      } catch (e) {
+        /* ignore box near-arrival — table may not exist yet */
       }
       socket.emit('location_ack', { success: true });
     });
