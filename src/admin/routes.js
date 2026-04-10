@@ -2732,6 +2732,42 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     }
   });
 
+  // ——— Delete Arheb Box request permanently (SuperAdmin only) ———
+  app.delete('/api/admin/arheb-box/:id', auth, (req, res) => {
+    if (req.admin.role !== ROLES.SUPERADMIN) {
+      return res.status(403).json({ success: false, message: 'Only SuperAdmin can delete Arheb Box requests' });
+    }
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
+    try {
+      const row = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(id);
+      if (!row) return res.status(404).json({ success: false, message: 'Arheb box request not found' });
+      try {
+        db.prepare('DELETE FROM driver_requests WHERE orderId = ?').run(id);
+      } catch (e) {
+        if (!e.message || !e.message.includes('no such table')) throw e;
+      }
+      try {
+        db.prepare('DELETE FROM payment_transactions WHERE arhebBoxRequestId = ?').run(id);
+      } catch (e) { /* ignore */ }
+      db.prepare('DELETE FROM arheb_box_requests WHERE id = ?').run(id);
+      logActivity(db, req, {
+        action: 'delete',
+        resourceType: 'arheb_box',
+        resourceId: String(id),
+        storeScopeId: null,
+        summary: `Arheb Box #${id} deleted permanently`,
+      });
+      return res.status(200).json({ success: true, message: `Arheb Box request #${id} deleted permanently` });
+    } catch (e) {
+      if (e.message && e.message.includes('no such table')) {
+        return res.status(404).json({ success: false, message: 'Arheb box request not found' });
+      }
+      console.error('Arheb box delete error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to delete request' });
+    }
+  });
+
   app.patch('/api/admin/arheb-box/:id', auth, (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid id' });

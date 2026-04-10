@@ -102,7 +102,7 @@ A separate **Admin Dashboard** (React + Next.js) is in the `dashboard/` folder. 
   - **Super Admin**: Full access; manage all stores, orders, categories, admins (including other SuperAdmins), and **Arheb Box** requests.
   - **Admin**: Same as Super Admin but **cannot** add or remove SuperAdmins.
   - **Store Admin**: Sees only their assigned store; can edit store details, add/edit/delete products, and view orders for that store.
-- **Arheb Box**: Admins can list requests, open **detail** (**GET /api/admin/arheb-box/:id**), update status, assign drivers, and track pricing fields. Requests are submitted by users with Bearer token and stored in the database.
+- **Arheb Box**: Admins can list requests, open **detail** (**GET /api/admin/arheb-box/:id**), update status, assign drivers, and track pricing fields. **SuperAdmin** can **permanently delete** a request (**DELETE /api/admin/arheb-box/:id**), same idea as deleting a store order. Requests are submitted by users with Bearer token and stored in the database.
 - **English and Arabic** (language switcher in the UI).
 - **Driver earnings:** Each driver can have a **per-driver commission percent** (`commissionPercent` on the driver row). If unset, the effective rate comes from **App info** — **`driverDeliveryPercent`** on **GET/PATCH /api/admin/info** (same screen as email/phone/Cliq). If that is also unset, the legacy **global driver commission** setting (**GET/PATCH /api/admin/settings/driver-commission**) is used. The **Drivers** list links to a **driver profile** page (`/dashboard/drivers/profile/?id=`) with filters (status, date range), delivered-order profit totals, and full customer **driver ratings** (stars + notes). Drivers only see their **average rating** in the driver app, not individual reviews.
 
@@ -2660,7 +2660,7 @@ Returns full request including **`driverPhone`** when a driver is assigned.
 
 **Success response** includes `paymentMethod`, `whoPays`, `amount`, `distanceKm`, `minAmountJod`, pickup/dropoff with `mapsUrl`, sender/receiver phones and names.
 
-**Admin (dashboard):** `GET /api/admin/arheb-box`, **`GET /api/admin/arheb-box/:id`** (single request, same enriched shape as list), `PATCH /api/admin/arheb-box/:id`, `POST /api/admin/arheb-box/:id/assign-driver`. Admin/driver responses include pricing fields and **`driverPhone`** when applicable.
+**Admin (dashboard):** `GET /api/admin/arheb-box`, **`GET /api/admin/arheb-box/:id`** (single request, same enriched shape as list), `PATCH /api/admin/arheb-box/:id`, `POST /api/admin/arheb-box/:id/assign-driver`. **SuperAdmin:** **`DELETE /api/admin/arheb-box/:id`** removes the request (and related `driver_requests` / `payment_transactions` rows). Admin/driver responses include pricing fields and **`driverPhone`** when applicable.
 
 **Driver:** `GET /api/driver/arheb-box` includes **`amount`**, **`paymentMethod`**, **`whoPays`**, **`distanceKm`**, **`minAmountJod`**, sender/receiver phones, and maps links.
 
@@ -3054,6 +3054,7 @@ Order list and order detail responses include **`driverId`** and **`driverName`*
 |--------|----------|-------------|
 | GET | `/api/admin/arheb-box` | List all Arheb box requests (id, phoneNumber, userName, pickup, dropoff, notes, status, createdAt). Sorted by `createdAt DESC, id DESC`. |
 | GET | `/api/admin/arheb-box/:id` | Single request by id; **`data.request`** uses the same enrichment as list/detail (pricing, **`createdAtJordan`**, driver fields, etc.). |
+| DELETE | `/api/admin/arheb-box/:id` | **SuperAdmin only.** Permanently deletes the request; cleans **`driver_requests`** where `orderId` equals this id (box driver-offer rows) and **`payment_transactions`** with **`arhebBoxRequestId`** = id. |
 | PATCH | `/api/admin/arheb-box/:id` | Update request status. Body: `{ "status": "confirmed" }` (e.g. pending, confirmed, in_progress, delivered, cancelled). |
 | POST | `/api/admin/arheb-box/:id/assign-driver` | Body `{ "driverId" }` — assigns driver, notifies via FCM. |
 
