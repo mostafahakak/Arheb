@@ -113,7 +113,9 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
       try {
         const arhebBox = JSON.parse(existing.pendingArhebBoxJson);
         const phoneNumber = existing.pendingPhoneNumber || arhebBox?.phoneNumber;
-        const createRes = createArhebBoxRequest(db, phoneNumber, arhebBox, 'pending');
+        const createRes = createArhebBoxRequest(db, phoneNumber, arhebBox, 'pending', {
+          allowWhenPaused: true,
+        });
         if (!createRes.ok) {
           console.error('finalizePendingEntitiesForTransaction arheb-box failed:', createRes.message);
           return;

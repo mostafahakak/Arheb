@@ -46,6 +46,9 @@ JOFOTARA_SECRET_KEY=your-secret-key
 JOFOTARA_INCOME_SOURCE=your-income-source-sequence
 JOFOTARA_SELLER_TIN=your-tax-id-number
 JOFOTARA_SELLER_NAME=your-company-name
+
+# Pause new Arheb Box orders (quote, POST /api/arheb-box, card initiate). Values: true | 1 | yes (case-insensitive). Omit or set false to allow orders.
+# ARHEB_BOX_PAUSED=true
 ```
 
 - **Run locally**:
@@ -1516,7 +1519,11 @@ Retrieves **all** orders for the authenticated user. Every status is included (e
 
 Each order includes `status`, `storeId`, `driverId`, `driverName` (when assigned), and `items`.
 
-The same response also includes **`arhebBoxRequests`**: all **Arheb Box** requests created by this user (same shape as `GET /api/arheb-box/:id` — pickup/dropoff with `mapsUrl`, `amount`, `paymentMethod`, `whoPays`, `driverPhone` when assigned, etc.), plus **`arhebBoxCount`**.
+The same response also includes **`arhebBoxRequests`**: all **Arheb Box** requests for this user (matched by JWT `phoneNumber` and/or `userId`), same shape as `GET /api/arheb-box/:id` (pickup/dropoff with `mapsUrl`, `amount`, `paymentMethod`, `whoPays`, `driverPhone` when assigned, etc.), plus **`arhebBoxCount`**.
+
+**`combinedOrders`** merges **store** rows and **Arheb Box** rows in one list, sorted by **`createdAt`** (newest first). Each item is the usual store order or box object with an extra **`orderType`**: `"store"` or `"arheb_box"`. Use this for a single “My orders” screen; **`orders`** and **`arhebBoxRequests`** remain for clients that already consume them separately. **`combinedCount`** is `combinedOrders.length`.
+
+Store rows are loaded when **`orders.userId`** or **`orders.phoneNumber`** matches the authenticated user (covers legacy rows that only stored phone).
 
 **Success Response (200):**
 ```json
@@ -1538,7 +1545,9 @@ The same response also includes **`arhebBoxRequests`**: all **Arheb Box** reques
     ],
     "count": 5,
     "arhebBoxRequests": [],
-    "arhebBoxCount": 0
+    "arhebBoxCount": 0,
+    "combinedOrders": [],
+    "combinedCount": 5
   },
   "timestamp": "2024-01-15T10:30:00Z"
 }
@@ -2605,16 +2614,18 @@ console.log(data.data.popup);
 
 ## Arheb Box
 
+**Pausing new orders:** Set **`ARHEB_BOX_PAUSED=true`** (or `1` / `yes`) in the server environment. While paused, **`POST /api/arheb-box/quote`**, **`POST /api/arheb-box`**, and **`POST /api/payment/arheb-box/initiate`** respond with **503** and `code: "ARHEB_BOX_PAUSED"`. Existing requests still work (**GET** customer/admin, driver accept/complete, admin assign). Card payments that already succeeded still create the request via the payment callback (`allowWhenPaused`). Remove the variable or set it to `false` to turn Arheb Box back on.
+
 Requests are stored in `arheb_box_requests` with **sender/receiver** contacts, pickup & dropoff (lat/lng + address + `mapsUrl`), **payment** (`paymentMethod`, `whoPays`: `sender` | `receiver`), **trip amount** (`amount` in JOD), **distance** and **minimum price** (`distanceKm`, `minAmountJod`). **Arheb Box pricing is separate from store orders:** minimum parcel amount / delivery fee basis is **1 JOD for the first km + 0.5 JOD per additional km** (no cap). **`minAmountJod`** from **`POST /api/arheb-box/quote`** matches that formula. The client must call **quote** first, then send an `amount` ≥ `minAmountJod`. After a driver is assigned, **customer** `GET /api/arheb-box/:id` and list/detail responses include **`driverPhone`**. Order objects and Arheb Box rows may include **`createdAtJordan`** (human-readable **Asia/Amman** time) alongside UTC `createdAt`.
 
-### Arheb Box quote (distance & minimum amount)
+### Arheb Box quote (distance, minimum amount, delivery fee & tax)
 
 **Endpoint:** `POST /api/arheb-box/quote`  
 **Authentication:** Not required
 
-**Body:** same `pickup` / `dropoff` shape as submit (each with `latitude`, `longitude`).
+**Body:** same `pickup` / `dropoff` shape as submit (each with `latitude`, `longitude`). Optional **`weightKg`** (number, ≥ 0) for parity with submit; delivery fee is currently **distance-only** (same as create).
 
-**Response:** `{ distanceKm, minAmountJod, currency: "JOD", pricingNote }` — `minAmountJod` is the minimum **parcel amount** (JOD) for the route, computed with the **1 + 0.5×(km−1)** rule (no maximum).
+**Response:** `distanceKm`, `minAmountJod`, **`deliveryFee`**, **`feesTax`** (7% VAT on delivery fee only), **`serviceFee`** (always `0` for Arheb Box), **`invoice`** (`deliveryFee`, `serviceFee`, `feesTax`, `feesTaxRate`, `total`), `currency: "JOD"`, `pricingNote`. `minAmountJod` is the minimum **parcel amount** (JOD) for the route, matching the delivery-fee formula **1 + 0.5×(km−1)** (no maximum).
 
 ### Get Arheb Box request by ID (customer)
 

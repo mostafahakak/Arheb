@@ -2,6 +2,7 @@ const fcm = require('../fcm');
 const { enrichWithJordanTime } = require('../utils/jordanTime');
 const { arhebBoxDeliveryFeeFromDistanceJod, STORE_MAX_JOD } = require('../utils/deliveryFees');
 const { quoteFromPickupDropoff, minAmountJod, distanceKm: haversineKm } = require('./pricing');
+const { isArhebBoxOrdersPaused } = require('./pause');
 
 const SERVICE_FEE_JOD = 0;
 const FEES_TAX_RATE = 0.07;
@@ -183,6 +184,14 @@ function createArhebBoxRequest(db, phoneNumber, body, statusOverride, options = 
     opts = statusOverride;
     desiredStatus = undefined;
   }
+  if (isArhebBoxOrdersPaused() && opts.allowWhenPaused !== true) {
+    return {
+      ok: false,
+      statusCode: 503,
+      message: 'Arheb Box orders are temporarily unavailable.',
+      code: 'ARHEB_BOX_PAUSED',
+    };
+  }
   const user = db.prepare('SELECT * FROM users WHERE phoneNumber = ?').get(phoneNumber);
   const userName = user?.name || null;
 
@@ -282,10 +291,17 @@ function createArhebBoxRequest(db, phoneNumber, body, statusOverride, options = 
 module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest) {
   ensureArhebBoxTable(db);
 
-  // Quote: distance + minimum JOD (no auth)
+  // Quote: distance, minimum parcel amount, delivery fee, and VAT on delivery (no auth)
   app.post('/api/arheb-box/quote', (req, res) => {
     try {
-      const { pickup, dropoff } = req.body || {};
+      if (isArhebBoxOrdersPaused()) {
+        return res.status(503).json({
+          success: false,
+          message: 'Arheb Box orders are temporarily unavailable.',
+          code: 'ARHEB_BOX_PAUSED',
+        });
+      }
+      const { pickup, dropoff, weightKg } = req.body || {};
       if (!pickup || !dropoff) {
         return res.status(400).json({ success: false, message: 'pickup and dropoff are required' });
       }
@@ -296,14 +312,23 @@ module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest) {
           message: 'pickup and dropoff must include valid latitude and longitude',
         });
       }
+      const weightKgNum = Math.max(0, safeNumber(weightKg, 0));
+      const deliveryFee = calcDeliveryFeeFromDistanceAndWeight(q.distanceKm, weightKgNum);
+      const serviceFee = SERVICE_FEE_JOD;
+      const feesTax = calcFeesTaxJod(deliveryFee);
+      const invoice = buildInvoice(deliveryFee, serviceFee);
       return res.status(200).json({
         success: true,
         data: {
           distanceKm: q.distanceKm,
           minAmountJod: q.minAmountJod,
+          deliveryFee,
+          feesTax,
+          serviceFee,
+          invoice,
           currency: 'JOD',
           pricingNote:
-            'Arheb Box delivery fee: 1 JOD for the first km + 0.5 JOD per additional km (no cap). Amount offered must be at least minAmountJod.',
+            'Arheb Box: delivery fee 1 JOD first km + 0.5 JOD per additional km (no cap). Service fee 0. VAT 7% applies to delivery fee only. Amount offered must be at least minAmountJod.',
         },
         timestamp: new Date().toISOString(),
       });
@@ -364,3 +389,4 @@ module.exports.calcArhebBoxDeliveryFeeJod = calcArhebBoxDeliveryFeeJod;
 module.exports.calcDeliveryFeeFromDistanceAndWeight = calcDeliveryFeeFromDistanceAndWeight;
 /** @deprecated Store-order max (3 JOD). Arheb Box delivery fee has no cap. */
 module.exports.MAX_DELIVERY_FEE_JOD = STORE_MAX_JOD;
+module.exports.isArhebBoxOrdersPaused = isArhebBoxOrdersPaused;

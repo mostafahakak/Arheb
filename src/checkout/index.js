@@ -215,7 +215,9 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
 
   const findUserByPhone = db.prepare('SELECT * FROM users WHERE phoneNumber = ?');
   const findOrderById = db.prepare('SELECT * FROM orders WHERE id = ?');
-  const findOrdersByUserId = db.prepare('SELECT * FROM orders WHERE userId = ? ORDER BY createdAt DESC');
+  const findOrdersByUserId = db.prepare(
+    'SELECT * FROM orders WHERE userId = ? OR phoneNumber = ? ORDER BY createdAt DESC, id DESC',
+  );
   
   // Promo code queries
   const findPromoCodeByName = db.prepare('SELECT * FROM promo_codes WHERE name = ?');
@@ -750,9 +752,10 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   app.get('/api/checkout', authenticateRequest, (req, res) => {
     try {
       const userId = req.user.userId || req.user.phoneNumber;
+      const phone = req.user.phoneNumber || userId;
 
-      // Fetch all orders for this user
-      const orders = findOrdersByUserId.all(userId);
+      // Fetch all store orders for this user (match legacy rows by phone or userId)
+      const orders = findOrdersByUserId.all(userId, phone);
 
       // Fetch items for each order
       const findOrderItems = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
@@ -802,12 +805,26 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       let arhebBoxRequests = [];
       try {
         const boxRows = db
-          .prepare('SELECT * FROM arheb_box_requests WHERE phoneNumber = ? ORDER BY createdAt DESC, id DESC')
-          .all(userId);
+          .prepare(
+            `SELECT * FROM arheb_box_requests
+             WHERE phoneNumber = ? OR phoneNumber = ?
+             ORDER BY createdAt DESC, id DESC`,
+          )
+          .all(userId, phone);
         arhebBoxRequests = boxRows.map((r) => enrichArhebBoxRow(r, db));
       } catch (e) {
         if (!e.message || !e.message.includes('no such table')) throw e;
       }
+
+      const combinedOrders = [
+        ...ordersWithItems.map((o) => ({ ...o, orderType: 'store' })),
+        ...arhebBoxRequests.map((r) => ({ ...r, orderType: 'arheb_box' })),
+      ].sort((a, b) => {
+        const ta = new Date(a.createdAt || 0).getTime();
+        const tb = new Date(b.createdAt || 0).getTime();
+        if (tb !== ta) return tb - ta;
+        return (Number(b.id) || 0) - (Number(a.id) || 0);
+      });
 
       return res.status(200).json({
         success: true,
@@ -817,6 +834,8 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
           count: ordersWithItems.length,
           arhebBoxRequests,
           arhebBoxCount: arhebBoxRequests.length,
+          combinedOrders,
+          combinedCount: combinedOrders.length,
         },
         timestamp: new Date().toISOString()
       });
