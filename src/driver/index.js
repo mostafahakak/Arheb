@@ -1088,6 +1088,12 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
       });
     }
     db.prepare('UPDATE arheb_box_requests SET status = ? WHERE id = ?').run('delivered', requestId);
+    try {
+      const { submitJofotaraInvoiceForArhebBox } = require('../jofotara');
+      submitJofotaraInvoiceForArhebBox(db, requestId).catch((e) => {
+        console.error(`[jofotara] Async submission failed for arheb box ${requestId}:`, e?.message || e);
+      });
+    } catch (e) { /* ignore */ }
     fcm.sendToToken(row.fcmToken, 'Arheb Box delivered', `Your request #${requestId} has been delivered.`, null, { type: 'arheb_box_status', requestId: String(requestId), status: 'delivered' }).catch(() => {});
     if (!row.fcmToken) {
       fcm.sendToUserByPhone(db, row.phoneNumber, 'Arheb Box delivered', `Your request #${requestId} has been delivered.`, null, { type: 'arheb_box_status', requestId: String(requestId), status: 'delivered' }).catch(() => {});

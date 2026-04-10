@@ -3,7 +3,7 @@ const { enrichWithJordanTime } = require('../utils/jordanTime');
 const { arhebBoxDeliveryFeeFromDistanceJod, STORE_MAX_JOD } = require('../utils/deliveryFees');
 const { quoteFromPickupDropoff, minAmountJod, distanceKm: haversineKm } = require('./pricing');
 
-const SERVICE_FEE_JOD = 0.65;
+const SERVICE_FEE_JOD = 0;
 const FEES_TAX_RATE = 0.07;
 
 function round3(n) {
@@ -31,12 +31,12 @@ function calcDeliveryFeeFromDistanceAndWeight(distanceKm, _weightKg) {
   return arhebBoxDeliveryFeeFromDistanceJod(d);
 }
 
-function calcFeesTaxJod(deliveryFeeJod, serviceFeeJod) {
-  return round2(FEES_TAX_RATE * (safeNumber(deliveryFeeJod, 0) + safeNumber(serviceFeeJod, 0)));
+function calcFeesTaxJod(deliveryFeeJod) {
+  return round2(FEES_TAX_RATE * safeNumber(deliveryFeeJod, 0));
 }
 
 function buildInvoice(deliveryFeeJod, serviceFeeJod) {
-  const taxJod = calcFeesTaxJod(deliveryFeeJod, serviceFeeJod);
+  const taxJod = calcFeesTaxJod(deliveryFeeJod);
   return {
     currency: 'JOD',
     deliveryFee: round2(safeNumber(deliveryFeeJod, 0)),
@@ -77,7 +77,7 @@ function enrichRequestRow(row, db) {
         ? calcDeliveryFeeFromDistanceAndWeight(dKm, weightKg)
         : calcArhebBoxDeliveryFeeJod(weightKg);
   const serviceFee = row.serviceFee != null ? Number(row.serviceFee) : SERVICE_FEE_JOD;
-  const feesTax = row.feesTax != null ? Number(row.feesTax) : calcFeesTaxJod(deliveryFee, serviceFee);
+  const feesTax = row.feesTax != null ? Number(row.feesTax) : calcFeesTaxJod(deliveryFee);
   const base = {
     id: row.id,
     phoneNumber: row.phoneNumber ?? null,
@@ -103,6 +103,11 @@ function enrichRequestRow(row, db) {
     driverId: row.driverId ?? null,
     driverName: row.driverName ?? null,
     driverPhone,
+    einvoiceStatus: row.einvoiceStatus || null,
+    einvoiceQR: row.einvoiceQR || null,
+    einvoiceUUID: row.einvoiceUUID || null,
+    einvoiceError: row.einvoiceError || null,
+    einvoiceSubmittedAt: row.einvoiceSubmittedAt || null,
     createdAt: row.createdAt,
   };
   return enrichWithJordanTime(base, ['createdAt']);
@@ -128,8 +133,13 @@ function ensureArhebBoxTable(db) {
       amount REAL,
       weightKg REAL DEFAULT 0,
       deliveryFee REAL DEFAULT 0,
-      serviceFee REAL DEFAULT 0.65,
+      serviceFee REAL DEFAULT 0,
       feesTax REAL DEFAULT 0,
+      einvoiceStatus TEXT,
+      einvoiceQR TEXT,
+      einvoiceUUID TEXT,
+      einvoiceError TEXT,
+      einvoiceSubmittedAt TEXT,
       distanceKm REAL,
       minAmountJod REAL,
       createdAt TEXT DEFAULT CURRENT_TIMESTAMP
@@ -146,8 +156,13 @@ function ensureArhebBoxTable(db) {
     'ALTER TABLE arheb_box_requests ADD COLUMN amount REAL',
     'ALTER TABLE arheb_box_requests ADD COLUMN weightKg REAL DEFAULT 0',
     'ALTER TABLE arheb_box_requests ADD COLUMN deliveryFee REAL DEFAULT 0',
-    'ALTER TABLE arheb_box_requests ADD COLUMN serviceFee REAL DEFAULT 0.65',
+    'ALTER TABLE arheb_box_requests ADD COLUMN serviceFee REAL DEFAULT 0',
     'ALTER TABLE arheb_box_requests ADD COLUMN feesTax REAL DEFAULT 0',
+    'ALTER TABLE arheb_box_requests ADD COLUMN einvoiceStatus TEXT',
+    'ALTER TABLE arheb_box_requests ADD COLUMN einvoiceQR TEXT',
+    'ALTER TABLE arheb_box_requests ADD COLUMN einvoiceUUID TEXT',
+    'ALTER TABLE arheb_box_requests ADD COLUMN einvoiceError TEXT',
+    'ALTER TABLE arheb_box_requests ADD COLUMN einvoiceSubmittedAt TEXT',
     'ALTER TABLE arheb_box_requests ADD COLUMN distanceKm REAL',
     'ALTER TABLE arheb_box_requests ADD COLUMN minAmountJod REAL',
   ];
@@ -161,7 +176,13 @@ function ensureArhebBoxTable(db) {
  * payment module (POST /api/payment/arheb-box/initiate).
  * @returns {{ ok: boolean, statusCode?: number, message?: string, requestId?: number, row?: object }}
  */
-function createArhebBoxRequest(db, phoneNumber, body, statusOverride) {
+function createArhebBoxRequest(db, phoneNumber, body, statusOverride, options = {}) {
+  let opts = options || {};
+  let desiredStatus = statusOverride;
+  if (typeof statusOverride === 'object' && statusOverride !== null) {
+    opts = statusOverride;
+    desiredStatus = undefined;
+  }
   const user = db.prepare('SELECT * FROM users WHERE phoneNumber = ?').get(phoneNumber);
   const userName = user?.name || null;
 
@@ -170,7 +191,7 @@ function createArhebBoxRequest(db, phoneNumber, body, statusOverride) {
     receiverPhone, receiverName, paymentMethod, whoPays, amount, weightKg,
   } = body || {};
   const fcmTokenStr = typeof fcmToken === 'string' ? fcmToken.trim() || null : null;
-  if (fcmTokenStr) {
+  if (fcmTokenStr && opts.dryRun !== true) {
     try { db.prepare('UPDATE users SET fcmToken = ? WHERE phoneNumber = ?').run(fcmTokenStr, phoneNumber); } catch (e) { /* ignore */ }
   }
 
@@ -206,7 +227,37 @@ function createArhebBoxRequest(db, phoneNumber, body, statusOverride) {
   const weightKgNum = Math.max(0, safeNumber(weightKg, 0));
   const computedDeliveryFee = calcDeliveryFeeFromDistanceAndWeight(quote.distanceKm, weightKgNum);
   const computedServiceFee = SERVICE_FEE_JOD;
-  const computedFeesTax = calcFeesTaxJod(computedDeliveryFee, computedServiceFee);
+  const computedFeesTax = calcFeesTaxJod(computedDeliveryFee);
+
+  const insertPayload = {
+    phoneNumber, userName,
+    pickup: pickupJson, dropoff: dropoffJson,
+    notes: notesStr, status: desiredStatus || 'pending',
+    fcmToken: fcmTokenStr,
+    receiverPhone: recvPhoneStr, receiverName: recvNameStr,
+    paymentMethod: payMethod, whoPays: who,
+    amount: amountNum, weightKg: round3(weightKgNum),
+    deliveryFee: computedDeliveryFee, serviceFee: computedServiceFee,
+    feesTax: computedFeesTax, distanceKm: quote.distanceKm, minAmountJod: minJod,
+  };
+
+  if (opts.dryRun === true) {
+    return {
+      ok: true,
+      row: {
+        ...insertPayload,
+        id: null,
+        pickup: pickupJson,
+        dropoff: dropoffJson,
+      },
+      preview: {
+        deliveryFee: computedDeliveryFee,
+        serviceFee: computedServiceFee,
+        feesTax: computedFeesTax,
+        total: buildInvoice(computedDeliveryFee, computedServiceFee).total,
+      },
+    };
+  }
 
   const insertRequest = db.prepare(`
     INSERT INTO arheb_box_requests (
@@ -222,17 +273,7 @@ function createArhebBoxRequest(db, phoneNumber, body, statusOverride) {
     )
   `);
 
-  const result = insertRequest.run({
-    phoneNumber, userName,
-    pickup: pickupJson, dropoff: dropoffJson,
-    notes: notesStr, status: statusOverride || 'pending',
-    fcmToken: fcmTokenStr,
-    receiverPhone: recvPhoneStr, receiverName: recvNameStr,
-    paymentMethod: payMethod, whoPays: who,
-    amount: amountNum, weightKg: round3(weightKgNum),
-    deliveryFee: computedDeliveryFee, serviceFee: computedServiceFee,
-    feesTax: computedFeesTax, distanceKm: quote.distanceKm, minAmountJod: minJod,
-  });
+  const result = insertRequest.run(insertPayload);
 
   const row = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(result.lastInsertRowid);
   return { ok: true, requestId: row.id, row };

@@ -49,6 +49,9 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
   try { db.exec('ALTER TABLE payment_transactions ADD COLUMN orderId INTEGER'); } catch (e) { /* exists */ }
   try { db.exec('ALTER TABLE payment_transactions ADD COLUMN token TEXT'); } catch (e) { /* exists */ }
   try { db.exec('ALTER TABLE payment_transactions ADD COLUMN arhebBoxRequestId INTEGER'); } catch (e) { /* exists */ }
+  try { db.exec('ALTER TABLE payment_transactions ADD COLUMN pendingCheckoutJson TEXT'); } catch (e) { /* exists */ }
+  try { db.exec('ALTER TABLE payment_transactions ADD COLUMN pendingArhebBoxJson TEXT'); } catch (e) { /* exists */ }
+  try { db.exec('ALTER TABLE payment_transactions ADD COLUMN pendingPhoneNumber TEXT'); } catch (e) { /* exists */ }
 
   ensureArhebBoxTable(db);
 
@@ -81,6 +84,48 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
     }
   }
 
+  function finalizePendingEntitiesForTransaction(existing, tranRef) {
+    if (!existing || existing.orderId || existing.arhebBoxRequestId) return;
+    if (existing.pendingCheckoutJson) {
+      try {
+        const createOrderFromCheckoutBody = attachCheckoutRoutes.createOrderFromCheckoutBody;
+        if (typeof createOrderFromCheckoutBody !== 'function') return;
+        const checkout = JSON.parse(existing.pendingCheckoutJson);
+        const userId = existing.pendingPhoneNumber || checkout?.phoneNumber;
+        const createRes = createOrderFromCheckoutBody(userId, checkout, {
+          forcePaymentType: 'Card',
+          initialStatusOverride: 'Waiting confirmation',
+        });
+        if (!createRes.ok) {
+          console.error('finalizePendingEntitiesForTransaction checkout failed:', createRes.message);
+          return;
+        }
+        const orderId = createRes.orderId;
+        db.prepare('UPDATE orders SET paymentTranRef = COALESCE(?, paymentTranRef), paymentCartId = COALESCE(?, paymentCartId) WHERE id = ?').run(tranRef || null, existing.cartId || null, orderId);
+        db.prepare('UPDATE payment_transactions SET orderId = ?, pendingCheckoutJson = NULL, pendingPhoneNumber = NULL WHERE tranRef = ?').run(orderId, tranRef);
+        applyCardPaymentSuccessToOrder(orderId, tranRef);
+      } catch (e) {
+        console.error('finalizePendingEntitiesForTransaction checkout exception:', e);
+      }
+      return;
+    }
+    if (existing.pendingArhebBoxJson) {
+      try {
+        const arhebBox = JSON.parse(existing.pendingArhebBoxJson);
+        const phoneNumber = existing.pendingPhoneNumber || arhebBox?.phoneNumber;
+        const createRes = createArhebBoxRequest(db, phoneNumber, arhebBox, 'pending');
+        if (!createRes.ok) {
+          console.error('finalizePendingEntitiesForTransaction arheb-box failed:', createRes.message);
+          return;
+        }
+        db.prepare('UPDATE payment_transactions SET arhebBoxRequestId = ?, pendingArhebBoxJson = NULL, pendingPhoneNumber = NULL WHERE tranRef = ?').run(createRes.requestId, tranRef);
+        applyCardPaymentSuccessToArhebBox(createRes.requestId, tranRef);
+      } catch (e) {
+        console.error('finalizePendingEntitiesForTransaction arheb-box exception:', e);
+      }
+    }
+  }
+
   // --- Initiate Arheb Box card payment ---
   app.post('/api/payment/arheb-box/initiate', authenticateRequest, async (req, res) => {
     try {
@@ -91,22 +136,19 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
 
       const phoneNumber = req.user.phoneNumber;
       const boxBody = { ...arhebBox, paymentMethod: 'card' };
-      const createResult = createArhebBoxRequest(db, phoneNumber, boxBody, 'pending_payment');
-      if (!createResult.ok) {
-        return res.status(createResult.statusCode || 400).json({ success: false, message: createResult.message, ...(createResult.data ? { data: createResult.data } : {}) });
+      const dryRun = createArhebBoxRequest(db, phoneNumber, boxBody, { dryRun: true });
+      if (!dryRun.ok) {
+        return res.status(dryRun.statusCode || 400).json({ success: false, message: dryRun.message, ...(dryRun.data ? { data: dryRun.data } : {}) });
       }
-      const requestId = createResult.requestId;
-      const enriched = enrichArhebBoxRow(createResult.row, db);
-      const amount = enriched.invoice.total;
+      const amount = Number(dryRun.preview?.total);
 
       if (!Number.isFinite(amount) || amount <= 0) {
-        try { db.prepare('DELETE FROM arheb_box_requests WHERE id = ?').run(requestId); } catch (e) { /* ignore */ }
         return res.status(400).json({ success: false, message: 'Invalid total amount' });
       }
 
-      const cartId = `ARHEBBOX-${requestId}-${Date.now()}`;
+      const cartId = `ARHEBBOX-PENDING-${Date.now()}`;
       const cartCurrency = currency || CART_CURRENCY;
-      const cartDescription = `Arheb Box #${requestId}`;
+      const cartDescription = 'Arheb Box payment';
       const callbackUrl = BASE_URL ? `${BASE_URL}/api/payment/callback` : '';
       const returnUrl = BASE_URL ? `${BASE_URL}/api/payment/return` : '';
 
@@ -123,7 +165,7 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
       if (callbackUrl) payload.callback = callbackUrl;
       if (returnUrl) payload.return = returnUrl;
 
-      const cName = customerName || enriched.userName || undefined;
+      const cName = customerName || dryRun.row?.userName || undefined;
       const cEmail = customerEmail || undefined;
       const cPhone = customerPhone || phoneNumber || undefined;
       if (cName || cEmail || cPhone) {
@@ -138,7 +180,6 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
         const response = await axios.post(`${PAYTABS_API_URL}/payment/request`, payload, { headers: paytabsHeaders(), timeout: 30000 });
         data = response.data;
       } catch (error) {
-        try { db.prepare('DELETE FROM arheb_box_requests WHERE id = ?').run(requestId); } catch (e) { /* ignore */ }
         const errData = error.response?.data;
         console.error('Payment arheb-box initiate error:', errData || error.message);
         return res.status(error.response?.status || 500).json({ success: false, message: errData?.message || error.message || 'Payment request failed' });
@@ -147,21 +188,25 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
       const tranRef = data.tran_ref || null;
 
       db.prepare(`
-        INSERT INTO payment_transactions (arhebBoxRequestId, tranRef, cartId, cartAmount, cartCurrency, tranType, status, redirectUrl, rawResponse)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(requestId, tranRef, cartId, amount, cartCurrency, 'sale',
+        INSERT INTO payment_transactions (arhebBoxRequestId, tranRef, cartId, cartAmount, cartCurrency, tranType, status, redirectUrl, rawResponse, pendingArhebBoxJson, pendingPhoneNumber)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(null, tranRef, cartId, amount, cartCurrency, 'sale',
         data.redirect_url ? 'pending_redirect' : (data.payment_result?.response_status === 'A' ? 'completed' : 'initiated'),
-        data.redirect_url || null, JSON.stringify(data));
+        data.redirect_url || null, JSON.stringify(data), JSON.stringify(boxBody), phoneNumber);
 
       const paymentBlock = { tranRef, cartId, cartAmount: amount, cartCurrency };
 
       if (data.payment_result && data.payment_result.response_status === 'A') {
-        applyCardPaymentSuccessToArhebBox(requestId, tranRef);
-        const updatedRow = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
+        const existing = db.prepare('SELECT * FROM payment_transactions WHERE tranRef = ?').get(tranRef);
+        finalizePendingEntitiesForTransaction(existing, tranRef);
+        const updatedTx = db.prepare('SELECT * FROM payment_transactions WHERE tranRef = ?').get(tranRef);
+        const updatedRow = updatedTx?.arhebBoxRequestId != null
+          ? db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(updatedTx.arhebBoxRequestId)
+          : null;
         return res.status(201).json({
           success: true,
           message: 'Arheb Box request created and payment completed',
-          data: { request: enrichArhebBoxRow(updatedRow, db), payment: { ...paymentBlock, status: 'completed', paymentResult: data.payment_result } },
+          data: { request: updatedRow ? enrichArhebBoxRow(updatedRow, db) : null, payment: { ...paymentBlock, status: 'completed', paymentResult: data.payment_result } },
           timestamp: new Date().toISOString(),
         });
       }
@@ -169,16 +214,16 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
       if (data.redirect_url) {
         return res.status(201).json({
           success: true,
-          message: 'Arheb Box request created; redirect to complete card payment',
-          data: { request: enriched, payment: { ...paymentBlock, status: 'pending_redirect', redirectUrl: data.redirect_url, redirectMethod: 'GET' } },
+          message: 'Payment initiated; Arheb Box request will be created after successful payment',
+          data: { request: null, payment: { ...paymentBlock, status: 'pending_redirect', redirectUrl: data.redirect_url, redirectMethod: 'GET' } },
           timestamp: new Date().toISOString(),
         });
       }
 
       return res.status(201).json({
         success: true,
-        message: 'Arheb Box request created; payment submitted',
-        data: { request: enriched, payment: { ...paymentBlock, status: 'initiated', rawResponse: data } },
+        message: 'Payment submitted; Arheb Box request will be created after successful payment',
+        data: { request: null, payment: { ...paymentBlock, status: 'initiated', rawResponse: data } },
         timestamp: new Date().toISOString(),
       });
     } catch (error) {
@@ -219,25 +264,24 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
       delete checkoutBody.paymentType;
 
       const userId = req.user.userId || req.user.phoneNumber;
-      const coResult = createOrderFromCheckoutBody(userId, checkoutBody, {
+      const dryRun = createOrderFromCheckoutBody(userId, checkoutBody, {
         forcePaymentType: 'Card',
         initialStatusOverride: 'Pending payment',
+        dryRun: true,
       });
 
-      if (!coResult.ok) {
-        return res.status(coResult.statusCode).json({ success: false, message: coResult.message });
+      if (!dryRun.ok) {
+        return res.status(dryRun.statusCode).json({ success: false, message: dryRun.message });
       }
 
-      const { orderId, order, checkoutPayload } = coResult;
-      const amount = Number(order.totalAmount);
+      const amount = Number(dryRun.preview?.totalAmount);
       if (!Number.isFinite(amount) || amount <= 0) {
-        deleteOrderCascade(db, orderId);
         return res.status(400).json({ success: false, message: 'Invalid order totalAmount' });
       }
 
-      const cartId = `ORDER-${orderId}-${Date.now()}`;
+      const cartId = `ORDER-PENDING-${Date.now()}`;
       const cartCurrency = currency || CART_CURRENCY;
-      const cartDescription = description || `Arheb Order #${orderId}`;
+      const cartDescription = description || 'Arheb checkout payment';
 
       const callbackUrl = BASE_URL ? `${BASE_URL}/api/payment/callback` : '';
       const returnUrl = BASE_URL ? `${BASE_URL}/api/payment/return` : '';
@@ -256,9 +300,9 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
       if (callbackUrl) payload.callback = callbackUrl;
       if (returnUrl) payload.return = returnUrl;
 
-      const cName = customerName || order.name || undefined;
+      const cName = customerName || dryRun.preview?.name || undefined;
       const cEmail = customerEmail || undefined;
-      const cPhone = customerPhone || order.phoneNumber || undefined;
+      const cPhone = customerPhone || dryRun.preview?.phoneNumber || undefined;
       if (cName || cEmail || cPhone || customerAddress || customerCity || customerCountry) {
         payload.customer_details = {};
         if (cName) payload.customer_details.name = cName;
@@ -277,7 +321,6 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
         });
         data = response.data;
       } catch (error) {
-        deleteOrderCascade(db, orderId);
         const errData = error.response?.data;
         console.error('Payment initiate error:', errData || error.message);
         return res.status(error.response?.status || 500).json({
@@ -289,27 +332,11 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
 
       const tranRef = data.tran_ref || null;
 
-      try {
-        db.prepare('UPDATE orders SET paymentTranRef = ?, paymentCartId = ? WHERE id = ?').run(tranRef, cartId, orderId);
-      } catch (e) {
-        console.error('Failed to save payment refs on order:', e);
-      }
-
-      const orderRow = findOrderById.get(orderId);
-      const checkoutOut = {
-        ...checkoutPayload,
-        order: {
-          ...checkoutPayload.order,
-          paymentTranRef: orderRow?.paymentTranRef ?? tranRef,
-          paymentCartId: orderRow?.paymentCartId ?? cartId,
-        },
-      };
-
       db.prepare(`
-        INSERT INTO payment_transactions (orderId, tranRef, cartId, cartAmount, cartCurrency, tranType, status, redirectUrl, rawResponse)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO payment_transactions (orderId, tranRef, cartId, cartAmount, cartCurrency, tranType, status, redirectUrl, rawResponse, pendingCheckoutJson, pendingPhoneNumber)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        orderId,
+        null,
         tranRef,
         cartId,
         amount,
@@ -318,6 +345,8 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
         data.redirect_url ? 'pending_redirect' : (data.payment_result?.response_status === 'A' ? 'completed' : 'initiated'),
         data.redirect_url || null,
         JSON.stringify(data),
+        JSON.stringify(checkoutBody),
+        req.user.phoneNumber || null,
       );
 
       const paymentBlock = {
@@ -328,16 +357,15 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
       };
 
       if (data.payment_result && data.payment_result.response_status === 'A') {
-        try {
-          db.prepare("UPDATE orders SET status = 'Waiting confirmation' WHERE id = ?").run(orderId);
-        } catch (e) { /* ignore */ }
-        const o2 = findOrderById.get(orderId);
-        checkoutOut.order = { ...checkoutOut.order, status: o2?.status ?? 'Waiting confirmation' };
+        const existing = db.prepare('SELECT * FROM payment_transactions WHERE tranRef = ?').get(tranRef);
+        finalizePendingEntitiesForTransaction(existing, tranRef);
+        const tx = db.prepare('SELECT * FROM payment_transactions WHERE tranRef = ?').get(tranRef);
+        const createdOrder = tx?.orderId != null ? findOrderById.get(tx.orderId) : null;
         return res.status(201).json({
           success: true,
-          message: 'Order created and payment completed successfully',
+          message: 'Payment completed successfully',
           data: {
-            checkout: checkoutOut,
+            checkout: createdOrder ? { orderId: createdOrder.id, order: createdOrder } : null,
             payment: {
               ...paymentBlock,
               status: 'completed',
@@ -352,9 +380,9 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
       if (data.redirect_url) {
         return res.status(201).json({
           success: true,
-          message: 'Order created; redirect customer to complete card payment',
+          message: 'Payment initiated; order will be created after successful payment',
           data: {
-            checkout: checkoutOut,
+            checkout: null,
             payment: {
               ...paymentBlock,
               status: 'pending_redirect',
@@ -368,9 +396,9 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
 
       return res.status(201).json({
         success: true,
-        message: 'Order created; payment request submitted',
+        message: 'Payment request submitted; order will be created after successful payment',
         data: {
-          checkout: checkoutOut,
+          checkout: null,
           payment: {
             ...paymentBlock,
             status: 'initiated',
@@ -427,6 +455,7 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
           } else if (existing.orderId) {
             applyCardPaymentSuccessToOrder(existing.orderId, tranRef);
           }
+          finalizePendingEntitiesForTransaction(existing, tranRef);
         }
       } else {
         db.prepare(`
@@ -461,6 +490,7 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
           } else if (existing.orderId) {
             applyCardPaymentSuccessToOrder(existing.orderId, tranRef);
           }
+          finalizePendingEntitiesForTransaction(existing, tranRef);
         }
       }
     }
@@ -520,6 +550,7 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
           } else if (existing.orderId) {
             applyCardPaymentSuccessToOrder(existing.orderId, tranRef);
           }
+          finalizePendingEntitiesForTransaction(existing, tranRef);
         }
       }
 

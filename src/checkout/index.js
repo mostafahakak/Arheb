@@ -476,7 +476,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       }
     }
 
-    if (fcmToken != null && typeof fcmToken === 'string' && phoneNumber) {
+    if (options.dryRun !== true && fcmToken != null && typeof fcmToken === 'string' && phoneNumber) {
       const trimmed = fcmToken.trim();
       if (trimmed) {
         try {
@@ -533,6 +533,28 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
     }
     const computedServiceFee = SERVICE_FEE_JOD;
     const computedFeesTax = calcFeesTaxJod(computedDeliveryFee, computedServiceFee);
+
+    if (options.dryRun === true) {
+      return {
+        ok: true,
+        dryRun: true,
+        preview: {
+          userId,
+          phoneNumber,
+          name: name || null,
+          totalAmount,
+          deliveryFee: computedDeliveryFee,
+          serviceFee: computedServiceFee,
+          feesTax: computedFeesTax,
+          weightKg: round3(weightKgNum),
+          status: initialStatus,
+          paymentType: normalizedPaymentType,
+          storeId: finalStoreId,
+          promoCode: finalPromoCode,
+          discount: finalDiscount,
+        },
+      };
+    }
 
     let orderId;
     try {

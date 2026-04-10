@@ -55,23 +55,28 @@ function esc(str) {
 
 /**
  * Build UBL 2.1 XML for a JOFOTARA Income Bill.
- * Two invoice lines: (1) Delivery Fee, (2) Service Fee — both taxed at 7%.
+ * Default invoice lines: (1) Delivery Fee, (2) Service Fee — taxed at 7%.
  */
-function buildInvoiceXml(order, invoiceUUID) {
+function buildInvoiceXml(order, invoiceUUID, options = {}) {
+  const {
+    idPrefix = 'ARHEB',
+    notePrefix = 'Order',
+    includeServiceLine = true,
+  } = options || {};
   const INCOME_SOURCE = process.env.JOFOTARA_INCOME_SOURCE || '';
   const SELLER_TIN = process.env.JOFOTARA_SELLER_TIN || '';
   const SELLER_NAME = process.env.JOFOTARA_SELLER_NAME || '';
 
   const { date } = jordanNow();
-  const invoiceId = `ARHEB-${order.id}`;
+  const invoiceId = `${idPrefix}-${order.id}`;
   const activitySerial = incomeSourceDigits(INCOME_SOURCE);
 
   const deliveryFee = Number(order.deliveryFee) || 0;
-  const serviceFee = Number(order.serviceFee) || 0.65;
+  const serviceFee = includeServiceLine ? (Number(order.serviceFee) || 0) : 0;
   const taxableBase = round9(deliveryFee + serviceFee);
 
   const deliveryTax = round9(deliveryFee * TAX_RATE);
-  const serviceTax = round9(serviceFee * TAX_RATE);
+  const serviceTax = includeServiceLine ? round9(serviceFee * TAX_RATE) : 0;
   const taxAmount = round9(deliveryTax + serviceTax);
 
   const deliveryInclTax = round9(deliveryFee + deliveryTax);
@@ -104,7 +109,7 @@ function buildInvoiceXml(order, invoiceUUID) {
     `<cbc:UUID>${esc(invoiceUUID)}</cbc:UUID>`,
     `<cbc:IssueDate>${esc(date)}</cbc:IssueDate>`,
     `<cbc:InvoiceTypeCode name="${paymentCode}">388</cbc:InvoiceTypeCode>`,
-    `<cbc:Note>Order #${order.id}</cbc:Note>`,
+    `<cbc:Note>${esc(notePrefix)} #${order.id}</cbc:Note>`,
     `<cbc:DocumentCurrencyCode>${DOC_CCY}</cbc:DocumentCurrencyCode>`,
     `<cbc:TaxCurrencyCode>${DOC_CCY}</cbc:TaxCurrencyCode>`,
     `<cac:AdditionalDocumentReference><cbc:ID>ICV</cbc:ID><cbc:UUID>${order.id}</cbc:UUID></cac:AdditionalDocumentReference>`,
@@ -114,7 +119,7 @@ function buildInvoiceXml(order, invoiceUUID) {
     `<cac:TaxTotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(taxAmount)}</cbc:TaxAmount></cac:TaxTotal>`,
     `<cac:LegalMonetaryTotal><cbc:TaxExclusiveAmount currencyID="${AMT_CCY}">${f9(taxableBase)}</cbc:TaxExclusiveAmount><cbc:TaxInclusiveAmount currencyID="${AMT_CCY}">${f9(totalWithTax)}</cbc:TaxInclusiveAmount><cbc:PayableAmount currencyID="${AMT_CCY}">${f9(payableAmount)}</cbc:PayableAmount></cac:LegalMonetaryTotal>`,
     lineXml('1', 'Delivery Fee', 1, deliveryFee, 0, deliveryTax, deliveryInclTax),
-    lineXml('2', 'Service Fee', 1, serviceFee, 0, serviceTax, serviceInclTax),
+    includeServiceLine ? lineXml('2', 'Service Fee', 1, serviceFee, 0, serviceTax, serviceInclTax) : '',
     '</Invoice>',
   ];
 
@@ -212,4 +217,81 @@ async function submitJofotaraInvoice(db, orderId) {
   }
 }
 
-module.exports = { submitJofotaraInvoice, buildInvoiceXml };
+/**
+ * Submit e-invoice for delivered Arheb Box request.
+ */
+async function submitJofotaraInvoiceForArhebBox(db, requestId) {
+  const CLIENT_ID = process.env.JOFOTARA_CLIENT_ID || '';
+  const SECRET_KEY = process.env.JOFOTARA_SECRET_KEY || '';
+
+  if (!CLIENT_ID || !SECRET_KEY) {
+    const msg = 'JOFOTARA credentials not configured';
+    try {
+      db.prepare(`UPDATE arheb_box_requests SET einvoiceStatus = 'skipped', einvoiceError = ? WHERE id = ?`).run(msg, requestId);
+    } catch (e) { /* ignore */ }
+    return { ok: false, error: msg, uuid: '' };
+  }
+
+  const activitySerial = incomeSourceDigits(process.env.JOFOTARA_INCOME_SOURCE || '');
+  if (!activitySerial) {
+    const msg = 'JOFOTARA_INCOME_SOURCE must be digits only (activity serial, 1–15 digits)';
+    try {
+      db.prepare(`UPDATE arheb_box_requests SET einvoiceStatus = 'skipped', einvoiceError = ? WHERE id = ?`).run(msg, requestId);
+    } catch (e) { /* ignore */ }
+    return { ok: false, error: msg, uuid: '' };
+  }
+
+  const row = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
+  if (!row) return { ok: false, error: 'Request not found', uuid: '' };
+
+  const invoiceUUID = crypto.randomUUID();
+  const pseudoOrder = {
+    id: row.id,
+    deliveryFee: Number(row.deliveryFee) || 0,
+    serviceFee: 0,
+    paymentType: row.paymentMethod || 'cash',
+    name: row.userName || 'Customer',
+  };
+  const xml = buildInvoiceXml(pseudoOrder, invoiceUUID, {
+    idPrefix: 'ARHEBBOX',
+    notePrefix: 'Arheb Box',
+    includeServiceLine: false,
+  });
+  const base64Invoice = Buffer.from(xml, 'utf-8').toString('base64');
+
+  try {
+    db.prepare(`UPDATE arheb_box_requests SET einvoiceStatus = 'pending', einvoiceUUID = ? WHERE id = ?`).run(invoiceUUID, requestId);
+    const response = await axios.post(JOFOTARA_API_URL, { invoice: base64Invoice }, {
+      headers: {
+        'Client-Id': CLIENT_ID,
+        'Secret-Key': SECRET_KEY,
+        'Content-Type': 'application/json',
+      },
+      timeout: 50000,
+    });
+    const data = response.data || {};
+    const qr = data.EINV_QR || data.qrCode || '';
+    db.prepare(
+      `UPDATE arheb_box_requests SET einvoiceStatus = 'submitted', einvoiceQR = ?, einvoiceSubmittedAt = ? WHERE id = ?`,
+    ).run(qr, new Date().toISOString(), requestId);
+    return { ok: true, qr, uuid: invoiceUUID };
+  } catch (error) {
+    const errData = error.response?.data;
+    const fullBody = typeof errData === 'string' ? errData : JSON.stringify(errData, null, 2);
+    let errMsg;
+    if (errData?.EINV_RESULTS?.ERRORS?.length) {
+      errMsg = errData.EINV_RESULTS.ERRORS.map((e) => `${e.EINV_CODE || e.code || e.type || 'ERROR'}: ${e.EINV_MESSAGE || e.message || e.EINV_CATEGORY || JSON.stringify(e)}`).join('; ');
+    } else if (typeof errData === 'string') {
+      errMsg = errData;
+    } else {
+      errMsg = errData?.message || errData?.error || fullBody || error.message || 'Unknown error';
+    }
+    const shortErr = String(errMsg).slice(0, 1000);
+    try {
+      db.prepare(`UPDATE arheb_box_requests SET einvoiceStatus = 'failed', einvoiceError = ? WHERE id = ?`).run(shortErr, requestId);
+    } catch (e) { /* ignore */ }
+    return { ok: false, error: shortErr, uuid: invoiceUUID };
+  }
+}
+
+module.exports = { submitJofotaraInvoice, submitJofotaraInvoiceForArhebBox, buildInvoiceXml };

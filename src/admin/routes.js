@@ -2742,13 +2742,22 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     try {
       const rowBefore = db.prepare('SELECT id, phoneNumber, fcmToken FROM arheb_box_requests WHERE id = ?').get(id);
       if (!rowBefore) return res.status(404).json({ success: false, message: 'Arheb box request not found' });
-      const run = db.prepare('UPDATE arheb_box_requests SET status = ? WHERE id = ?').run(status.trim(), id);
+      const nextStatus = status.trim();
+      const run = db.prepare('UPDATE arheb_box_requests SET status = ? WHERE id = ?').run(nextStatus, id);
       if (run.changes === 0) {
         return res.status(404).json({ success: false, message: 'Arheb box request not found' });
       }
-      fcm.sendToToken(rowBefore.fcmToken, 'Arheb Box update', `Your request #${id} is now: ${status.trim()}`, null, { type: 'arheb_box_status', requestId: String(id), status: status.trim() }).catch(() => {});
+      fcm.sendToToken(rowBefore.fcmToken, 'Arheb Box update', `Your request #${id} is now: ${nextStatus}`, null, { type: 'arheb_box_status', requestId: String(id), status: nextStatus }).catch(() => {});
       if (!rowBefore.fcmToken) {
-        fcm.sendToUserByPhone(db, rowBefore.phoneNumber, 'Arheb Box update', `Your request #${id} is now: ${status.trim()}`, null, { type: 'arheb_box_status', requestId: String(id), status: status.trim() }).catch(() => {});
+        fcm.sendToUserByPhone(db, rowBefore.phoneNumber, 'Arheb Box update', `Your request #${id} is now: ${nextStatus}`, null, { type: 'arheb_box_status', requestId: String(id), status: nextStatus }).catch(() => {});
+      }
+      if (String(nextStatus).toLowerCase() === 'delivered') {
+        try {
+          const { submitJofotaraInvoiceForArhebBox } = require('../jofotara');
+          submitJofotaraInvoiceForArhebBox(db, id).catch((err) => {
+            console.error(`[jofotara] Async submission failed for arheb box ${id}:`, err?.message || err);
+          });
+        } catch (e) { /* ignore */ }
       }
       const row = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(id);
       const request = enrichArhebBoxRow(row, db);
@@ -2757,7 +2766,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         resourceType: 'arheb_box',
         resourceId: String(id),
         storeScopeId: null,
-        summary: `Arheb Box #${id} status → ${status.trim()}`,
+        summary: `Arheb Box #${id} status → ${nextStatus}`,
       });
       return res.status(200).json({ success: true, data: { request } });
     } catch (e) {
@@ -2816,6 +2825,12 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         db.prepare("UPDATE arheb_box_requests SET status = 'confirmed' WHERE id = ?").run(id);
       }
       const updatedRow = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(id);
+      if (String(updatedRow?.status || '').toLowerCase() === 'confirmed') {
+        fcm.sendToToken(updatedRow.fcmToken, 'Arheb Box update', `Your request #${id} is now: confirmed`, null, { type: 'arheb_box_status', requestId: String(id), status: 'confirmed' }).catch(() => {});
+        if (!updatedRow.fcmToken) {
+          fcm.sendToUserByPhone(db, updatedRow.phoneNumber, 'Arheb Box update', `Your request #${id} is now: confirmed`, null, { type: 'arheb_box_status', requestId: String(id), status: 'confirmed' }).catch(() => {});
+        }
+      }
 
       if (all === true || (req.admin.role === ROLES.STORE_ADMIN)) {
         notifiedIds = notifyAllOnlineDriversArhebBox(db, io, id, updatedRow, { getActiveFromListWithDistance });
@@ -3792,28 +3807,48 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         params.push(String(dateTo).trim());
       }
       const where = conditions.length ? ' WHERE ' + conditions.join(' AND ') : '';
-      const rows = db.prepare(
+      const orderRows = db.prepare(
         `SELECT id, storeId, phoneNumber, name, totalAmount, deliveryFee, serviceFee, feesTax, status, paymentType,
                 einvoiceStatus, einvoiceQR, einvoiceUUID, einvoiceError, einvoiceSubmittedAt, createdAt
          FROM orders${where} ORDER BY createdAt DESC LIMIT 500`,
       ).all(...params);
+      let arhebBoxRows = [];
+      try {
+        arhebBoxRows = db.prepare(
+          `SELECT id, phoneNumber, userName AS name, amount AS totalAmount, deliveryFee, serviceFee, feesTax, status, paymentMethod AS paymentType,
+                  einvoiceStatus, einvoiceQR, einvoiceUUID, einvoiceError, einvoiceSubmittedAt, createdAt
+           FROM arheb_box_requests${where} ORDER BY createdAt DESC LIMIT 500`,
+        ).all(...params);
+      } catch (e) {
+        arhebBoxRows = [];
+      }
 
       const storesList = loadStores();
       const storeMap = Object.fromEntries(storesList.map((s) => [String(s.id), s]));
 
-      const enriched = rows.map((o) => {
+      const orderEnriched = orderRows.map((o) => {
         const store = storeMap[String(o.storeId)] || null;
         return {
+          orderType: 'store',
+          sourceId: o.id,
           ...o,
           storeName: store ? (store.nameEn || store.name || store.nameAr || '') : '',
         };
       });
+      const boxEnriched = arhebBoxRows.map((o) => ({
+        orderType: 'arheb_box',
+        sourceId: o.id,
+        ...o,
+        storeId: null,
+        storeName: 'Arheb Box',
+      }));
+      const enriched = [...orderEnriched, ...boxEnriched].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
 
       const counts = {
-        submitted: rows.filter((r) => r.einvoiceStatus === 'submitted').length,
-        failed: rows.filter((r) => r.einvoiceStatus === 'failed').length,
-        pending: rows.filter((r) => r.einvoiceStatus === 'pending').length,
-        skipped: rows.filter((r) => r.einvoiceStatus === 'skipped').length,
+        submitted: enriched.filter((r) => r.einvoiceStatus === 'submitted').length,
+        failed: enriched.filter((r) => r.einvoiceStatus === 'failed').length,
+        pending: enriched.filter((r) => r.einvoiceStatus === 'pending').length,
+        skipped: enriched.filter((r) => r.einvoiceStatus === 'skipped').length,
       };
 
       return res.status(200).json({ success: true, data: { invoices: enriched, counts } });
