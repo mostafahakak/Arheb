@@ -61,6 +61,7 @@ const {
   parseLatLongFromGoogleMapsUrl,
   notifyDriverDeliveryRequest,
   notifyAllOnlineDrivers,
+  offerNextSequentialDriver,
   notifyDriverArhebBoxRequest,
   notifyAllOnlineDriversArhebBox,
   clearArhebBoxOfferExpansion,
@@ -2132,14 +2133,12 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     const items = findOrderItems.all(orderId);
     notifyCustomerOrderStatusChange(db, order, orderId, nextStatus);
 
+    // One driver at a time (nearest online → FCM), same idea as customer getting a single push per event.
+    // Use POST /api/admin/orders/:orderId/request-driver with all: true to ping every online driver.
     if (nextKey === 'preparing' && updated.driverId == null && io) {
       try {
-        const storesListForOffer = loadStores();
-        const storeForOffer = updated.storeId
-          ? storesListForOffer.find((s) => String(s.id) === String(updated.storeId))
-          : null;
-        const notifiedIds = notifyAllOnlineDrivers(db, io, orderId, updated, storeForOffer, offerCtx);
-        if (notifiedIds.length > 0) {
+        const next = offerNextSequentialDriver(db, io, orderId, updated, offerCtx);
+        if (next) {
           const { broadcastDriverOrdersUpdated } = require('../driverPresence');
           broadcastDriverOrdersUpdated(io, { type: 'new_request', orderId });
         }

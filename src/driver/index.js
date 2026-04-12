@@ -21,6 +21,7 @@ const {
   round2,
 } = require('../utils/driverCommission');
 const { getActiveFromListWithDistance } = require('../driverPresence');
+const { offerNextSequentialDriver, parseLatLongFromGoogleMapsUrl } = require('../utils/sequentialDriverOffer');
 
 function parseMapsUrl(url) {
   if (!url || typeof url !== 'string') return null;
@@ -239,6 +240,11 @@ function maskPhoneForLog(phone) {
 }
 
 module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
+  const sequentialOfferCtx = {
+    loadStores,
+    getActiveFromListWithDistance,
+    parseLatLongFromGoogleMapsUrl,
+  };
   db.exec(`
     CREATE TABLE IF NOT EXISTS drivers (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1020,6 +1026,19 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
       const { broadcastDriverOrdersUpdated } = require('../driverPresence');
       broadcastDriverOrdersUpdated(io, { type: 'request_rejected', orderId, driverId });
     } catch (e) { /* ignore */ }
+    try {
+      const orderAfter = findOrderById.get(orderId);
+      const st = String(orderAfter?.status || '').toLowerCase();
+      if (orderAfter && orderAfter.driverId == null && st.includes('prepar') && io) {
+        const next = offerNextSequentialDriver(db, io, orderId, orderAfter, sequentialOfferCtx);
+        if (next) {
+          const { broadcastDriverOrdersUpdated } = require('../driverPresence');
+          broadcastDriverOrdersUpdated(io, { type: 'new_request', orderId });
+        }
+      }
+    } catch (e) {
+      /* ignore chain offer */
+    }
     return res.status(200).json({ success: true, message: 'Request rejected' });
   });
 
