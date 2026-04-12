@@ -4,6 +4,7 @@ const { getJsonPath } = require('../config/jsonPaths');
 const {
   isStoreVisibleToCustomers,
   isStoreListedForCustomerBrowse,
+  customerFacingIsOpen,
 } = require('../utils/storeVisibility');
 const { enrichOpeningHoursObject } = require('../utils/openingHoursJordan');
 const { upsertStoreFcmToken } = require('../storeFcm');
@@ -171,12 +172,13 @@ function computeStoreStatus(store) {
 
 // Public store shape: include closingTime, openingTime, storeCategories, status; never expose arhebFee / admin-only flags
 function toPublicStore(store) {
-  const { arhebFee, hiddenFromCustomers, ...rest } = store;
+  const { arhebFee, hiddenFromCustomers, isOpen: _rawIsOpen, ...rest } = store;
   const openingHours = store.openingHours
     ? enrichOpeningHoursObject(store.openingHours)
     : enrichOpeningHoursObject(null);
   return {
     ...rest,
+    isOpen: customerFacingIsOpen(store),
     isPremium: store.isPremium === true,
     isExclusive: store.isExclusive === true,
     closingTime: store.closingTime ?? null,
@@ -184,6 +186,28 @@ function toPublicStore(store) {
     openingHours,
     storeCategories: Array.isArray(store.storeCategories) ? store.storeCategories : [],
     status: computeStoreStatus(store),
+  };
+}
+
+function storePayloadForProductRoutes(store) {
+  if (!store) return null;
+  return {
+    id: store.id,
+    name: store.name,
+    nameAr: store.nameAr,
+    nameEn: store.nameEn,
+    logo: store.logo,
+    cover: store.cover,
+    category: store.category,
+    categoryAr: store.categoryAr,
+    categoryEn: store.categoryEn,
+    closingTime: store.closingTime ?? null,
+    openingTime: store.openingHours?.open ?? store.openingTime ?? null,
+    storeCategories: Array.isArray(store.storeCategories) ? store.storeCategories : [],
+    status: computeStoreStatus(store),
+    isOpen: customerFacingIsOpen(store),
+    isExclusive: store.isExclusive === true,
+    isPremium: store.isPremium === true,
   };
 }
 
@@ -398,26 +422,18 @@ module.exports = function attachStoresRoutes(app, db) {
 
     const products = productsResponse?.data?.products ?? [];
     const storeProducts = products.filter((p) => String(p.store?.id) === String(storeId) && p.isAvailable !== false);
-    const toClientProduct = (p) => ({ ...p, discount: p.discount ?? null, originalPrice: p.originalPrice ?? p.price ?? null });
+    const toClientProduct = (p) => ({
+      ...p,
+      discount: p.discount ?? null,
+      originalPrice: p.originalPrice ?? p.price ?? null,
+      store: p.store ? { ...p.store, isOpen: customerFacingIsOpen(store) } : p.store,
+    });
 
     return res.status(200).json({
       success: true,
       message: 'Store products retrieved successfully',
       data: {
-        store: {
-          id: store.id,
-          name: store.name,
-          nameAr: store.nameAr,
-          nameEn: store.nameEn,
-          logo: store.logo,
-          cover: store.cover,
-          closingTime: store.closingTime ?? null,
-          openingTime: store.openingHours?.open ?? store.openingTime ?? null,
-          storeCategories: Array.isArray(store.storeCategories) ? store.storeCategories : [],
-          status: computeStoreStatus(store),
-          isExclusive: store.isExclusive === true,
-          isPremium: store.isPremium === true,
-        },
+        store: storePayloadForProductRoutes(store),
         products: storeProducts.map(toClientProduct),
         count: storeProducts.length
       },
@@ -591,7 +607,12 @@ module.exports = function attachStoresRoutes(app, db) {
       .filter((p) => String(p.store?.id) === String(storeId) && p.isAvailable !== false)
       .sort(compareProductIdStable);
 
-    const toClientProduct = (p) => ({ ...p, discount: p.discount ?? null, originalPrice: p.originalPrice ?? p.price ?? null });
+    const toClientProduct = (p) => ({
+      ...p,
+      discount: p.discount ?? null,
+      originalPrice: p.originalPrice ?? p.price ?? null,
+      store: p.store ? { ...p.store, isOpen: customerFacingIsOpen(store) } : p.store,
+    });
 
     const { categoriesForPaging, buckets } = buildStoreCategoryBuckets(store, storeProducts);
     const { pagePick, finished, totalProducts, totalPages } = pickFlatPageSlice(buckets, page, perPage);
@@ -608,20 +629,7 @@ module.exports = function attachStoresRoutes(app, db) {
       success: true,
       message: 'Store products page retrieved successfully',
       data: {
-        store: {
-          id: store.id,
-          name: store.name,
-          nameAr: store.nameAr,
-          nameEn: store.nameEn,
-          logo: store.logo,
-          cover: store.cover,
-          closingTime: store.closingTime ?? null,
-          openingTime: store.openingHours?.open ?? store.openingTime ?? null,
-          storeCategories: Array.isArray(store.storeCategories) ? store.storeCategories : [],
-          status: computeStoreStatus(store),
-          isExclusive: store.isExclusive === true,
-          isPremium: store.isPremium === true,
-        },
+        store: storePayloadForProductRoutes(store),
         products: flatProducts,
         categories: categoriesOut,
         pagination: {
@@ -677,7 +685,12 @@ module.exports = function attachStoresRoutes(app, db) {
       .filter((p) => String(p.store?.id) === String(storeId) && p.isAvailable !== false)
       .sort(compareProductIdStable);
 
-    const toClientProduct = (p) => ({ ...p, discount: p.discount ?? null, originalPrice: p.originalPrice ?? p.price ?? null });
+    const toClientProduct = (p) => ({
+      ...p,
+      discount: p.discount ?? null,
+      originalPrice: p.originalPrice ?? p.price ?? null,
+      store: p.store ? { ...p.store, isOpen: customerFacingIsOpen(store) } : p.store,
+    });
 
     const { categoriesForPaging, buckets } = buildStoreCategoryBuckets(store, storeProducts);
     const { pagePick, finished, totalProducts, totalPages } = pickFlatPageSlice(buckets, page, perPage);
@@ -692,20 +705,7 @@ module.exports = function attachStoresRoutes(app, db) {
       success: true,
       message: 'Store products categories page retrieved successfully',
       data: {
-        store: {
-          id: store.id,
-          name: store.name,
-          nameAr: store.nameAr,
-          nameEn: store.nameEn,
-          logo: store.logo,
-          cover: store.cover,
-          closingTime: store.closingTime ?? null,
-          openingTime: store.openingHours?.open ?? store.openingTime ?? null,
-          storeCategories: storeCategories,
-          status: computeStoreStatus(store),
-          isExclusive: store.isExclusive === true,
-          isPremium: store.isPremium === true,
-        },
+        store: storePayloadForProductRoutes(store),
         categories: categoriesOut,
         pagination: {
           page,
@@ -812,27 +812,18 @@ module.exports = function attachStoresRoutes(app, db) {
         return sub.some(s => s === subCategoryQuery || s.includes(subCategoryQuery) || subCategoryQuery.includes(s));
       });
     }
-    const toClientProduct = (p) => ({ ...p, discount: p.discount ?? null, originalPrice: p.originalPrice ?? p.price ?? null });
+    const toClientProduct = (p) => ({
+      ...p,
+      discount: p.discount ?? null,
+      originalPrice: p.originalPrice ?? p.price ?? null,
+      store: p.store ? { ...p.store, isOpen: customerFacingIsOpen(store) } : p.store,
+    });
 
     return res.status(200).json({
       success: true,
       message: 'Store products by category retrieved successfully',
       data: {
-        store: {
-          id: store.id,
-          name: store.name,
-          nameAr: store.nameAr,
-          nameEn: store.nameEn,
-          logo: store.logo,
-          cover: store.cover,
-          category: store.category,
-          categoryAr: store.categoryAr,
-          categoryEn: store.categoryEn,
-          closingTime: store.closingTime ?? null,
-          openingTime: store.openingHours?.open ?? store.openingTime ?? null,
-          storeCategories: Array.isArray(store.storeCategories) ? store.storeCategories : [],
-          status: computeStoreStatus(store),
-        },
+        store: storePayloadForProductRoutes(store),
         categoryName: categoryName,
         subCategory: subCategoryQuery || null,
         products: filteredProducts.map(toClientProduct),

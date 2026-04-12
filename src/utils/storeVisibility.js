@@ -1,3 +1,5 @@
+const fs = require('fs');
+const { getJsonPath } = require('../config/jsonPaths');
 const {
   JORDAN_IANA_TIMEZONE,
   getJordanMinutesNow,
@@ -45,6 +47,29 @@ function getAdminStoreDashboardBucket(store) {
   return 'closed';
 }
 
+/**
+ * Customer API `isOpen`: false when blocked, paused, merchant closed (isOpen=false), or outside Jordan hours.
+ * Aligns with {@link isStoreVisibleToCustomers} so apps can rely on a single flag.
+ */
+function customerFacingIsOpen(store) {
+  return isStoreVisibleToCustomers(store);
+}
+
+/** Raw stores from `stores_listing_response.json` keyed by id (for product nested `store` enrichment). */
+function loadStoresByIdMap() {
+  try {
+    const raw = fs.readFileSync(getJsonPath('stores_listing_response.json'), 'utf-8');
+    const stores = JSON.parse(raw)?.data?.stores ?? [];
+    const map = Object.create(null);
+    for (const s of stores) {
+      if (s && s.id != null) map[String(s.id)] = s;
+    }
+    return map;
+  } catch {
+    return Object.create(null);
+  }
+}
+
 module.exports = {
   JORDAN_IANA_TIMEZONE,
   getJordanMinutesNow,
@@ -54,4 +79,6 @@ module.exports = {
   isStoreVisibleToCustomers,
   isStoreListedForCustomerBrowse,
   getAdminStoreDashboardBucket,
+  customerFacingIsOpen,
+  loadStoresByIdMap,
 };

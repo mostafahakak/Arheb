@@ -219,23 +219,136 @@ function notifyDriverArhebBoxRequest(db, io, requestId, requestRow, driverId) {
   return { notified: true };
 }
 
+/** Radius steps (km) from sender pickup; then a final wave to all online drivers not yet notified. */
+const ARHEB_BOX_OFFER_RADIUS_STEPS_KM = [0.5, 1.5, 4];
+const ARHEB_BOX_OFFER_EXPAND_MS = 45_000;
+
+/** requestId -> Timeout */
+const arhebBoxOfferExpansionTimers = new Map();
+
+function clearArhebBoxOfferExpansion(requestId) {
+  if (requestId == null) return;
+  const t = arhebBoxOfferExpansionTimers.get(requestId);
+  if (t) clearTimeout(t);
+  arhebBoxOfferExpansionTimers.delete(requestId);
+}
+
+function parsePickupLatLongFromArhebRow(requestRow) {
+  try {
+    const p = JSON.parse(requestRow.pickup || '{}');
+    const lat = Number(p.latitude ?? p.lat);
+    const lon = Number(p.longitude ?? p.lng ?? p.long);
+    if (Number.isFinite(lat) && Number.isFinite(lon)) return { lat, lon };
+  } catch (_) {}
+  return null;
+}
+
+function isArhebBoxStillSeekingDriver(db, requestId) {
+  try {
+    const row = db.prepare('SELECT driverId, status FROM arheb_box_requests WHERE id = ?').get(requestId);
+    if (!row || row.driverId != null) return false;
+    const s = String(row.status || '').toLowerCase();
+    if (s === 'delivered' || s === 'cancelled') return false;
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 /**
- * Notify ALL online drivers about an Arheb Box request.
+ * Notify online drivers within maxKm of pickup. maxKm >= 1e6 means no distance cap (still sorted by distance when pickup exists).
  */
-function notifyAllOnlineDriversArhebBox(db, io, requestId, requestRow, ctx) {
-  const { getActiveFromListWithDistance } = ctx;
+function notifyArhebBoxDriversInRadius(db, io, requestId, requestRow, maxKm, getActiveFromListWithDistance) {
   let drivers = [];
-  try { drivers = db.prepare('SELECT id FROM drivers WHERE isBlocked = 0').all(); } catch (e) { return []; }
+  try {
+    drivers = db.prepare('SELECT id FROM drivers WHERE isBlocked = 0').all();
+  } catch (e) {
+    return [];
+  }
   const candidateIds = drivers.map((d) => d.id);
-  const online = getActiveFromListWithDistance(candidateIds, null, null);
-  console.log(`[driver-notify] Broadcasting arheb-box #${requestId} to ${online.length} online drivers`);
+  const pickup = parsePickupLatLongFromArhebRow(requestRow);
+  const withDist = pickup
+    ? getActiveFromListWithDistance(candidateIds, pickup.lat, pickup.lon)
+    : getActiveFromListWithDistance(candidateIds, null, null);
+
   const notifiedIds = [];
-  for (const d of online) {
+  const unlimited = maxKm >= 1e6;
+  for (const d of withDist) {
+    if (!unlimited && pickup && d.distanceKm != null && d.distanceKm > maxKm) continue;
     const result = notifyDriverArhebBoxRequest(db, io, requestId, requestRow, d.driverId);
     if (result.notified) notifiedIds.push(d.driverId);
   }
-  console.log(`[driver-notify] Notified ${notifiedIds.length} drivers for arheb-box #${requestId}: [${notifiedIds.join(', ')}]`);
   return notifiedIds;
+}
+
+/**
+ * Notify drivers near pickup (0.5 km first), then widen radius every ARHEB_BOX_OFFER_EXPAND_MS until all online are offered.
+ */
+function notifyAllOnlineDriversArhebBox(db, io, requestId, requestRow, ctx) {
+  const { getActiveFromListWithDistance } = ctx;
+  clearArhebBoxOfferExpansion(requestId);
+
+  const pickup = parsePickupLatLongFromArhebRow(requestRow);
+  if (!pickup) {
+    let drivers = [];
+    try {
+      drivers = db.prepare('SELECT id FROM drivers WHERE isBlocked = 0').all();
+    } catch (e) {
+      return [];
+    }
+    const candidateIds = drivers.map((d) => d.id);
+    const online = getActiveFromListWithDistance(candidateIds, null, null);
+    console.log(`[driver-notify] arheb-box #${requestId}: no pickup GPS — notifying ${online.length} online drivers`);
+    const notifiedIds = [];
+    for (const d of online) {
+      const result = notifyDriverArhebBoxRequest(db, io, requestId, requestRow, d.driverId);
+      if (result.notified) notifiedIds.push(d.driverId);
+    }
+    return notifiedIds;
+  }
+
+  const freshRow = () => db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId) || requestRow;
+
+  let step = 0;
+  const firstNotified = notifyArhebBoxDriversInRadius(
+    db,
+    io,
+    requestId,
+    freshRow(),
+    ARHEB_BOX_OFFER_RADIUS_STEPS_KM[0],
+    getActiveFromListWithDistance,
+  );
+  console.log(
+    `[driver-notify] arheb-box #${requestId} wave ${ARHEB_BOX_OFFER_RADIUS_STEPS_KM[0]}km → ${firstNotified.length} drivers`,
+  );
+
+  function scheduleNext() {
+    step += 1;
+    if (step >= ARHEB_BOX_OFFER_RADIUS_STEPS_KM.length) {
+      const tid = setTimeout(() => {
+        arhebBoxOfferExpansionTimers.delete(requestId);
+        if (!isArhebBoxStillSeekingDriver(db, requestId)) return;
+        const row = freshRow();
+        const rest = notifyArhebBoxDriversInRadius(db, io, requestId, row, 1e9, getActiveFromListWithDistance);
+        console.log(`[driver-notify] arheb-box #${requestId} final wave (all online) → ${rest.length} newly notified`);
+      }, ARHEB_BOX_OFFER_EXPAND_MS);
+      arhebBoxOfferExpansionTimers.set(requestId, tid);
+      return;
+    }
+    const maxKm = ARHEB_BOX_OFFER_RADIUS_STEPS_KM[step];
+    const tid = setTimeout(() => {
+      arhebBoxOfferExpansionTimers.delete(requestId);
+      if (!isArhebBoxStillSeekingDriver(db, requestId)) return;
+      const row = freshRow();
+      const n = notifyArhebBoxDriversInRadius(db, io, requestId, row, maxKm, getActiveFromListWithDistance);
+      console.log(`[driver-notify] arheb-box #${requestId} wave ${maxKm}km → ${n.length} newly notified`);
+      scheduleNext();
+    }, ARHEB_BOX_OFFER_EXPAND_MS);
+    arhebBoxOfferExpansionTimers.set(requestId, tid);
+  }
+
+  scheduleNext();
+  return firstNotified;
 }
 
 module.exports = {
@@ -249,5 +362,6 @@ module.exports = {
   parseLatLongFromGoogleMapsUrl,
   notifyDriverArhebBoxRequest,
   notifyAllOnlineDriversArhebBox,
+  clearArhebBoxOfferExpansion,
   fcmPayloadForArhebBoxRequest,
 };

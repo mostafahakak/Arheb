@@ -5,6 +5,7 @@ const { getJsonPath } = require('../config/jsonPaths');
 const {
   isStoreListedForCustomerBrowse,
   getAdminStoreDashboardBucket,
+  customerFacingIsOpen,
 } = require('../utils/storeVisibility');
 const { normalizeHomeContentLinkArray } = require('../utils/homeContentLinks');
 
@@ -330,8 +331,6 @@ const seedHomeTables = (db, homeResponse) => {
   insertData();
 };
 
-const ACTIVE_ORDER_STATUSES = ['Waiting confirmation', 'Waiting cliq confirmation', 'Being prepared', 'On the way'];
-
 module.exports = function attachHomeRoutes(app, db, JWT_SECRET) {
   const initialHome = loadHomeResponse();
   const banners = initialHome?.data?.banners ?? [];
@@ -344,10 +343,18 @@ module.exports = function attachHomeRoutes(app, db, JWT_SECRET) {
     console.warn('No home data found to seed the database');
   }
 
-  const findActiveOrderByPhone = db.prepare(`
-    SELECT id, status FROM orders
-    WHERE phoneNumber = ? AND status IN (?, ?, ?, ?)
-    ORDER BY createdAt DESC LIMIT 1
+  const findActiveStoreOrdersForUser = db.prepare(`
+    SELECT id, status, createdAt FROM orders
+    WHERE (userId = ? OR phoneNumber = ?)
+      AND LOWER(COALESCE(TRIM(status), '')) NOT IN ('delivered', 'cancelled', 'payment rejected')
+    ORDER BY datetime(COALESCE(createdAt, '1970-01-01')) DESC, id DESC
+  `);
+
+  const findActiveArhebBoxForUser = db.prepare(`
+    SELECT id, status, createdAt FROM arheb_box_requests
+    WHERE (phoneNumber = ? OR phoneNumber = ?)
+      AND LOWER(COALESCE(TRIM(status), '')) NOT IN ('delivered', 'cancelled')
+    ORDER BY datetime(COALESCE(createdAt, '1970-01-01')) DESC, id DESC
   `);
 
   app.get('/api/home', (req, res) => {
@@ -372,32 +379,44 @@ module.exports = function attachHomeRoutes(app, db, JWT_SECRET) {
       response.data = { ...response.data, categories };
     }
 
-    // Discounted products (offers): products that have a discount (ensure discount/originalPrice for client)
-    const discountedProducts = loadDiscountedProducts().map((p) => ({
-      ...p,
-      discount: p.discount ?? null,
-      originalPrice: p.originalPrice ?? p.price ?? null,
-    }));
-    if (response.data) {
-      response.data = { ...response.data, discountedProducts };
-    }
-
     const storesForVisibility = loadStoresListForVisibility();
     const storeByIdMap = Object.fromEntries(storesForVisibility.map((s) => [String(s.id), s]));
     const listedStoreIds = new Set(
       storesForVisibility.filter((s) => isStoreListedForCustomerBrowse(s)).map((s) => String(s.id)),
     );
+
+    // Discounted products: only from stores that are listed for browse; nested `store.isOpen` reflects pause/block/hours
+    const discountedProducts = loadDiscountedProducts()
+      .filter((p) => p.store?.id != null && listedStoreIds.has(String(p.store.id)))
+      .map((p) => {
+        const full = storeByIdMap[String(p.store.id)];
+        const storeOut =
+          p.store && full
+            ? { ...p.store, isOpen: customerFacingIsOpen(full) }
+            : p.store;
+        return {
+          ...p,
+          store: storeOut,
+          discount: p.discount ?? null,
+          originalPrice: p.originalPrice ?? p.price ?? null,
+        };
+      });
+    if (response.data) {
+      response.data = { ...response.data, discountedProducts };
+    }
     if (response.data?.mostPopularStores?.length) {
       response.data.mostPopularStores = response.data.mostPopularStores
         .filter((s) => s && s.id != null && listedStoreIds.has(String(s.id)))
         .map((s) => {
           const fullStore = storeByIdMap[String(s.id)];
           const status = fullStore ? getAdminStoreDashboardBucket(fullStore) : 'closed';
-          return { ...s, status };
+          const isOpen = fullStore ? customerFacingIsOpen(fullStore) : false;
+          const { isOpen: _dropOpen, ...rest } = s;
+          return { ...rest, status, isOpen };
         });
     }
 
-    // If user is authenticated, add activeOrder (orderID, status) only when they have an order in active status
+    // Authenticated: active store orders + Arheb Box (non-terminal), same notion as customer orders list
     if (JWT_SECRET) {
       const authHeader = req.headers.authorization;
       const token = authHeader && authHeader.replace(/Bearer\s+/i, '').trim();
@@ -405,14 +424,43 @@ module.exports = function attachHomeRoutes(app, db, JWT_SECRET) {
         try {
           const payload = jwt.verify(token, JWT_SECRET);
           const phoneNumber = payload.phoneNumber;
-          if (phoneNumber) {
-            const row = findActiveOrderByPhone.get(phoneNumber, ...ACTIVE_ORDER_STATUSES);
-            if (row) {
-              response.activeOrder = { orderID: row.id, status: row.status };
+          const userId = payload.userId || phoneNumber;
+          if (phoneNumber || userId) {
+            const phone = phoneNumber || userId;
+            const storeRows = findActiveStoreOrdersForUser.all(userId, phone);
+            let boxRows = [];
+            try {
+              boxRows = findActiveArhebBoxForUser.all(userId, phone);
+            } catch (e) {
+              if (!e.message || !e.message.includes('no such table')) throw e;
+            }
+            const activeOrders = [
+              ...storeRows.map((r) => ({
+                orderType: 'store',
+                id: r.id,
+                status: r.status,
+                createdAt: r.createdAt ?? null,
+              })),
+              ...boxRows.map((r) => ({
+                orderType: 'arheb_box',
+                id: r.id,
+                status: r.status,
+                createdAt: r.createdAt ?? null,
+              })),
+            ].sort((a, b) => {
+              const ta = new Date(a.createdAt || 0).getTime();
+              const tb = new Date(b.createdAt || 0).getTime();
+              if (tb !== ta) return tb - ta;
+              return (Number(b.id) || 0) - (Number(a.id) || 0);
+            });
+            if (activeOrders.length) {
+              response.activeOrders = activeOrders;
+              const top = activeOrders[0];
+              response.activeOrder = { orderID: top.id, status: top.status, orderType: top.orderType };
             }
           }
         } catch (e) {
-          // Invalid token: do not add activeOrder
+          // Invalid token: omit active fields
         }
       }
     }

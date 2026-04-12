@@ -20,20 +20,24 @@ const activeTrackings = new Map();
  * Also handles Arheb Box requests with status "in_progress".
  */
 function broadcastDriverPresenceLocation(io, db, driverId, latitude, longitude) {
-  if (typeof latitude !== 'number' || typeof longitude !== 'number' || isNaN(latitude) || isNaN(longitude)) return;
+  const lat = Number(latitude);
+  const lon = Number(longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
   const ts = new Date().toISOString();
 
-  // Store orders (On the way)
+  // Store orders: live map while driver is assigned (preparing or en route)
   try {
-    const rows = db.prepare("SELECT id FROM orders WHERE driverId = ? AND status = 'On the way'").all(driverId);
+    const rows = db
+      .prepare("SELECT id FROM orders WHERE driverId = ? AND status IN ('Preparing', 'On the way')")
+      .all(driverId);
     for (const row of rows) {
       const orderId = row.id;
       if (!activeTrackings.has(orderId)) {
         activeTrackings.set(orderId, { customerSocket: null, driverSocket: null, adminSockets: [], lastLocation: null });
       }
       const t = activeTrackings.get(orderId);
-      t.lastLocation = { longitude, latitude, timestamp: ts };
-      io.to(`order:${orderId}`).emit('location_update', { orderId, longitude, latitude, timestamp: ts });
+      t.lastLocation = { longitude: lon, latitude: lat, timestamp: ts };
+      io.to(`order:${orderId}`).emit('location_update', { orderId, longitude: lon, latitude: lat, timestamp: ts });
     }
   } catch (e) { /* ignore */ }
 
@@ -49,8 +53,8 @@ function broadcastDriverPresenceLocation(io, db, driverId, latitude, longitude) 
         activeTrackings.set(trackKey, { customerSocket: null, driverSocket: null, adminSockets: [], lastLocation: null });
       }
       const t = activeTrackings.get(trackKey);
-      t.lastLocation = { longitude, latitude, timestamp: ts };
-      io.to(roomKey).emit('location_update', { requestId: row.id, longitude, latitude, timestamp: ts });
+      t.lastLocation = { longitude: lon, latitude: lat, timestamp: ts };
+      io.to(roomKey).emit('location_update', { requestId: row.id, longitude: lon, latitude: lat, timestamp: ts });
     }
   } catch (e) {
     if (e.message && !e.message.includes('no such table')) console.error('Box tracking broadcast error:', e);
@@ -196,7 +200,8 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
 
       socket.on('driver_location', (data) => {
         if (role !== 'driver') return socket.emit('error', { message: 'Only drivers can send location updates' });
-        const lat = Number(data?.latitude), lon = Number(data?.longitude);
+        const lat = Number(data?.latitude ?? data?.lat);
+        const lon = Number(data?.longitude ?? data?.lng ?? data?.long);
         if (!Number.isFinite(lat) || !Number.isFinite(lon)) return socket.emit('error', { message: 'Invalid coordinates' });
         tracking.lastLocation = { longitude: lon, latitude: lat, timestamp: new Date().toISOString() };
         io.to(roomKey).emit('location_update', { requestId: reqId, longitude: lon, latitude: lat, timestamp: tracking.lastLocation.timestamp });
@@ -263,8 +268,9 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
         socket.emit('error', { message: 'Only drivers can send location updates' });
         return;
       }
-      const { longitude, latitude } = data;
-      if (typeof longitude !== 'number' || typeof latitude !== 'number' || isNaN(longitude) || isNaN(latitude)) {
+      const latitude = Number(data?.latitude ?? data?.lat);
+      const longitude = Number(data?.longitude ?? data?.lng ?? data?.long);
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
         socket.emit('error', { message: 'Invalid coordinates' });
         return;
       }
@@ -564,6 +570,7 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
 
 module.exports.emitOrderEvent = emitOrderEvent;
 module.exports.emitArhebBoxEvent = require('./trackingEmitter').emitArhebBoxEvent;
+module.exports.emitAdminOrdersListUpdated = require('./trackingEmitter').emitAdminOrdersListUpdated;
 module.exports.getOrderTrackingState = (orderId) => activeTrackings.get(orderId);
 module.exports.getArhebBoxTrackingState = (requestId) => activeTrackings.get(`box_${requestId}`);
 module.exports.broadcastDriverPresenceLocation = broadcastDriverPresenceLocation;

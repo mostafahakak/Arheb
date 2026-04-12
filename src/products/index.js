@@ -1,7 +1,12 @@
 const fs = require('fs');
 const path = require('path');
 const { getJsonPath } = require('../config/jsonPaths');
-const { isStoreVisibleToCustomers } = require('../utils/storeVisibility');
+const {
+  isStoreVisibleToCustomers,
+  isStoreListedForCustomerBrowse,
+  customerFacingIsOpen,
+  loadStoresByIdMap,
+} = require('../utils/storeVisibility');
 
 const loadProductsFromPath = (filePath) => {
   try {
@@ -40,7 +45,7 @@ function hasDiscount(p) {
 }
 
 // Ensure client always receives discount and originalPrice; strip cart-only selectedAddOns from catalog payloads
-function toClientProduct(p, storeStatusMap) {
+function toClientProduct(p, storeStatusMap, storeById) {
   if (!p) return p;
   const { selectedAddOns: _omitSelected, ...rest } = p;
   const result = {
@@ -50,9 +55,23 @@ function toClientProduct(p, storeStatusMap) {
     addOnGroups: Array.isArray(p.addOnGroups) ? p.addOnGroups : [],
   };
   if (result.store && storeStatusMap) {
-    result.store = { ...result.store, status: storeStatusMap[result.store.id] ?? 'closed' };
+    const full = storeById?.[String(result.store.id)];
+    result.store = {
+      ...result.store,
+      status: storeStatusMap[result.store.id] ?? 'closed',
+      isOpen: full ? customerFacingIsOpen(full) : false,
+    };
   }
   return result;
+}
+
+function filterProductsFromBrowsableStores(products, storeById) {
+  return (products || []).filter((p) => {
+    const id = p?.store?.id;
+    if (id == null) return false;
+    const s = storeById[String(id)];
+    return s && isStoreListedForCustomerBrowse(s);
+  });
 }
 
 // Load from file on each request so admin add/edit/delete is visible immediately (same pattern as stores).
@@ -65,8 +84,12 @@ module.exports = function attachProductsRoutes(app, db) {
       return res.status(500).json({ success: false, message: 'Products payload is unavailable' });
     }
     const statusMap = loadStoreStatusMap();
-    const allProducts = (productsResponse?.data?.products ?? []).filter((p) => p.isAvailable !== false);
-    const offers = allProducts.filter(hasDiscount).map((p) => toClientProduct(p, statusMap));
+    const storeById = loadStoresByIdMap();
+    const allProducts = filterProductsFromBrowsableStores(
+      (productsResponse?.data?.products ?? []).filter((p) => p.isAvailable !== false),
+      storeById,
+    );
+    const offers = allProducts.filter(hasDiscount).map((p) => toClientProduct(p, statusMap, storeById));
     return res.status(200).json({
       success: true,
       message: 'Offers (discounted products) retrieved successfully',
@@ -85,7 +108,11 @@ module.exports = function attachProductsRoutes(app, db) {
       });
     }
 
-    const allProducts = (productsResponse?.data?.products ?? []).filter(p => p.isAvailable !== false);
+    const storeById = loadStoresByIdMap();
+    const allProducts = filterProductsFromBrowsableStores(
+      (productsResponse?.data?.products ?? []).filter((p) => p.isAvailable !== false),
+      storeById,
+    );
     const totalProducts = allProducts.length;
     
     // Get page parameter, default to 1 if not provided
@@ -125,7 +152,7 @@ module.exports = function attachProductsRoutes(app, db) {
 
     // Get products for current page
     const statusMap = loadStoreStatusMap();
-    const paginatedProducts = allProducts.slice(startIndex, endIndex).map((p) => toClientProduct(p, statusMap));
+    const paginatedProducts = allProducts.slice(startIndex, endIndex).map((p) => toClientProduct(p, statusMap, storeById));
     const hasMore = endIndex < totalProducts;
     const totalPages = Math.ceil(totalProducts / itemsPerPage);
 
@@ -191,12 +218,13 @@ module.exports = function attachProductsRoutes(app, db) {
       .map((x) => x.product);
 
     const statusMap = loadStoreStatusMap();
+    const storeById = loadStoresByIdMap();
     return res.status(200).json({
       success: true,
       message: 'Product details retrieved successfully',
       data: {
-        product: toClientProduct(product, statusMap),
-        relatedProducts: related.map((p) => toClientProduct(p, statusMap)),
+        product: toClientProduct(product, statusMap, storeById),
+        relatedProducts: related.map((p) => toClientProduct(p, statusMap, storeById)),
       },
       timestamp: new Date().toISOString()
     });

@@ -1,7 +1,12 @@
 const fs = require('fs');
 const path = require('path');
 const { getJsonPath } = require('../config/jsonPaths');
-const { isStoreVisibleToCustomers, isStoreListedForCustomerBrowse } = require('../utils/storeVisibility');
+const {
+  isStoreVisibleToCustomers,
+  isStoreListedForCustomerBrowse,
+  customerFacingIsOpen,
+  loadStoresByIdMap,
+} = require('../utils/storeVisibility');
 
 const categoriesResponsePath = getJsonPath('categories_response.json');
 
@@ -33,9 +38,17 @@ function loadStoreStatusMap() {
   }
 }
 
-function enrichProductWithStoreStatus(product, statusMap) {
+function enrichProductWithStoreStatus(product, statusMap, storeById) {
   if (!product || !product.store || !statusMap) return product;
-  return { ...product, store: { ...product.store, status: statusMap[product.store.id] ?? 'closed' } };
+  const full = storeById?.[String(product.store.id)];
+  return {
+    ...product,
+    store: {
+      ...product.store,
+      status: statusMap[product.store.id] ?? 'closed',
+      isOpen: full ? customerFacingIsOpen(full) : false,
+    },
+  };
 }
 
 /** Minimal default when JSON file is missing (e.g. on Render after deploy). */
@@ -244,12 +257,19 @@ function attachCategoriesRoutes(app, db) {
       const productsPath = getJsonPath('products_listing_response.json');
       const rawProducts = fs.readFileSync(productsPath, 'utf-8');
       const allProducts = JSON.parse(rawProducts)?.data?.products ?? [];
-      const discounted = allProducts.filter(p => p.isAvailable !== false && hasDiscount(p));
-      if (discounted.length === 0) return null;
-
       const storesPath = getJsonPath('stores_listing_response.json');
       const rawStores = fs.readFileSync(storesPath, 'utf-8');
       const allStores = JSON.parse(rawStores)?.data?.stores ?? [];
+      const storeByIdOffers = Object.fromEntries(allStores.map((s) => [String(s.id), s]));
+
+      const discounted = allProducts.filter(
+        (p) =>
+          p.isAvailable !== false &&
+          hasDiscount(p) &&
+          p.store?.id != null &&
+          isStoreListedForCustomerBrowse(storeByIdOffers[String(p.store.id)]),
+      );
+      if (discounted.length === 0) return null;
 
       const storeIdsWithOffers = new Set();
       for (const p of discounted) {
@@ -260,9 +280,13 @@ function attachCategoriesRoutes(app, db) {
       const statusMap = loadStoreStatusMap();
       const offerStores = allStores
         .filter((s) => storeIdsWithOffers.has(String(s.id)) && isStoreListedForCustomerBrowse(s))
-        .map(s => {
-          const { arhebFee, ...rest } = s;
-          return { ...rest, status: statusMap[s.id] ?? 'closed' };
+        .map((s) => {
+          const { arhebFee, isOpen: _rawOpen, ...rest } = s;
+          return {
+            ...rest,
+            isOpen: customerFacingIsOpen(s),
+            status: statusMap[s.id] ?? 'closed',
+          };
         });
 
       return {
@@ -404,6 +428,14 @@ function attachCategoriesRoutes(app, db) {
       });
     }
 
+    const storeById = loadStoresByIdMap();
+    filtered = filtered.filter((p) => {
+      const sid = p?.store?.id;
+      if (sid == null) return false;
+      const st = storeById[String(sid)];
+      return st && isStoreListedForCustomerBrowse(st);
+    });
+
     const statusMap = loadStoreStatusMap();
     return res.status(200).json({
       success: true,
@@ -421,7 +453,7 @@ function attachCategoriesRoutes(app, db) {
         } : null,
         categoryName: categoryName,
         subCategory: subCategoryQuery || null,
-        products: filtered.map(p => enrichProductWithStoreStatus(p, statusMap)),
+        products: filtered.map(p => enrichProductWithStoreStatus(p, statusMap, storeById)),
         count: filtered.length
       },
       timestamp: new Date().toISOString()

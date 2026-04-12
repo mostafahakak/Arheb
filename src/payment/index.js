@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const axios = require('axios');
 const express = require('express');
 const attachCheckoutRoutes = require('../checkout');
-const { createArhebBoxRequest, ensureArhebBoxTable, enrichArhebBoxRow } = require('../arhebBox');
+const { createArhebBoxRequest, ensureArhebBoxTable, enrichArhebBoxRow, notifyDriversAboutNewArhebBox } = require('../arhebBox');
 
 const PAYTABS_API_URL = 'https://madfoat-secure.paytabs.com';
 const PROFILE_ID = 47149;
@@ -16,7 +16,7 @@ function deleteOrderCascade(db, orderId) {
   }
 }
 
-module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
+module.exports = function attachPaymentRoutes(app, db, authenticateRequest, io) {
   const SERVER_KEY = process.env.PAYTABS_SERVER_KEY || '';
   const CLIENT_KEY = process.env.PAYTABS_CLIENT_KEY || '';
   const CART_CURRENCY = process.env.PAYTABS_CURRENCY || 'JOD';
@@ -132,6 +132,8 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest) {
         }
         db.prepare('UPDATE payment_transactions SET arhebBoxRequestId = ?, pendingArhebBoxJson = NULL, pendingPhoneNumber = NULL WHERE tranRef = ?').run(createRes.requestId, tranRef);
         applyCardPaymentSuccessToArhebBox(createRes.requestId, tranRef);
+        const newBoxRow = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(createRes.requestId);
+        notifyDriversAboutNewArhebBox(db, io, newBoxRow);
       } catch (e) {
         console.error('finalizePendingEntitiesForTransaction arheb-box exception:', e);
       }

@@ -4,7 +4,7 @@
  *
  * Namespace: /driver-presence
  * Auth: handshake.auth.token (driver JWT)
- * Events: client emits "location" { latitude, longitude }; server stores and can expose via getActiveDriversWithLocation().
+ * Events: "location" or "driver_location" { latitude, longitude } (lat/lng also accepted); server stores and broadcasts to order/box tracking rooms.
  */
 
 const jwt = require('jsonwebtoken');
@@ -156,10 +156,9 @@ module.exports = function attachDriverPresence(io, db, JWT_SECRET) {
     });
     socket.emit('connected', { driverId, message: 'Driver presence registered' });
 
-    socket.on('location', (data) => {
-      // Accept numbers or numeric strings (mobile JSON often sends doubles as strings).
-      const lat = Number(data?.latitude);
-      const lon = Number(data?.longitude);
+    function applyPresenceLocation(data) {
+      const lat = Number(data?.latitude ?? data?.lat);
+      const lon = Number(data?.longitude ?? data?.lng ?? data?.long);
       if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
         socket.emit('error', { message: 'Invalid latitude/longitude' });
         return;
@@ -182,7 +181,6 @@ module.exports = function attachDriverPresence(io, db, JWT_SECRET) {
       } catch (e) {
         /* ignore */
       }
-      // Notify customer once when driver is within 0.5km of delivery location (store orders).
       try {
         const rows = db.prepare(`
           SELECT id, phoneNumber, addressLat, addressLong, nearArrivalNotified
@@ -220,7 +218,6 @@ module.exports = function attachDriverPresence(io, db, JWT_SECRET) {
         /* ignore near-arrival notifications */
       }
 
-      // Notify customer once when driver is within 0.5km of dropoff location (Arheb Box).
       try {
         const boxRows = db.prepare(`
           SELECT id, phoneNumber, dropoff, nearArrivalNotified
@@ -231,9 +228,13 @@ module.exports = function attachDriverPresence(io, db, JWT_SECRET) {
         for (const box of boxRows) {
           if (Number(box.nearArrivalNotified || 0) === 1) continue;
           let dropoff;
-          try { dropoff = JSON.parse(box.dropoff); } catch (_) { continue; }
-          const dLat = Number(dropoff?.latitude);
-          const dLon = Number(dropoff?.longitude);
+          try {
+            dropoff = JSON.parse(box.dropoff);
+          } catch (_) {
+            continue;
+          }
+          const dLat = Number(dropoff?.latitude ?? dropoff?.lat);
+          const dLon = Number(dropoff?.longitude ?? dropoff?.lng ?? dropoff?.long);
           if (!Number.isFinite(dLat) || !Number.isFinite(dLon)) continue;
           const distanceKm = haversineKm(lat, lon, dLat, dLon);
           if (distanceKm <= 0.5) {
@@ -260,7 +261,10 @@ module.exports = function attachDriverPresence(io, db, JWT_SECRET) {
         /* ignore box near-arrival — table may not exist yet */
       }
       socket.emit('location_ack', { success: true });
-    });
+    }
+
+    socket.on('location', (data) => applyPresenceLocation(data));
+    socket.on('driver_location', (data) => applyPresenceLocation(data));
 
     socket.on('disconnect', () => {
       activeDrivers.delete(driverId);

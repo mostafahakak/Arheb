@@ -40,6 +40,24 @@ function ensureOrderDriverShareColumns(db) {
   }
 }
 
+function ensureArhebBoxDriverShareColumns(db) {
+  try {
+    db.exec(`ALTER TABLE arheb_box_requests ADD COLUMN driverCommissionType TEXT`);
+  } catch (e) {
+    /* exists */
+  }
+  try {
+    db.exec(`ALTER TABLE arheb_box_requests ADD COLUMN driverCommissionValue REAL`);
+  } catch (e) {
+    /* exists */
+  }
+  try {
+    db.exec(`ALTER TABLE arheb_box_requests ADD COLUMN driverEarnings REAL`);
+  } catch (e) {
+    /* exists */
+  }
+}
+
 function ensureDriverRatingsTable(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS driver_ratings (
@@ -226,6 +244,63 @@ function resolveOrderDriverShare(db, order) {
   };
 }
 
+/** Arheb Box row: same commission model as store orders (share of deliveryFee). */
+function resolveArhebBoxDriverShare(db, box) {
+  if (
+    box &&
+    box.driverCommissionType != null &&
+    box.driverCommissionValue != null &&
+    box.driverEarnings != null
+  ) {
+    return {
+      commissionType: box.driverCommissionType,
+      commissionValue: round2(Number(box.driverCommissionValue)),
+      earningsJod: round2(Number(box.driverEarnings)),
+    };
+  }
+  const global = getDriverCommissionSettings(db);
+  const defaultPct = getDriverDeliveryDefaultPercent(db);
+  if (box && box.driverId != null) {
+    ensureDriverCommissionPercentColumn(db);
+    let row;
+    try {
+      row = db.prepare('SELECT commissionPercent FROM drivers WHERE id = ?').get(box.driverId);
+    } catch (e) {
+      row = null;
+    }
+    const pct = normalizeDriverCommissionPercent(row?.commissionPercent, defaultPct);
+    return {
+      commissionType: 'percent',
+      commissionValue: round2(pct),
+      earningsJod: computeDriverEarningsJod(box?.deliveryFee, 'percent', pct),
+    };
+  }
+  return {
+    commissionType: global.type,
+    commissionValue: global.value,
+    earningsJod: computeDriverEarningsJod(box?.deliveryFee, global.type, global.value),
+  };
+}
+
+function writeArhebBoxDriverEarningsSnapshot(db, requestId, driverId) {
+  if (!db || requestId == null || driverId == null) return;
+  ensureArhebBoxDriverShareColumns(db);
+  const box = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
+  if (!box) return;
+  const defaultPct = getDriverDeliveryDefaultPercent(db);
+  let driverRow;
+  try {
+    driverRow = db.prepare('SELECT commissionPercent FROM drivers WHERE id = ?').get(driverId);
+  } catch (e) {
+    driverRow = null;
+  }
+  const pct = normalizeDriverCommissionPercent(driverRow?.commissionPercent, defaultPct);
+  const earnings = computeDriverEarningsJod(box.deliveryFee, 'percent', pct);
+  db.prepare(
+    `UPDATE arheb_box_requests SET driverCommissionType = ?, driverCommissionValue = ?, driverEarnings = ? WHERE id = ?`,
+  ).run('percent', pct, earnings, requestId);
+}
+
 function assignDriverToOrder(db, orderId, driverId, driverName, status) {
   ensureOrderDriverShareColumns(db);
   ensureDriverCommissionPercentColumn(db);
@@ -267,6 +342,7 @@ module.exports = {
   round2,
   ensureDriverCommissionSettingsTable,
   ensureOrderDriverShareColumns,
+  ensureArhebBoxDriverShareColumns,
   ensureDriverRatingsTable,
   ensureDriverCommissionPercentColumn,
   ensureContactUsDriverDeliveryPercentColumn,
@@ -278,6 +354,8 @@ module.exports = {
   setDriverCommissionSettings,
   computeDriverEarningsJod,
   resolveOrderDriverShare,
+  resolveArhebBoxDriverShare,
+  writeArhebBoxDriverEarningsSnapshot,
   assignDriverToOrder,
   syncAllDriverRatingsFromTable,
 };

@@ -50,6 +50,8 @@ const {
   getDriverDeliveryDefaultPercent,
   ensureContactUsDriverDeliveryPercentColumn,
   ensureContactUsArhebBoxComingSoonColumn,
+  writeArhebBoxDriverEarningsSnapshot,
+  resolveArhebBoxDriverShare,
 } = require('../utils/driverCommission');
 const { getStoreFcmToken } = require('../storeFcm');
 const { enrichWithJordanTime } = require('../utils/jordanTime');
@@ -60,6 +62,8 @@ const {
   notifyAllOnlineDrivers,
   notifyDriverArhebBoxRequest,
   notifyAllOnlineDriversArhebBox,
+  clearArhebBoxOfferExpansion,
+  fcmPayloadForArhebBoxRequest,
 } = require('../utils/sequentialDriverOffer');
 const { runDeliveryClusterAutoAssign, ensureOrderAssignmentColumns } = require('../utils/deliveryClusterAssignment');
 
@@ -280,6 +284,38 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         name: admin.name || null,
       },
     });
+  });
+
+  /** Store Admin / Admin / SuperAdmin: change own password (requires current password). */
+  app.patch('/api/admin/me/password', auth, requireDashboardAdmin, (req, res) => {
+    try {
+      const { currentPassword, newPassword } = req.body || {};
+      if (currentPassword == null || typeof currentPassword !== 'string' || !String(currentPassword).length) {
+        return res.status(400).json({ success: false, message: 'currentPassword is required' });
+      }
+      if (newPassword == null || typeof newPassword !== 'string' || String(newPassword).length < 8) {
+        return res
+          .status(400)
+          .json({ success: false, message: 'newPassword must be at least 8 characters' });
+      }
+      const admin = findAdminById.get(req.admin.adminId);
+      if (!admin) return res.status(404).json({ success: false, message: 'Admin not found' });
+      if (!comparePassword(String(currentPassword), admin.passwordHash)) {
+        return res.status(401).json({ success: false, message: 'Current password is incorrect' });
+      }
+      db.prepare('UPDATE admins SET passwordHash = ? WHERE id = ?').run(hashPassword(String(newPassword)), admin.id);
+      logActivity(db, req, {
+        action: 'edit',
+        resourceType: 'admin_account',
+        resourceId: String(admin.id),
+        storeScopeId: admin.storeId != null ? String(admin.storeId) : null,
+        summary: 'Changed own password',
+      });
+      return res.status(200).json({ success: true, message: 'Password updated successfully' });
+    } catch (e) {
+      console.error('Admin change password error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to update password' });
+    }
   });
 
   // ——— Admins CRUD (SuperAdmin: all; Admin: cannot create/update/delete SuperAdmin) ———
@@ -1722,6 +1758,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   // ——— Orders (sorted newest first; filter by date range, status, store, name, orderType, paymentType, driver) ———
   function listAdminOrdersWithDetails(req) {
     const { dateFrom, dateTo, status, storeId, storeIds, storeName, name, orderType, statusFilter, paymentType, driverId, unassigned } = req.query;
+    const paymentTypeTrimmed =
+      paymentType && String(paymentType).trim() ? String(paymentType).trim() : '';
     const onlyArhebBox = orderType === 'arheb_box';
     const onlyStore = orderType === 'store';
 
@@ -1755,7 +1793,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         conditions.push("status = 'Cancelled'");
       }
       if (status && String(status).trim()) { conditions.push('status = ?'); params.push(String(status).trim()); }
-      if (paymentType && String(paymentType).trim()) { conditions.push('paymentType = ?'); params.push(String(paymentType).trim()); }
+      if (paymentTypeTrimmed) {
+        conditions.push('LOWER(TRIM(COALESCE(paymentType, ""))) = LOWER(?)');
+        params.push(paymentTypeTrimmed);
+      }
       if (unassigned === 'true' || unassigned === '1') {
         conditions.push('driverId IS NULL');
       } else if (driverId !== undefined && driverId !== null && String(driverId).trim() !== '') {
@@ -1820,7 +1861,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         } else if (statusFilter === 'cancelled') {
           boxCond.push("status = 'cancelled'");
         }
-        if (paymentType && String(paymentType).trim()) { boxCond.push('paymentMethod = ?'); boxParams.push(String(paymentType).trim()); }
+        if (paymentTypeTrimmed) {
+          boxCond.push('LOWER(TRIM(COALESCE(paymentMethod, ""))) = LOWER(?)');
+          boxParams.push(paymentTypeTrimmed);
+        }
         if (unassigned === 'true' || unassigned === '1') {
           boxCond.push('driverId IS NULL');
         } else if (driverId !== undefined && driverId !== null && String(driverId).trim() !== '') {
@@ -2839,9 +2883,32 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       const driver = db.prepare('SELECT id, name FROM drivers WHERE id = ? AND isBlocked = 0').get(driverIdNum);
       if (!driver) return res.status(404).json({ success: false, message: 'Driver not found or blocked' });
       db.prepare('UPDATE arheb_box_requests SET driverId = ?, driverName = ?, status = ? WHERE id = ?').run(driverIdNum, driver.name, 'assigned', id);
+      clearArhebBoxOfferExpansion(id);
+      try {
+        writeArhebBoxDriverEarningsSnapshot(db, id, driverIdNum);
+      } catch (e) {
+        /* ignore */
+      }
       try { const { emitArhebBoxEvent } = require('../order'); if (emitArhebBoxEvent) emitArhebBoxEvent(id, 'status_update', { status: 'assigned' }); } catch (e) { /* ignore */ }
-      fcm.sendToDriver(db, driverIdNum, 'New Arheb Box delivery', `Request #${id} has been assigned to you. Open the app to accept.`, { type: 'arheb_box_assigned', requestId: String(id) }).catch(() => {});
       const updated = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(id);
+      const driverFcmData = {
+        ...fcmPayloadForArhebBoxRequest(updated, id),
+        type: 'arheb_box_assigned',
+        status: 'assigned',
+      };
+      fcm
+        .sendToDriver(db, driverIdNum, 'New Arheb Box delivery', `Request #${id} has been assigned to you. Open the app to accept.`, driverFcmData)
+        .catch((err) => console.warn('[arheb-box] assign-driver FCM:', err?.message || err));
+      try {
+        const { emitDriverDeliveryRequest } = require('../driverPresence');
+        if (io) {
+          emitDriverDeliveryRequest(io, driverIdNum, {
+            requestId: id,
+            status: 'assigned',
+            type: 'arheb_box_assigned',
+          });
+        }
+      } catch (_) { /* ignore */ }
       logActivity(db, req, {
         action: 'edit',
         resourceType: 'arheb_box',
@@ -3120,6 +3187,25 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         totalProfit += share.earningsJod;
         totalDeliveryFees += Number(o.deliveryFee) || 0;
       }
+      let arhebBoxDelivered = [];
+      try {
+        arhebBoxDelivered = db
+          .prepare(`SELECT * FROM arheb_box_requests WHERE driverId = ? AND LOWER(TRIM(status)) = 'delivered'`)
+          .all(id);
+      } catch (e) {
+        if (!e.message || !e.message.includes('no such table')) throw e;
+      }
+      if (dateFrom) {
+        arhebBoxDelivered = arhebBoxDelivered.filter((b) => String(b.createdAt || '').slice(0, 10) >= dateFrom);
+      }
+      if (dateTo) {
+        arhebBoxDelivered = arhebBoxDelivered.filter((b) => String(b.createdAt || '').slice(0, 10) <= dateTo);
+      }
+      for (const b of arhebBoxDelivered) {
+        const share = resolveArhebBoxDriverShare(db, b);
+        totalProfit += share.earningsJod;
+        totalDeliveryFees += Number(b.deliveryFee) || 0;
+      }
 
       const totalOrders = orderRows.length;
       const offset = (page - 1) * perPage;
@@ -3191,7 +3277,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             totalOrders,
           },
           earningsForFilteredDelivered: {
-            orderCount: deliveredFiltered.length,
+            orderCount: deliveredFiltered.length + arhebBoxDelivered.length,
             totalDeliveryFees: Math.round((totalDeliveryFees + Number.EPSILON) * 100) / 100,
             totalProfit: Math.round((totalProfit + Number.EPSILON) * 100) / 100,
           },

@@ -3,6 +3,8 @@
  * Send push notifications to drivers, users, or all users (broadcast).
  *
  * Requires: FIREBASE_SERVICE_ACCOUNT_JSON (stringified JSON) or GOOGLE_APPLICATION_CREDENTIALS path.
+ *
+ * Driver and customer apps can share one Firebase project: use FIREBASE_SERVICE_ACCOUNT_JSON only.
  */
 
 const { getStoreFcmToken } = require('./storeFcm');
@@ -62,6 +64,11 @@ function getMessaging() {
     }
   }
   return messaging;
+}
+
+/** Same FCM project as customers (single FIREBASE_SERVICE_ACCOUNT_JSON). Kept for call-site compatibility. */
+function getMessagingForDriver() {
+  return getMessaging();
 }
 
 /** Firebase Auth (verifyIdToken, etc.). Same credentials as FCM. */
@@ -133,9 +140,8 @@ function insertUserNotification(db, phoneNumber, title, body, imageUrl, data) {
  * @param {object} [data]
  * @returns {Promise<string|null>} messageId or null on failure
  */
-async function sendToToken(token, title, body, imageUrl, data, options = {}) {
+async function sendToTokenWithMessaging(m, token, title, body, imageUrl, data, options = {}) {
   if (!token || typeof token !== 'string' || !token.trim()) return null;
-  const m = getMessaging();
   if (!m) return null;
   const payload = buildMessagePayload(title, body, imageUrl, data);
   const message = { ...payload, token };
@@ -153,9 +159,13 @@ async function sendToToken(token, title, body, imageUrl, data, options = {}) {
     const result = await m.send(message);
     return result;
   } catch (e) {
-    console.warn('fcm sendToToken failed:', e.message);
+    console.warn('fcm send failed:', e.message);
     return null;
   }
+}
+
+async function sendToToken(token, title, body, imageUrl, data, options = {}) {
+  return sendToTokenWithMessaging(getMessaging(), token, title, body, imageUrl, data, options);
 }
 
 /**
@@ -167,10 +177,9 @@ async function sendToToken(token, title, body, imageUrl, data, options = {}) {
  * @param {object} [data]
  * @returns {Promise<{ successCount: number, failureCount: number }>}
  */
-async function sendToTokens(tokens, title, body, imageUrl, data) {
+async function sendToTokensWithMessaging(m, tokens, title, body, imageUrl, data) {
   const list = (tokens || []).filter((t) => t && typeof t === 'string' && t.trim());
   if (list.length === 0) return { successCount: 0, failureCount: 0 };
-  const m = getMessaging();
   if (!m) return { successCount: 0, failureCount: list.length };
   const payload = buildMessagePayload(title, body, imageUrl, data);
   const BATCH = 500;
@@ -193,6 +202,10 @@ async function sendToTokens(tokens, title, body, imageUrl, data) {
   return { successCount, failureCount };
 }
 
+async function sendToTokens(tokens, title, body, imageUrl, data) {
+  return sendToTokensWithMessaging(getMessaging(), tokens, title, body, imageUrl, data);
+}
+
 /**
  * Send to a driver by driverId (looks up fcmToken from db).
  * @param {object} db - better-sqlite3 database
@@ -205,7 +218,8 @@ async function sendToDriver(db, driverId, title, body, data = {}) {
   if (!db || driverId == null) return null;
   const stmt = db.prepare('SELECT fcmToken FROM drivers WHERE id = ? AND fcmToken IS NOT NULL AND fcmToken != ?');
   const row = stmt.get(driverId, '');
-  return sendToToken(row?.fcmToken, title, body, null, data);
+  const m = getMessagingForDriver();
+  return sendToTokenWithMessaging(m, row?.fcmToken, title, body, null, data, { highPriority: true });
 }
 
 /**
@@ -216,7 +230,8 @@ async function sendToDrivers(db, driverIds, title, body, data = {}) {
   const placeholders = driverIds.map(() => '?').join(',');
   const rows = db.prepare(`SELECT fcmToken FROM drivers WHERE id IN (${placeholders}) AND fcmToken IS NOT NULL AND fcmToken != ''`).all(...driverIds);
   const tokens = rows.map((r) => r.fcmToken).filter(Boolean);
-  return sendToTokens(tokens, title, body, null, data);
+  const m = getMessagingForDriver();
+  return sendToTokensWithMessaging(m, tokens, title, body, null, data);
 }
 
 /**
@@ -272,6 +287,7 @@ async function sendToAllUsers(db, title, body, imageUrl, data = {}) {
 module.exports = {
   ensureFirebaseAdmin,
   getMessaging,
+  getMessagingForDriver,
   getAuth,
   sendToToken,
   sendToTokens,

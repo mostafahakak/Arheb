@@ -1,7 +1,11 @@
 const fs = require('fs');
 const path = require('path');
 const { getJsonPath } = require('../config/jsonPaths');
-const { isStoreListedForCustomerBrowse, isStoreVisibleToCustomers } = require('../utils/storeVisibility');
+const {
+  isStoreListedForCustomerBrowse,
+  isStoreVisibleToCustomers,
+  customerFacingIsOpen,
+} = require('../utils/storeVisibility');
 
 const storesResponsePath = getJsonPath('stores_listing_response.json');
 const productsResponsePath = getJsonPath('products_listing_response.json');
@@ -61,13 +65,21 @@ module.exports = function attachSearchRoutes(app) {
     const storeFields = ['name', 'nameAr', 'nameEn', 'category', 'categoryAr', 'categoryEn'];
     const productFields = ['name', 'nameAr', 'nameEn', 'productName', 'productNameAr', 'productNameEn', 'category', 'categoryName'];
 
+    const storeById = Object.fromEntries(stores.map((s) => [String(s.id), s]));
+
     const matchedStores = stores
       .filter((s) => isStoreListedForCustomerBrowse(s) && matchesText(s, q, storeFields))
       .map((s) => {
-        const { arhebFee, hiddenFromCustomers, ...rest } = s;
-        return { ...rest, status: computeStoreStatus(s) };
+        const { arhebFee, hiddenFromCustomers, isOpen: _rawOpen, ...rest } = s;
+        return { ...rest, isOpen: customerFacingIsOpen(s), status: computeStoreStatus(s) };
       });
-    const matchedProducts = products.filter((p) => p.isAvailable !== false && matchesText(p, q, productFields));
+    const matchedProducts = products.filter(
+      (p) =>
+        p.isAvailable !== false &&
+        matchesText(p, q, productFields) &&
+        p.store?.id != null &&
+        isStoreListedForCustomerBrowse(storeById[String(p.store.id)]),
+    );
 
     return res.status(200).json({
       success: true,

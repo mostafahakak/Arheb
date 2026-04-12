@@ -25,6 +25,7 @@ const attachSearchRoutes = require('./search');
 const attachDriverRoutes = require('./driver');
 const attachPaymentRoutes = require('./payment');
 const { getAuth } = require('./fcm');
+const { attachAdminDashboardNamespace } = require('./utils/adminDashboardSocket');
 
 dotenv.config();
 
@@ -66,6 +67,7 @@ const io = new Server(httpServer, {
     methods: ["GET", "POST"]
   }
 });
+attachAdminDashboardNamespace(io, JWT_SECRET);
 
 const dataDir = process.env.ARHEB_DATA_DIR
   ? (path.isAbsolute(process.env.ARHEB_DATA_DIR)
@@ -536,9 +538,9 @@ function authenticateRequest(req, res, next) {
 
 attachProfileRoutes(app, db, authenticateRequest);
 attachCheckoutRoutes(app, db, authenticateRequest);
-attachPaymentRoutes(app, db, authenticateRequest);
+attachPaymentRoutes(app, db, authenticateRequest, io);
 attachContactRoutes(app, db, authenticateRequest);
-attachArhebBoxRoutes(app, db, authenticateRequest);
+attachArhebBoxRoutes(app, db, authenticateRequest, io);
 attachOrderTrackingRoutes(io, app, db, authenticateRequest, JWT_SECRET);
 attachDriverPresence(io, db, JWT_SECRET);
 attachMerchantPresence(io, db, JWT_SECRET);

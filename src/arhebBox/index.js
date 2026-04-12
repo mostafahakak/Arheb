@@ -289,7 +289,23 @@ function createArhebBoxRequest(db, phoneNumber, body, statusOverride, options = 
   return { ok: true, requestId: row.id, row };
 }
 
-module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest) {
+function notifyDriversAboutNewArhebBox(db, io, row) {
+  if (!row || row.id == null) return;
+  try {
+    const { notifyAllOnlineDriversArhebBox } = require('../utils/sequentialDriverOffer');
+    const { getActiveFromListWithDistance } = require('../driverPresence');
+    const fullRow = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(row.id) || row;
+    notifyAllOnlineDriversArhebBox(db, io, fullRow.id, fullRow, { getActiveFromListWithDistance });
+    try {
+      const { broadcastDriverOrdersUpdated } = require('../driverPresence');
+      if (io) broadcastDriverOrdersUpdated(io, { type: 'arheb_box_new', requestId: fullRow.id });
+    } catch (_) { /* ignore */ }
+  } catch (e) {
+    console.error('[arheb-box] notify drivers on create:', e.message || e);
+  }
+}
+
+module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest, io) {
   ensureArhebBoxTable(db);
 
   // Quote: distance, minimum parcel amount, delivery fee, and VAT on delivery (no auth)
@@ -410,6 +426,14 @@ module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest) {
           ...(result.data ? { data: result.data } : {}),
         });
       }
+      notifyDriversAboutNewArhebBox(db, io, result.row);
+      try {
+        const { emitArhebBoxEvent } = require('../order');
+        if (emitArhebBoxEvent) emitArhebBoxEvent(result.row.id, 'created', {});
+      } catch (_) {
+        /* ignore */
+      }
+
       return res.status(201).json({
         success: true,
         message: 'Arheb box request received successfully',
@@ -426,6 +450,7 @@ module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest) {
 module.exports.enrichArhebBoxRow = enrichRequestRow;
 module.exports.createArhebBoxRequest = createArhebBoxRequest;
 module.exports.ensureArhebBoxTable = ensureArhebBoxTable;
+module.exports.notifyDriversAboutNewArhebBox = notifyDriversAboutNewArhebBox;
 module.exports.calcArhebBoxDeliveryFeeJod = calcArhebBoxDeliveryFeeJod;
 module.exports.calcDeliveryFeeFromDistanceAndWeight = calcDeliveryFeeFromDistanceAndWeight;
 /** @deprecated Store-order max (3 JOD). Arheb Box delivery fee has no cap. */

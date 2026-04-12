@@ -600,6 +600,15 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         .catch(() => {});
     }
 
+    try {
+      const { emitAdminOrdersListUpdated } = require('../order/trackingEmitter');
+      if (typeof emitAdminOrdersListUpdated === 'function') {
+        emitAdminOrdersListUpdated({ kind: 'store_order', orderId, source: 'checkout' });
+      }
+    } catch (_) {
+      /* ignore */
+    }
+
     const order = findOrderById.get(orderId);
     const findOrderItemsCreated = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
     const itemsOut = mapOrderItemsRows(findOrderItemsCreated.all(orderId));

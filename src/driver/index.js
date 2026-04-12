@@ -15,6 +15,8 @@ const {
   normalizeDriverCommissionPercent,
   syncAllDriverRatingsFromTable,
   resolveOrderDriverShare,
+  resolveArhebBoxDriverShare,
+  writeArhebBoxDriverEarningsSnapshot,
   assignDriverToOrder,
   round2,
 } = require('../utils/driverCommission');
@@ -48,7 +50,17 @@ function earningsGrowthPercentVsYesterday(db, driverId, todayProfitJod, todayDat
   const yRows = db
     .prepare('SELECT * FROM orders WHERE driverId = ? AND status = ? AND date(createdAt) = ?')
     .all(driverId, 'Delivered', yesterdayStr);
-  const yProfit = sumDriverEarningsForOrders(db, yRows);
+  let yBox = [];
+  try {
+    yBox = db
+      .prepare(
+        `SELECT * FROM arheb_box_requests WHERE driverId = ? AND LOWER(TRIM(status)) = 'delivered' AND date(createdAt) = ?`,
+      )
+      .all(driverId, yesterdayStr);
+  } catch (e) {
+    if (!e.message || !e.message.includes('no such table')) throw e;
+  }
+  const yProfit = sumDriverEarningsForOrders(db, yRows) + sumDriverEarningsForArhebBoxes(db, yBox);
   const t = Number(todayProfitJod) || 0;
   if (yProfit > 0) {
     return round2(((t - yProfit) / yProfit) * 100);
@@ -86,6 +98,14 @@ function loadStores() {
 function sumDriverEarningsForOrders(db, orderRows) {
   return orderRows.reduce((s, o) => {
     const share = resolveOrderDriverShare(db, o);
+    const e = share.earningsJod;
+    return s + (Number.isFinite(e) ? e : 0);
+  }, 0);
+}
+
+function sumDriverEarningsForArhebBoxes(db, boxRows) {
+  return boxRows.reduce((s, b) => {
+    const share = resolveArhebBoxDriverShare(db, b);
     const e = share.earningsJod;
     return s + (Number.isFinite(e) ? e : 0);
   }, 0);
@@ -492,10 +512,30 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     const todayStr = todayStart.toISOString().slice(0, 10);
     const todayOrders = db.prepare('SELECT * FROM orders WHERE driverId = ? AND status = ? AND date(createdAt) = ?').all(driverId, 'Delivered', todayStr);
     const allDelivered = db.prepare('SELECT * FROM orders WHERE driverId = ? AND status = ?').all(driverId, 'Delivered');
-    const todayProfit = sumDriverEarningsForOrders(db, todayOrders);
-    const totalProfit = sumDriverEarningsForOrders(db, allDelivered);
-    const todayDeliveryFees = todayOrders.reduce((s, o) => s + (Number(o.deliveryFee) || 0), 0);
-    const totalDeliveryFees = allDelivered.reduce((s, o) => s + (Number(o.deliveryFee) || 0), 0);
+    let todayBoxDelivered = [];
+    let allBoxDelivered = [];
+    try {
+      todayBoxDelivered = db
+        .prepare(
+          `SELECT * FROM arheb_box_requests WHERE driverId = ? AND LOWER(TRIM(status)) = 'delivered' AND date(createdAt) = ?`,
+        )
+        .all(driverId, todayStr);
+      allBoxDelivered = db
+        .prepare(`SELECT * FROM arheb_box_requests WHERE driverId = ? AND LOWER(TRIM(status)) = 'delivered'`)
+        .all(driverId);
+    } catch (e) {
+      if (!e.message || !e.message.includes('no such table')) throw e;
+    }
+    const todayProfit =
+      sumDriverEarningsForOrders(db, todayOrders) + sumDriverEarningsForArhebBoxes(db, todayBoxDelivered);
+    const totalProfit =
+      sumDriverEarningsForOrders(db, allDelivered) + sumDriverEarningsForArhebBoxes(db, allBoxDelivered);
+    const todayDeliveryFees =
+      todayOrders.reduce((s, o) => s + (Number(o.deliveryFee) || 0), 0) +
+      todayBoxDelivered.reduce((s, b) => s + (Number(b.deliveryFee) || 0), 0);
+    const totalDeliveryFees =
+      allDelivered.reduce((s, o) => s + (Number(o.deliveryFee) || 0), 0) +
+      allBoxDelivered.reduce((s, b) => s + (Number(b.deliveryFee) || 0), 0);
 
     const defaultPct = getDriverDeliveryDefaultPercent(db);
     const homeCommission =
@@ -522,8 +562,8 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
       /** @deprecated full delivery fee totals; prefer todayProfit/totalProfit */
       todayEarnings: todayProfit,
       totalEarnings: totalProfit,
-      todayOrders: todayOrders.length,
-      totalOrders: allDelivered.length,
+      todayOrders: todayOrders.length + todayBoxDelivered.length,
+      totalOrders: allDelivered.length + allBoxDelivered.length,
       rating: req.driver.rating ?? 5,
     };
 
@@ -587,7 +627,23 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     }
     const completed = orders.filter((o) => mapOrderStatus(o.status) === 'delivered');
     const cancelled = orders.filter((o) => mapOrderStatus(o.status) === 'cancelled');
-    const profit = sumDriverEarningsForOrders(db, completed);
+    let boxForPeriod = [];
+    let boxAllPeriod = [];
+    try {
+      if (period === 'today') {
+        boxAllPeriod = db
+          .prepare(`SELECT * FROM arheb_box_requests WHERE driverId = ? AND date(createdAt) = ?`)
+          .all(driverId, todayStr);
+        boxForPeriod = boxAllPeriod.filter((b) => String(b.status || '').trim().toLowerCase() === 'delivered');
+      } else {
+        boxAllPeriod = db.prepare(`SELECT * FROM arheb_box_requests WHERE driverId = ?`).all(driverId);
+        boxForPeriod = boxAllPeriod.filter((b) => String(b.status || '').trim().toLowerCase() === 'delivered');
+      }
+    } catch (e) {
+      if (!e.message || !e.message.includes('no such table')) throw e;
+    }
+    const boxCancelledCount = boxAllPeriod.filter((b) => String(b.status || '').trim().toLowerCase() === 'cancelled').length;
+    const profit = sumDriverEarningsForOrders(db, completed) + sumDriverEarningsForArhebBoxes(db, boxForPeriod);
     const ratingCount = req.driver.ratingCount != null ? Number(req.driver.ratingCount) : 0;
 
     let earningsGrowthPercent = null;
@@ -608,9 +664,9 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
           profit,
           earnings: profit,
           earningsGrowthPercent,
-          totalOrders: orders.length,
-          completedOrders: completed.length,
-          cancelledOrders: cancelled.length,
+          totalOrders: orders.length + boxAllPeriod.length,
+          completedOrders: completed.length + boxForPeriod.length,
+          cancelledOrders: cancelled.length + boxCancelledCount,
           avgDeliveryTimeMinutes: null,
           rating: req.driver.rating ?? 5,
           totalReviews: ratingCount,
@@ -744,13 +800,25 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     const rows = db
       .prepare('SELECT * FROM orders WHERE driverId = ? AND status = ? AND date(createdAt) = ?')
       .all(driverId, 'Delivered', todayStr);
-    const profit = sumDriverEarningsForOrders(db, rows);
-    const deliveryFees = rows.reduce((s, o) => s + (Number(o.deliveryFee) || 0), 0);
+    let boxRows = [];
+    try {
+      boxRows = db
+        .prepare(
+          `SELECT * FROM arheb_box_requests WHERE driverId = ? AND LOWER(TRIM(status)) = 'delivered' AND date(createdAt) = ?`,
+        )
+        .all(driverId, todayStr);
+    } catch (e) {
+      if (!e.message || !e.message.includes('no such table')) throw e;
+    }
+    const profit = sumDriverEarningsForOrders(db, rows) + sumDriverEarningsForArhebBoxes(db, boxRows);
+    const deliveryFees =
+      rows.reduce((s, o) => s + (Number(o.deliveryFee) || 0), 0) +
+      boxRows.reduce((s, b) => s + (Number(b.deliveryFee) || 0), 0);
     return res.status(200).json({
       success: true,
       data: {
         date: todayStr,
-        orderCount: rows.length,
+        orderCount: rows.length + boxRows.length,
         totalDeliveryFees: Math.round((deliveryFees + Number.EPSILON) * 100) / 100,
         totalProfit: profit,
       },
@@ -769,14 +837,30 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     if (dateTo) {
       rows = rows.filter((o) => String(o.createdAt || '').slice(0, 10) <= dateTo);
     }
-    const profit = sumDriverEarningsForOrders(db, rows);
-    const deliveryFees = rows.reduce((s, o) => s + (Number(o.deliveryFee) || 0), 0);
+    let boxRows = [];
+    try {
+      boxRows = db
+        .prepare(`SELECT * FROM arheb_box_requests WHERE driverId = ? AND LOWER(TRIM(status)) = 'delivered'`)
+        .all(driverId);
+    } catch (e) {
+      if (!e.message || !e.message.includes('no such table')) throw e;
+    }
+    if (dateFrom) {
+      boxRows = boxRows.filter((b) => String(b.createdAt || '').slice(0, 10) >= dateFrom);
+    }
+    if (dateTo) {
+      boxRows = boxRows.filter((b) => String(b.createdAt || '').slice(0, 10) <= dateTo);
+    }
+    const profit = sumDriverEarningsForOrders(db, rows) + sumDriverEarningsForArhebBoxes(db, boxRows);
+    const deliveryFees =
+      rows.reduce((s, o) => s + (Number(o.deliveryFee) || 0), 0) +
+      boxRows.reduce((s, b) => s + (Number(b.deliveryFee) || 0), 0);
     return res.status(200).json({
       success: true,
       data: {
         dateFrom,
         dateTo,
-        orderCount: rows.length,
+        orderCount: rows.length + boxRows.length,
         totalDeliveryFees: Math.round((deliveryFees + Number.EPSILON) * 100) / 100,
         totalProfit: profit,
       },
@@ -1018,6 +1102,11 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     const driverRow = findDriverById.get(driverId);
     const driverName = driverRow ? driverRow.name : null;
     db.prepare('UPDATE arheb_box_requests SET driverId = ?, driverName = ?, status = ? WHERE id = ?').run(driverId, driverName, 'in_progress', requestId);
+    try {
+      writeArhebBoxDriverEarningsSnapshot(db, requestId, driverId);
+    } catch (e) {
+      /* ignore */
+    }
     emitBoxStatus(requestId, 'in_progress');
 
     const pseudoOrderId = -requestId;
@@ -1029,6 +1118,11 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     try {
       const { broadcastDriverOrdersUpdated } = require('../driverPresence');
       broadcastDriverOrdersUpdated(io, { type: 'arheb_box_accepted', requestId, driverId });
+    } catch (e) { /* ignore */ }
+
+    try {
+      const { clearArhebBoxOfferExpansion } = require('../utils/sequentialDriverOffer');
+      clearArhebBoxOfferExpansion(requestId);
     } catch (e) { /* ignore */ }
 
     fcm.sendToToken(row.fcmToken, 'Arheb Box accepted', `A driver has accepted your request #${requestId}.`, null, { type: 'arheb_box_status', requestId: String(requestId), status: 'in_progress' }).catch(() => {});
