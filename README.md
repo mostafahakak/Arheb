@@ -140,6 +140,7 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
 - **User FCM**: Users can set `fcmToken` via **PUT /api/profile** or send it with **POST /api/checkout**. Order status changes (and broadcast notifications) are sent to the user’s token. **GET /api/profile/notifications** lists notification history for that user only (Bearer user JWT).
 - **Store FCM**: Store devices (kitchen / POS) register a token with **POST /api/store/update-fcm** (`storeId`, `fcmToken`). Tokens are stored in the database and returned on **GET / PATCH** admin store details as `fcmToken`. When a customer order is created (**POST /api/checkout** or payment flow that creates an order), the backend sends a push to that store’s token if configured (`type: store_new_order` in the data payload).
 - **Broadcast**: Admin/SuperAdmin can send a notification to all registered users via **POST /api/admin/notifications/broadcast** (`title`, `body`, optional `imageUrl`).
+- **FCM test (one device)**: **SuperAdmin** can send a single test push via **POST /api/admin/notifications/fcm-test** (`fcmToken`, `title`, `body`, optional `imageUrl`). Use the same Firebase project as **`FIREBASE_SERVICE_ACCOUNT_JSON`**. The hosted admin dashboard includes a **Notifications** sidebar item (SuperAdmin only) with a form for token test and broadcast.
 
 ---
 
@@ -3829,6 +3830,7 @@ For issues or questions, please contact: `contact@arheb.app`
 | GET | `/api/admin/stores/pause-history` | Admin | Returns store pause history: sessions (pausedAt, unpausedAt, durationMinutes) and total duration. Query: `dateFrom`, `dateTo` (default today), optional `storeIds` (comma-separated). Store Admin sees only their store. |
 | GET | `/api/admin/notifications` | Admin / SuperAdmin | Returns list of sent broadcast notifications (id, title, body, imageUrl, successCount, failureCount, createdAt) for the dashboard history. |
 | POST | `/api/admin/notifications/broadcast` | Admin / SuperAdmin | Sends FCM to all users. Body: `{ title, body, imageUrl? }`. Each broadcast is **saved** to the `Notifications` table for later retrieval via GET `/api/admin/notifications`. |
+| POST | `/api/admin/notifications/fcm-test` | **SuperAdmin only** | Sends one FCM to a device token. Body: `{ fcmToken, title, body?, imageUrl? }`. Data payload includes `type: admin_fcm_test`. Does **not** write to `user_notifications` or the broadcast history table. Returns `{ messageId }` on success. |
 | GET | `/api/profile/notifications` | User (Bearer) | In-app notification inbox: paginated list (`page`, `perPage`) of notifications **sent to this user only**. Persisted in `user_notifications` when FCM is sent (per-user pushes and broadcast). Each item includes `data` (FCM payload: `orderId`, `deepLink`, `type`, …). |
 | POST | `/api/payment/initiate` | User (Bearer) | Creates order from **`checkout`** body (card only), then Madfoat session. Returns **201** with `data.checkout` (same shape as POST /api/checkout) and `data.payment` (`tranRef`, `redirectUrl`, etc.). Saves `paymentTranRef` / `paymentCartId` on the order. |
 | GET | `/api/payment/client-key` | None | Returns client key and profile ID for managed-form (paylib.js) frontend integration. |
@@ -3911,6 +3913,7 @@ For issues or questions, please contact: `contact@arheb.app`
   - **Driver:** **PATCH** `/api/driver/fcm` – body `{ fcmToken }` to register/update token when driver is active. Drivers receive order notifications only in **Preparing** stage (request/auto-assign).  
   - **User:** **PUT** `/api/profile` and **POST** `/api/checkout` accept optional **`fcmToken`**. Users receive tracking notifications for: order confirmed/preparing, driver assigned/on-the-way, and near-arrival (0.5 km).  
   - **Broadcast:** **POST** `/api/admin/notifications/broadcast` (Admin/SuperAdmin) – body `{ title, body, imageUrl? }` sends FCM to all users with a stored token.
+  - **FCM test:** **POST** `/api/admin/notifications/fcm-test` (**SuperAdmin only**) – body `{ fcmToken, title, body?, imageUrl? }` sends one notification for debugging. **`admin_fcm_test`** in `data.type`.
   - Tracking notifications include clickable data payload keys: `orderId`, `status`, `type`, `screen`, `deepLink`, `click_action`.
 
 - **Notification `data.type` values (for app click handling)**

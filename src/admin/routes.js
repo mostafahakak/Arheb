@@ -2828,6 +2828,52 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     }
   });
 
+  // ——— Send FCM test to a single device token (SuperAdmin only) ———
+  app.post('/api/admin/notifications/fcm-test', auth, requireSuperAdmin, async (req, res) => {
+    const { fcmToken, title, body, imageUrl } = req.body || {};
+    if (!fcmToken || typeof fcmToken !== 'string' || !fcmToken.trim()) {
+      return res.status(400).json({ success: false, message: 'fcmToken is required' });
+    }
+    if (!title || typeof title !== 'string' || !title.trim()) {
+      return res.status(400).json({ success: false, message: 'title is required' });
+    }
+    const bodyStr = typeof body === 'string' ? body : body != null ? String(body) : '';
+    const image = typeof imageUrl === 'string' && imageUrl.trim() ? imageUrl.trim() : null;
+    try {
+      const messageId = await fcm.sendToToken(
+        fcmToken.trim(),
+        title.trim(),
+        bodyStr,
+        image,
+        { type: 'admin_fcm_test', click_action: 'FLUTTER_NOTIFICATION_CLICK' },
+      );
+      if (!messageId) {
+        return res.status(502).json({
+          success: false,
+          message:
+            'FCM did not return a message id (invalid/expired token, wrong Firebase project, or Firebase not configured)',
+          data: { messageId: null },
+        });
+      }
+      logActivity(db, req, {
+        action: 'add',
+        resourceType: 'notification_fcm_test',
+        resourceId: null,
+        storeScopeId: null,
+        summary: `FCM test push sent (token prefix ${fcmToken.trim().slice(0, 10)}…)`,
+        details: { messageId },
+      });
+      return res.status(200).json({
+        success: true,
+        message: 'Test notification sent',
+        data: { messageId },
+      });
+    } catch (e) {
+      console.error('FCM test notification error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to send test notification' });
+    }
+  });
+
   // ——— List all notifications (Admin / SuperAdmin) ———
   app.get('/api/admin/notifications', auth, requireAdminOrSuper, (req, res) => {
     try {
