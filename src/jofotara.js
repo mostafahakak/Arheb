@@ -75,36 +75,18 @@ function buildInvoiceXml(order, invoiceUUID, options = {}) {
   const serviceFee = includeServiceLine ? (Number(order.serviceFee) || 0) : 0;
   const taxableBase = round9(deliveryFee + serviceFee);
 
-  const storedFeesTax =
-    order.feesTax != null && order.feesTax !== '' && Number.isFinite(Number(order.feesTax))
-      ? Number(order.feesTax)
-      : null;
-
-  let deliveryTax;
-  let serviceTax;
-  let taxAmount;
-
-  if (storedFeesTax != null && taxableBase > 0) {
-    taxAmount = round9(storedFeesTax);
-    if (includeServiceLine && deliveryFee > 0 && serviceFee > 0) {
-      deliveryTax = round9(taxAmount * (deliveryFee / taxableBase));
-      serviceTax = round9(taxAmount - deliveryTax);
-    } else if (includeServiceLine && serviceFee > 0 && deliveryFee <= 0) {
-      deliveryTax = 0;
-      serviceTax = taxAmount;
-    } else {
-      deliveryTax = taxAmount;
-      serviceTax = 0;
-    }
-  } else {
-    deliveryTax = round9(deliveryFee * TAX_RATE);
-    serviceTax = includeServiceLine ? round9(serviceFee * TAX_RATE) : 0;
-    taxAmount = round9(deliveryTax + serviceTax);
-  }
+  /**
+   * JoFotara validates "special" (standard) VAT per line: each line tax must be exactly 7% of that line's
+   * tax-exclusive amount. Splitting checkout's round2(total VAT) across lines breaks that and triggers
+   * totalSpecialTaxesAmount / totalInclusiveAmount / totalPayableAmount errors.
+   */
+  const deliveryTax = round9(deliveryFee * TAX_RATE);
+  const serviceTax = includeServiceLine ? round9(serviceFee * TAX_RATE) : 0;
+  const taxAmount = round9(deliveryTax + serviceTax);
 
   const deliveryInclTax = round9(deliveryFee + deliveryTax);
   const serviceInclTax = round9(serviceFee + serviceTax);
-  const totalWithTax = round9(taxableBase + taxAmount);
+  const totalWithTax = round9(deliveryInclTax + serviceInclTax);
   const payableAmount = totalWithTax;
 
   const f9 = (n) => Number(n).toFixed(9);

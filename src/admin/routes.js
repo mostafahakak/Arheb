@@ -4040,6 +4040,30 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   app.post('/api/admin/orders/:orderId/einvoice/retry', auth, requireAdminOrSuper, async (req, res) => {
     const orderId = parseInt(req.params.orderId, 10);
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
+    const isBox =
+      req.query.type === 'arheb_box' ||
+      (req.body && typeof req.body === 'object' && req.body.type === 'arheb_box');
+
+    if (isBox) {
+      let row;
+      try {
+        row = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(orderId);
+      } catch (e) {
+        row = null;
+      }
+      if (!row) return res.status(404).json({ success: false, message: 'Arheb box request not found' });
+      if (row.einvoiceStatus === 'submitted') {
+        return res.status(400).json({ success: false, message: 'E-invoice already submitted successfully' });
+      }
+      try {
+        const { submitJofotaraInvoiceForArhebBox } = require('../jofotara');
+        const result = await submitJofotaraInvoiceForArhebBox(db, orderId);
+        return res.status(200).json({ success: result.ok, data: result });
+      } catch (e) {
+        return res.status(500).json({ success: false, message: e.message || 'E-invoice submission failed' });
+      }
+    }
+
     const order = findOrderById.get(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     if (order.einvoiceStatus === 'submitted') {
