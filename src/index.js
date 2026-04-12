@@ -70,9 +70,13 @@ app.use(express.json());
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  }
+    origin: '*',
+    methods: ['GET', 'POST'],
+  },
+  /** Friendlier behind Render / proxies (WS upgrade can be slow). */
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  transports: ['polling', 'websocket'],
 });
 attachAdminDashboardNamespace(io, JWT_SECRET);
 
