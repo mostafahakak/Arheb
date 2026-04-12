@@ -1079,6 +1079,8 @@ if (data.success) {
 
 Searches stores and products by text. Returns stores whose name/category (EN/AR) contain the query, and products whose name/category contain the query. Stores and products are returned in separate lists.
 
+**Visibility:** Results include only stores that are **open for customer browse**: **paused**, **merchant-closed** (`isOpen === false`), **outside Jordan opening hours**, **blocked**, or **hiddenFromCustomers** stores are **omitted**, and **no products** from those stores are returned. Each matched product’s nested **`store`** includes **`status`** and **`isOpen`** aligned with the canonical store record.
+
 **Endpoint:** `GET /api/search?q=text`
 
 **Authentication:** Not required
@@ -2774,12 +2776,16 @@ Arheb integrates with Jordan's **JOFOTARA** system to automatically submit **Inc
 
 | Field | Value |
 |-------|-------|
-| Invoice type | `021` — Income Bill (فاتورة دخل) |
-| Tax rate | 7% on delivery fee + service fee |
-| Payment method | `012` (cash) or `022` (card) based on order `paymentType` |
-| Currency | JOD |
+| Invoice type | Income Bill (فاتورة دخل), UBL type **388** |
+| Tax rate | 7% on delivery fee + service fee (per line; totals = sum of lines) |
+| Payment method | **`011`** (cash) or **`021`** (card / receivable) from order `paymentType` — income-invoice codes per JoFotara |
+| Currency | **`DocumentCurrencyCode` / `TaxCurrencyCode`:** JOD; **monetary `currencyID` on amounts:** `JO` (Jordan e-invoice profile; matches [jafar-albadarneh/jofotara](https://github.com/jafar-albadarneh/jofotara) SDK) |
 | Format | UBL 2.1 XML, base64-encoded |
 | API endpoint | `https://backend.jofotara.gov.jo/core/invoices/` |
+
+**Validation errors:** If JoFotara returns **`totalSpecialTaxesAmount`** / **`totalInclusiveAmount`** / **`totalPayableAmount`** incorrect, the XML totals or line VAT no longer match their rules (often currency code on amounts or line/document tax structure). XSD can still pass while business rules fail.
+
+**Arheb Box retry:** **`POST /api/admin/orders/:id/einvoice/retry?type=arheb_box`** (or JSON body `{ "type": "arheb_box" }`) retries using the **`arheb_box_requests`** row id, not a store order id.
 
 ### Environment variables (set on Render)
 
@@ -2797,7 +2803,7 @@ If credentials are not configured, submissions are **skipped** (status `skipped`
 
 - **`GET /api/admin/einvoices`** — List all orders with e-invoice data. Filters: `status` (`submitted`/`failed`/`pending`/`skipped`), `dateFrom`, `dateTo`. Returns `data.invoices` + `data.counts`.
 - **`GET /api/admin/orders/:orderId/einvoice`** — E-invoice details for a single order.
-- **`POST /api/admin/orders/:orderId/einvoice/retry`** — Retry a failed submission.
+- **`POST /api/admin/orders/:orderId/einvoice/retry`** — Retry a failed submission. For **Arheb Box**, send **`?type=arheb_box`** or body **`{ "type": "arheb_box" }`** with **`orderId`** = box request id.
 
 All e-invoice endpoints are **Admin / SuperAdmin only**. Store admins can trigger invoice submission (by marking order Delivered) but cannot view e-invoice details.
 
@@ -3370,7 +3376,9 @@ Returns earnings and order stats for the driver (optionally filtered by period).
 
 ### Driver Orders List
 
-Returns a paginated list of orders for the driver. Filter: `all` (orders assigned to driver), `available` (unassigned **store** orders in `Preparing`), or `mine` / `in_progress` (assigned, not yet delivered). When **`filter=available`**, the response also includes **`arhebBoxAvailable`** and **`arhebBoxAvailableCount`**: Arheb Box requests assigned to this driver with status **`assigned`** (mirror of home).
+Returns a paginated list of orders for the driver. Filter: **`all`** (everything assigned to this driver — see below), **`available`** (unassigned **store** orders in `Preparing`), or **`mine`** / **`in_progress`** (assigned store orders not yet delivered/cancelled). When **`filter=available`**, the response also includes **`arhebBoxAvailable`** and **`arhebBoxAvailableCount`**: box rows already assigned to this driver (**`assigned`** / **`in_progress`**) plus **`confirmed`** rows with no driver yet (same idea as driver home).
+
+For **`filter=all`**, **`orders`** is a **merged** list of **store** orders and **Arheb Box** requests that have this **`driverId`**, sorted by **`createdAt`** descending (newest first). Each element includes **`orderType`**: **`"store"`** (same fields as [Driver order object](#driver-order-object-fields)) or **`"arheb_box"`** with a **`request`** object (enriched box payload, same shape as elsewhere in the driver API).
 
 **Endpoint:** `GET /api/driver/orders?filter=all&page=1&perPage=20`
 
@@ -3393,6 +3401,7 @@ Returns a paginated list of orders for the driver. Filter: `all` (orders assigne
     "total": 125,
     "orders": [
       {
+        "orderType": "store",
         "id": "20",
         "orderNumber": "ORD-0020",
         "storeId": "1",
@@ -3413,13 +3422,17 @@ Returns a paginated list of orders for the driver. Filter: `all` (orders assigne
           "commissionValue": 0.65,
           "earningsJod": 1.3
         }
+      },
+      {
+        "orderType": "arheb_box",
+        "request": { "id": "15", "status": "in_progress", "deliveryFee": 3.0 }
       }
     ]
   }
 }
 ```
 
-Each order includes **`driverShare`** when the response is built with commission resolution (assigned orders). See [Driver order object (fields)](#driver-order-object-fields).
+Store rows include **`orderType": "store"`** plus the usual fields. **`driverShare`** is present when commission is resolved. **`filter=available`** and **`filter=in_progress`** lists are **store orders only** (no **`orderType`** on those items). See [Driver order object (fields)](#driver-order-object-fields).
 
 ---
 
@@ -3584,7 +3597,9 @@ Marks an **Arheb Box** request **delivered** from the driver app. **Bearer** mus
 
 ### Driver order object (fields)
 
-On driver-facing order objects (`GET /api/driver/home`, `GET /api/driver/orders`, `GET /api/driver/orders/assigned`, `GET /api/driver/orders/:orderId`, `POST /api/driver/orders/accept`, complete-order responses, etc.), each order includes:
+For **`GET /api/driver/orders?filter=all`** and **`GET /api/driver/orders/assigned`**, each **`orders[]`** item has **`orderType`**: **`store`** | **`arheb_box`**. **Store** rows match the shape below; **Arheb Box** rows are **`{ "orderType": "arheb_box", "request": { ... } }`** (enriched box object).
+
+On other driver endpoints (`GET /api/driver/home`, **`filter=available`** / **`in_progress`** lists, `GET /api/driver/orders/:orderId`, accept/complete responses, …), **store** orders use this shape (no **`orderType`** on **`available`** / **`in_progress`** list items):
 
 | Field | Description |
 |--------|-------------|
@@ -3616,13 +3631,13 @@ On driver-facing order objects (`GET /api/driver/home`, `GET /api/driver/orders`
 
 ### Driver Assigned Orders
 
-Explicit list of **all orders assigned to this driver** (same underlying data as `GET /api/driver/orders?filter=all`), with pagination.
+Explicit list of **all work assigned to this driver**: **store** orders and **Arheb Box** requests with this **`driverId`**, merged by **`createdAt`** descending — same rules and **`orderType`** discrimination as **`GET /api/driver/orders?filter=all`**.
 
 **Endpoint:** `GET /api/driver/orders/assigned?page=1&perPage=20`
 
 **Authentication:** Required (Driver Bearer token)
 
-**Query:** `page`, `perPage` (same limits as main orders list).
+**Query:** `page`, `perPage` (same limits as main orders list). Response has no **`commissionPercent`** (unlike **`GET /api/driver/orders`**); use the main orders endpoint or home if you need it.
 
 ---
 
@@ -3844,6 +3859,9 @@ For issues or questions, please contact: `contact@arheb.app`
   - **GET** `/api/admin/orders`: Supports filter by **`status`** (exact value: e.g. `Waiting confirmation`, `Preparing`, `On the way`, `Delivered`, `Cancelled`) in addition to existing `orderType`, `dateFrom`, `dateTo`, `storeName`, `name`. **Admin/SuperAdmin** can filter by **`storeIds`** (comma-separated) to limit to one or more stores; Store Admin sees only their store.  
   - **GET** `/api/admin/orders/counts`: **Admin/SuperAdmin** can pass optional **`storeIds`** (comma-separated) to get active/delivered/cancelled counts for selected stores only. Returns `{ active, delivered, cancelled, complete }`.
   - **PATCH** `/api/admin/orders/:orderId/status`: when status is set to **`Preparing`** and order has no driver, backend invites the **nearest online** driver (if any) with FCM + **`delivery_request`** on `/driver-presence`; rejections chain to the next nearest driver.
+
+- **Driver assigned lists (store + Arheb Box)**  
+  - **`GET /api/driver/orders?filter=all`** and **`GET /api/driver/orders/assigned`** return a **merged**, **`createdAt`**-sorted list: store orders and **`arheb_box_requests`** rows with this **`driverId`**. Each element has **`orderType`**: **`store`** (full driver order object) or **`arheb_box`** (**`request`**: enriched box).
 
 - **Driver order detail**  
   - **GET** `/api/driver/orders/:orderId` (and all driver order payloads): Response now includes **`storeName`**, **`storeAddress`**, **`storeMapsUrl`**, **`clientMapsUrl`** (Google Maps link for delivery address), **`numberOfItems`**, in addition to existing `totalPrice`, `deliveryFee`, `address`, and products.

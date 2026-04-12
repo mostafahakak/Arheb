@@ -675,6 +675,49 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     });
   });
 
+  /**
+   * Store orders + Arheb Box rows assigned to this driver (`driverId` set), merged by `createdAt` descending.
+   * Each item: `{ orderType: 'store', ...driverOrder }` or `{ orderType: 'arheb_box', request: enriched }`.
+   */
+  function buildCombinedAssignedOrdersList(driverId, offset, limit) {
+    const storeRows = db.prepare('SELECT * FROM orders WHERE driverId = ?').all(driverId);
+    let boxRows = [];
+    try {
+      boxRows = db.prepare('SELECT * FROM arheb_box_requests WHERE driverId = ?').all(driverId);
+    } catch (e) {
+      if (!e.message || !e.message.includes('no such table')) throw e;
+    }
+    const rowTime = (row) => {
+      const t = row.createdAt || row.updatedAt || '';
+      const n = new Date(t).getTime();
+      return Number.isFinite(n) ? n : 0;
+    };
+    const combined = [
+      ...storeRows.map((o) => ({ kind: 'store', t: rowTime(o), ref: o })),
+      ...boxRows.map((b) => ({ kind: 'box', t: rowTime(b), ref: b })),
+    ].sort((a, b) => b.t - a.t);
+    const total = combined.length;
+    const slice = combined.slice(offset, offset + limit);
+    const storesList = loadStores();
+    const storeById = Object.fromEntries(storesList.map((s) => [s.id, s]));
+    const orders = slice.map((entry) => {
+      if (entry.kind === 'store') {
+        const o = entry.ref;
+        const items = findOrderItems.all(o.id);
+        const store = o.storeId ? storeById[o.storeId] : null;
+        return {
+          orderType: 'store',
+          ...orderToDriverApi(o, items, findDriverById.get(o.driverId), store, db),
+        };
+      }
+      return {
+        orderType: 'arheb_box',
+        request: enrichArhebBoxRow(entry.ref, db),
+      };
+    });
+    return { total, orders };
+  }
+
   // GET /api/driver/orders
   app.get('/api/driver/orders', driverAuth, (req, res) => {
     const driverId = req.driver.id;
@@ -683,27 +726,40 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     const perPage = Math.min(50, Math.max(1, parseInt(req.query.perPage, 10) || 20));
     const offset = (page - 1) * perPage;
 
-    let orders = [];
-    if (filter === 'available') {
-      // Drivers can only see available orders that are in Preparing status and not yet assigned
-      orders = db
-        .prepare("SELECT * FROM orders WHERE driverId IS NULL AND status = 'Preparing' ORDER BY id DESC")
-        .all();
-    } else if (filter === 'in_progress' || filter === 'mine') {
-      orders = db.prepare('SELECT * FROM orders WHERE driverId = ? AND status NOT IN (?, ?) ORDER BY id DESC').all(driverId, 'Delivered', 'Cancelled');
-    } else {
-      orders = db.prepare('SELECT * FROM orders WHERE driverId = ? ORDER BY id DESC').all(driverId);
-    }
-    const total = orders.length;
-    const slice = orders.slice(offset, offset + perPage);
     const storesList = loadStores();
     const storeById = Object.fromEntries(storesList.map((s) => [s.id, s]));
     const findDriverByIdRun = (id) => (id ? findDriverById.get(id) : null);
-    const list = slice.map((o) => {
-      const items = findOrderItems.all(o.id);
-      const store = o.storeId ? storeById[o.storeId] : null;
-      return orderToDriverApi(o, items, findDriverByIdRun(o.driverId), store, db);
-    });
+
+    let total;
+    let list;
+
+    if (filter === 'available') {
+      const orders = db
+        .prepare("SELECT * FROM orders WHERE driverId IS NULL AND status = 'Preparing' ORDER BY id DESC")
+        .all();
+      total = orders.length;
+      const slice = orders.slice(offset, offset + perPage);
+      list = slice.map((o) => {
+        const items = findOrderItems.all(o.id);
+        const store = o.storeId ? storeById[o.storeId] : null;
+        return orderToDriverApi(o, items, findDriverByIdRun(o.driverId), store, db);
+      });
+    } else if (filter === 'in_progress' || filter === 'mine') {
+      const orders = db
+        .prepare('SELECT * FROM orders WHERE driverId = ? AND status NOT IN (?, ?) ORDER BY id DESC')
+        .all(driverId, 'Delivered', 'Cancelled');
+      total = orders.length;
+      const slice = orders.slice(offset, offset + perPage);
+      list = slice.map((o) => {
+        const items = findOrderItems.all(o.id);
+        const store = o.storeId ? storeById[o.storeId] : null;
+        return orderToDriverApi(o, items, findDriverByIdRun(o.driverId), store, db);
+      });
+    } else {
+      const built = buildCombinedAssignedOrdersList(driverId, offset, perPage);
+      total = built.total;
+      list = built.orders;
+    }
 
     let arhebBoxAvailable = [];
     if (filter === 'available') {
@@ -768,22 +824,13 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     });
   });
 
-  // GET /api/driver/orders/assigned — all orders assigned to this driver (same as filter=all; explicit route before :orderId)
+  // GET /api/driver/orders/assigned — store orders + Arheb Box assigned to this driver (same merge as filter=all)
   app.get('/api/driver/orders/assigned', driverAuth, (req, res) => {
     const driverId = req.driver.id;
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const perPage = Math.min(50, Math.max(1, parseInt(req.query.perPage, 10) || 20));
-    const orders = db.prepare('SELECT * FROM orders WHERE driverId = ? ORDER BY id DESC').all(driverId);
-    const total = orders.length;
     const offset = (page - 1) * perPage;
-    const slice = orders.slice(offset, offset + perPage);
-    const storesList = loadStores();
-    const storeById = Object.fromEntries(storesList.map((s) => [s.id, s]));
-    const list = slice.map((o) => {
-      const items = findOrderItems.all(o.id);
-      const store = o.storeId ? storeById[o.storeId] : null;
-      return orderToDriverApi(o, items, findDriverById.get(o.driverId), store, db);
-    });
+    const { total, orders: list } = buildCombinedAssignedOrdersList(driverId, offset, perPage);
     return res.status(200).json({
       success: true,
       message: 'Assigned orders loaded',

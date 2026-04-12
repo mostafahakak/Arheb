@@ -47,6 +47,15 @@ function matchesText(item, q, fields) {
   return false;
 }
 
+/**
+ * Search must not surface paused or closed stores (or products tied to them).
+ * Same rule as public browse: blocked, hiddenFromCustomers, paused, merchant isOpen === false,
+ * or outside Jordan opening hours → excluded.
+ */
+function storeEligibleForCustomerSearch(store) {
+  return isStoreListedForCustomerBrowse(store);
+}
+
 module.exports = function attachSearchRoutes(app) {
   app.get('/api/search', (req, res) => {
     const q = (req.query.q || req.query.query || '').trim();
@@ -68,18 +77,31 @@ module.exports = function attachSearchRoutes(app) {
     const storeById = Object.fromEntries(stores.map((s) => [String(s.id), s]));
 
     const matchedStores = stores
-      .filter((s) => isStoreListedForCustomerBrowse(s) && matchesText(s, q, storeFields))
+      .filter((s) => storeEligibleForCustomerSearch(s) && matchesText(s, q, storeFields))
       .map((s) => {
         const { arhebFee, hiddenFromCustomers, isOpen: _rawOpen, ...rest } = s;
         return { ...rest, isOpen: customerFacingIsOpen(s), status: computeStoreStatus(s) };
       });
-    const matchedProducts = products.filter(
-      (p) =>
-        p.isAvailable !== false &&
-        matchesText(p, q, productFields) &&
-        p.store?.id != null &&
-        isStoreListedForCustomerBrowse(storeById[String(p.store.id)]),
-    );
+    const matchedProducts = products
+      .filter(
+        (p) =>
+          p.isAvailable !== false &&
+          matchesText(p, q, productFields) &&
+          p.store?.id != null &&
+          storeEligibleForCustomerSearch(storeById[String(p.store.id)]),
+      )
+      .map((p) => {
+        const full = storeById[String(p.store.id)];
+        if (!full) return p;
+        return {
+          ...p,
+          store: {
+            ...p.store,
+            isOpen: customerFacingIsOpen(full),
+            status: computeStoreStatus(full),
+          },
+        };
+      });
 
     return res.status(200).json({
       success: true,
