@@ -15,8 +15,8 @@ const { JORDAN_IANA_TIMEZONE } = require('./utils/jordanTime');
 
 const JOFOTARA_API_URL = 'https://backend.jofotara.gov.jo/core/invoices/';
 const TAX_RATE = 0.07;
-/** JoFotara PHP SDK uses JO on all monetary amounts; document-level codes stay JOD */
-const AMT_CCY = 'JO';
+/** ISO 4217 + JoFotara reference SDK: JOD on all monetary amounts (JO breaks totalSpecialTaxesAmount checks). */
+const AMT_CCY = 'JOD';
 const DOC_CCY = 'JOD';
 
 function round9(n) {
@@ -95,10 +95,10 @@ function buildInvoiceXml(order, invoiceUUID, options = {}) {
   const paymentCode = isCash ? '011' : '021';
   const buyerName = order.name || 'Customer';
 
-  /** Matches jafar-albadarneh/jofotara InvoiceLineItem::toXml (income / 7% standard). */
+  /** Income lines: tax subtotal must include TaxableAmount (VAT base) per JoFotara / UBL BRs. */
   function lineXml(lineId, itemName, qty, unitPrice, discount, lineTax, lineIncl) {
     const taxExcl = round9(qty * unitPrice - discount);
-    return `<cac:InvoiceLine><cbc:ID>${esc(lineId)}</cbc:ID><cbc:InvoicedQuantity unitCode="PCE">${f9(qty)}</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="${AMT_CCY}">${f9(taxExcl)}</cbc:LineExtensionAmount><cac:TaxTotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(lineTax)}</cbc:TaxAmount><cbc:RoundingAmount currencyID="${AMT_CCY}">${f9(lineIncl)}</cbc:RoundingAmount><cac:TaxSubtotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(lineTax)}</cbc:TaxAmount><cac:TaxCategory><cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5305">S</cbc:ID><cbc:Percent>${f9(7)}</cbc:Percent><cac:TaxScheme><cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5153">VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal></cac:TaxTotal><cac:Item><cbc:Name>${esc(itemName)}</cbc:Name></cac:Item><cac:Price><cbc:PriceAmount currencyID="${AMT_CCY}">${f9(unitPrice)}</cbc:PriceAmount><cac:AllowanceCharge><cbc:ChargeIndicator>false</cbc:ChargeIndicator><cbc:AllowanceChargeReason>DISCOUNT</cbc:AllowanceChargeReason><cbc:Amount currencyID="${AMT_CCY}">${f9(discount)}</cbc:Amount></cac:AllowanceCharge></cac:Price></cac:InvoiceLine>`;
+    return `<cac:InvoiceLine><cbc:ID>${esc(lineId)}</cbc:ID><cbc:InvoicedQuantity unitCode="PCE">${f9(qty)}</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="${AMT_CCY}">${f9(taxExcl)}</cbc:LineExtensionAmount><cac:TaxTotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(lineTax)}</cbc:TaxAmount><cbc:RoundingAmount currencyID="${AMT_CCY}">${f9(lineIncl)}</cbc:RoundingAmount><cac:TaxSubtotal><cbc:TaxableAmount currencyID="${AMT_CCY}">${f9(taxExcl)}</cbc:TaxableAmount><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(lineTax)}</cbc:TaxAmount><cac:TaxCategory><cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5305">S</cbc:ID><cbc:Percent>${f9(7)}</cbc:Percent><cac:TaxScheme><cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5153">VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal></cac:TaxTotal><cac:Item><cbc:Name>${esc(itemName)}</cbc:Name></cac:Item><cac:Price><cbc:PriceAmount currencyID="${AMT_CCY}">${f9(unitPrice)}</cbc:PriceAmount><cac:AllowanceCharge><cbc:ChargeIndicator>false</cbc:ChargeIndicator><cbc:AllowanceChargeReason>DISCOUNT</cbc:AllowanceChargeReason><cbc:Amount currencyID="${AMT_CCY}">${f9(discount)}</cbc:Amount></cac:AllowanceCharge></cac:Price></cac:InvoiceLine>`;
   }
 
   // JoFotara PHP SDK: SellerSupplierParty holds activity serial (not cac:Delivery).
@@ -121,8 +121,9 @@ function buildInvoiceXml(order, invoiceUUID, options = {}) {
     `<cac:AccountingSupplierParty><cac:Party><cac:PostalAddress><cac:Country><cbc:IdentificationCode>JO</cbc:IdentificationCode></cac:Country></cac:PostalAddress><cac:PartyTaxScheme><cbc:CompanyID>${esc(SELLER_TIN)}</cbc:CompanyID><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:PartyTaxScheme><cac:PartyLegalEntity><cbc:RegistrationName>${esc(SELLER_NAME)}</cbc:RegistrationName></cac:PartyLegalEntity></cac:Party></cac:AccountingSupplierParty>`,
     `<cac:AccountingCustomerParty><cac:Party><cac:PartyIdentification><cbc:ID schemeID="NIN"></cbc:ID></cac:PartyIdentification><cac:PartyLegalEntity><cbc:RegistrationName>${esc(buyerName)}</cbc:RegistrationName></cac:PartyLegalEntity></cac:Party></cac:AccountingCustomerParty>`,
     sellerSupplierXml,
-    `<cac:TaxTotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(taxAmount)}</cbc:TaxAmount><cac:TaxSubtotal><cbc:TaxableAmount currencyID="${AMT_CCY}">${f9(taxableBase)}</cbc:TaxableAmount><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(taxAmount)}</cbc:TaxAmount><cac:TaxCategory><cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5305">S</cbc:ID><cbc:Percent>${f9(7)}</cbc:Percent><cac:TaxScheme><cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5153">VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal></cac:TaxTotal>`,
-    `<cac:LegalMonetaryTotal><cbc:TaxExclusiveAmount currencyID="${AMT_CCY}">${f9(taxableBase)}</cbc:TaxExclusiveAmount><cbc:TaxInclusiveAmount currencyID="${AMT_CCY}">${f9(totalWithTax)}</cbc:TaxInclusiveAmount><cbc:PayableAmount currencyID="${AMT_CCY}">${f9(payableAmount)}</cbc:PayableAmount></cac:LegalMonetaryTotal>`,
+    /** Reference jofotara PHP: document TaxTotal is only cbc:TaxAmount (no document TaxSubtotal). */
+    `<cac:TaxTotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(taxAmount)}</cbc:TaxAmount></cac:TaxTotal>`,
+    `<cac:LegalMonetaryTotal><cbc:LineExtensionAmount currencyID="${AMT_CCY}">${f9(taxableBase)}</cbc:LineExtensionAmount><cbc:TaxExclusiveAmount currencyID="${AMT_CCY}">${f9(taxableBase)}</cbc:TaxExclusiveAmount><cbc:TaxInclusiveAmount currencyID="${AMT_CCY}">${f9(totalWithTax)}</cbc:TaxInclusiveAmount><cbc:PayableAmount currencyID="${AMT_CCY}">${f9(payableAmount)}</cbc:PayableAmount></cac:LegalMonetaryTotal>`,
     lineXml('1', 'Delivery Fee', 1, deliveryFee, 0, deliveryTax, deliveryInclTax),
     includeServiceLine ? lineXml('2', 'Service Fee', 1, serviceFee, 0, serviceTax, serviceInclTax) : '',
     '</Invoice>',
