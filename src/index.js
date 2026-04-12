@@ -56,7 +56,14 @@ if (!JWT_SECRET) {
 }
 
 const app = express();
-app.use(cors());
+app.use(
+  cors({
+    origin: true,
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    exposedHeaders: ['Content-Disposition'],
+  }),
+);
 app.use(express.json());
 
 // Create HTTP server for Socket.IO

@@ -77,7 +77,8 @@ function enrichRequestRow(row, db) {
       : dKm != null && Number.isFinite(dKm)
         ? calcDeliveryFeeFromDistanceAndWeight(dKm, weightKg)
         : calcArhebBoxDeliveryFeeJod(weightKg);
-  const serviceFee = row.serviceFee != null ? Number(row.serviceFee) : SERVICE_FEE_JOD;
+  /** No platform service fee on Arheb Box; VAT is 7% on delivery fee only. Ignore legacy DB values. */
+  const serviceFee = SERVICE_FEE_JOD;
   const feesTax = row.feesTax != null ? Number(row.feesTax) : calcFeesTaxJod(deliveryFee);
   const base = {
     id: row.id,

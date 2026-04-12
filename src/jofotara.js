@@ -75,9 +75,32 @@ function buildInvoiceXml(order, invoiceUUID, options = {}) {
   const serviceFee = includeServiceLine ? (Number(order.serviceFee) || 0) : 0;
   const taxableBase = round9(deliveryFee + serviceFee);
 
-  const deliveryTax = round9(deliveryFee * TAX_RATE);
-  const serviceTax = includeServiceLine ? round9(serviceFee * TAX_RATE) : 0;
-  const taxAmount = round9(deliveryTax + serviceTax);
+  const storedFeesTax =
+    order.feesTax != null && order.feesTax !== '' && Number.isFinite(Number(order.feesTax))
+      ? Number(order.feesTax)
+      : null;
+
+  let deliveryTax;
+  let serviceTax;
+  let taxAmount;
+
+  if (storedFeesTax != null && taxableBase > 0) {
+    taxAmount = round9(storedFeesTax);
+    if (includeServiceLine && deliveryFee > 0 && serviceFee > 0) {
+      deliveryTax = round9(taxAmount * (deliveryFee / taxableBase));
+      serviceTax = round9(taxAmount - deliveryTax);
+    } else if (includeServiceLine && serviceFee > 0 && deliveryFee <= 0) {
+      deliveryTax = 0;
+      serviceTax = taxAmount;
+    } else {
+      deliveryTax = taxAmount;
+      serviceTax = 0;
+    }
+  } else {
+    deliveryTax = round9(deliveryFee * TAX_RATE);
+    serviceTax = includeServiceLine ? round9(serviceFee * TAX_RATE) : 0;
+    taxAmount = round9(deliveryTax + serviceTax);
+  }
 
   const deliveryInclTax = round9(deliveryFee + deliveryTax);
   const serviceInclTax = round9(serviceFee + serviceTax);
@@ -116,7 +139,7 @@ function buildInvoiceXml(order, invoiceUUID, options = {}) {
     `<cac:AccountingSupplierParty><cac:Party><cac:PostalAddress><cac:Country><cbc:IdentificationCode>JO</cbc:IdentificationCode></cac:Country></cac:PostalAddress><cac:PartyTaxScheme><cbc:CompanyID>${esc(SELLER_TIN)}</cbc:CompanyID><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:PartyTaxScheme><cac:PartyLegalEntity><cbc:RegistrationName>${esc(SELLER_NAME)}</cbc:RegistrationName></cac:PartyLegalEntity></cac:Party></cac:AccountingSupplierParty>`,
     `<cac:AccountingCustomerParty><cac:Party><cac:PartyIdentification><cbc:ID schemeID="NIN"></cbc:ID></cac:PartyIdentification><cac:PartyLegalEntity><cbc:RegistrationName>${esc(buyerName)}</cbc:RegistrationName></cac:PartyLegalEntity></cac:Party></cac:AccountingCustomerParty>`,
     sellerSupplierXml,
-    `<cac:TaxTotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(taxAmount)}</cbc:TaxAmount></cac:TaxTotal>`,
+    `<cac:TaxTotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(taxAmount)}</cbc:TaxAmount><cac:TaxSubtotal><cbc:TaxableAmount currencyID="${AMT_CCY}">${f9(taxableBase)}</cbc:TaxableAmount><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(taxAmount)}</cbc:TaxAmount><cac:TaxCategory><cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5305">S</cbc:ID><cbc:Percent>${f9(7)}</cbc:Percent><cac:TaxScheme><cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5153">VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal></cac:TaxTotal>`,
     `<cac:LegalMonetaryTotal><cbc:TaxExclusiveAmount currencyID="${AMT_CCY}">${f9(taxableBase)}</cbc:TaxExclusiveAmount><cbc:TaxInclusiveAmount currencyID="${AMT_CCY}">${f9(totalWithTax)}</cbc:TaxInclusiveAmount><cbc:PayableAmount currencyID="${AMT_CCY}">${f9(payableAmount)}</cbc:PayableAmount></cac:LegalMonetaryTotal>`,
     lineXml('1', 'Delivery Fee', 1, deliveryFee, 0, deliveryTax, deliveryInclTax),
     includeServiceLine ? lineXml('2', 'Service Fee', 1, serviceFee, 0, serviceTax, serviceInclTax) : '',
@@ -249,6 +272,7 @@ async function submitJofotaraInvoiceForArhebBox(db, requestId) {
     id: row.id,
     deliveryFee: Number(row.deliveryFee) || 0,
     serviceFee: 0,
+    feesTax: row.feesTax,
     paymentType: row.paymentMethod || 'cash',
     name: row.userName || 'Customer',
   };

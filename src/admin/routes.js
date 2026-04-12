@@ -1794,7 +1794,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       }
       if (status && String(status).trim()) { conditions.push('status = ?'); params.push(String(status).trim()); }
       if (paymentTypeTrimmed) {
-        conditions.push('LOWER(TRIM(COALESCE(paymentType, ""))) = LOWER(?)');
+        conditions.push("LOWER(TRIM(COALESCE(paymentType, ''))) = LOWER(?)");
         params.push(paymentTypeTrimmed);
       }
       if (unassigned === 'true' || unassigned === '1') {
@@ -1862,7 +1862,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           boxCond.push("status = 'cancelled'");
         }
         if (paymentTypeTrimmed) {
-          boxCond.push('LOWER(TRIM(COALESCE(paymentMethod, ""))) = LOWER(?)');
+          boxCond.push("LOWER(TRIM(COALESCE(paymentMethod, ''))) = LOWER(?)");
           boxParams.push(paymentTypeTrimmed);
         }
         if (unassigned === 'true' || unassigned === '1') {
