@@ -250,6 +250,7 @@ function createArhebBoxRequest(db, phoneNumber, body, statusOverride, options = 
     amount: amountNum, weightKg: round3(weightKgNum),
     deliveryFee: computedDeliveryFee, serviceFee: computedServiceFee,
     feesTax: computedFeesTax, distanceKm: quote.distanceKm, minAmountJod: minJod,
+    createdAt: new Date().toISOString(),
   };
 
   if (opts.dryRun === true) {
@@ -275,12 +276,12 @@ function createArhebBoxRequest(db, phoneNumber, body, statusOverride, options = 
       phoneNumber, userName, pickup, dropoff, notes, status, fcmToken,
       receiverPhone, receiverName, paymentMethod, whoPays, amount,
       weightKg, deliveryFee, serviceFee, feesTax,
-      distanceKm, minAmountJod
+      distanceKm, minAmountJod, createdAt
     ) VALUES (
       @phoneNumber, @userName, @pickup, @dropoff, @notes, @status, @fcmToken,
       @receiverPhone, @receiverName, @paymentMethod, @whoPays, @amount,
       @weightKg, @deliveryFee, @serviceFee, @feesTax,
-      @distanceKm, @minAmountJod
+      @distanceKm, @minAmountJod, @createdAt
     )
   `);
 

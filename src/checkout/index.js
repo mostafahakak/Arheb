@@ -254,7 +254,8 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
             notes,
             paymentVerificationImage,
             paymentTranRef,
-            paymentCartId
+            paymentCartId,
+            createdAt
           ) VALUES (
             @userId,
             @phoneNumber,
@@ -277,7 +278,8 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
             @notes,
             @paymentVerificationImage,
             @paymentTranRef,
-            @paymentCartId
+            @paymentCartId,
+            @createdAt
           )
         `);
 
@@ -304,6 +306,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       paymentVerificationImage: orderData.paymentVerificationImage || null,
       paymentTranRef: orderData.paymentTranRef ?? null,
       paymentCartId: orderData.paymentCartId ?? null,
+      createdAt: new Date().toISOString(),
     });
 
     const orderId = orderResult.lastInsertRowid;
