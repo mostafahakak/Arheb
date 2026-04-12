@@ -52,6 +52,7 @@ const {
   ensureContactUsArhebBoxComingSoonColumn,
   writeArhebBoxDriverEarningsSnapshot,
   resolveArhebBoxDriverShare,
+  assignDriverToOrder,
 } = require('../utils/driverCommission');
 const { getStoreFcmToken } = require('../storeFcm');
 const { enrichWithJordanTime } = require('../utils/jordanTime');
@@ -65,7 +66,11 @@ const {
   clearArhebBoxOfferExpansion,
   fcmPayloadForArhebBoxRequest,
 } = require('../utils/sequentialDriverOffer');
-const { runDeliveryClusterAutoAssign, ensureOrderAssignmentColumns } = require('../utils/deliveryClusterAssignment');
+const {
+  runDeliveryClusterAutoAssign,
+  ensureOrderAssignmentColumns,
+  notifyDriverAssigned,
+} = require('../utils/deliveryClusterAssignment');
 
 const storesResponsePath = getJsonPath('stores_listing_response.json');
 const productsResponsePath = getJsonPath('products_listing_response.json');
@@ -210,6 +215,61 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     getActiveFromListWithDistance,
     parseLatLongFromGoogleMapsUrl,
   };
+
+  function customerOrderTrackingData(orderId, status) {
+    return {
+      orderId: String(orderId),
+      status: String(status || ''),
+      type: 'order_tracking',
+      screen: 'order_details',
+      deepLink: `arheb://orders/${orderId}`,
+      click_action: 'FLUTTER_NOTIFICATION_CLICK',
+    };
+  }
+
+  /** Push + inbox: customer order status (uses order.phoneNumber; FCM resolves Jordan number variants). */
+  function notifyCustomerOrderStatusChange(dbConn, orderRow, orderId, nextStatus) {
+    if (!dbConn || !orderRow?.phoneNumber) return;
+    const key = normalizeOrderStatusKey(nextStatus);
+    let title;
+    let body;
+    switch (key) {
+      case 'waiting confirmation':
+        title = 'Order update';
+        body = `Order #${orderId} is waiting for store confirmation.`;
+        break;
+      case 'waiting cliq confirmation':
+        title = 'Payment update';
+        body = `Order #${orderId}: we're confirming your payment.`;
+        break;
+      case 'preparing':
+      case 'being prepared':
+        title = 'Preparing your order';
+        body = `Order #${orderId} is being prepared.`;
+        break;
+      case 'on the way':
+        title = 'On the way';
+        body = `Order #${orderId} is on the way.`;
+        break;
+      case 'delivered':
+        title = 'Delivered';
+        body = `Order #${orderId} has been delivered. Thank you!`;
+        break;
+      case 'cancelled':
+        title = 'Order cancelled';
+        body = `Order #${orderId} has been cancelled.`;
+        break;
+      case 'payment rejected':
+        title = 'Payment issue';
+        body = `Order #${orderId}: payment could not be confirmed.`;
+        break;
+      default:
+        return;
+    }
+    fcm
+      .sendToUserByPhone(dbConn, orderRow.phoneNumber, title, body, null, customerOrderTrackingData(orderId, nextStatus))
+      .catch(() => {});
+  }
 
   try {
     db.exec(`
@@ -2070,24 +2130,22 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     } catch (e) { /* ignore */ }
     let updated = findOrderById.get(orderId);
     const items = findOrderItems.all(orderId);
-    // User notifications for tracking flow:
-    // - confirmed/preparing
-    if (nextStatus.toLowerCase() === 'waiting confirmation' || nextStatus.toLowerCase() === 'preparing') {
-      fcm.sendToUserByPhone(
-        db,
-        order.phoneNumber,
-        'Order confirmed',
-        `Order #${orderId} is confirmed and preparing.`,
-        null,
-        {
-          orderId: String(orderId),
-          status: nextStatus,
-          type: 'order_tracking',
-          screen: 'order_details',
-          deepLink: `arheb://orders/${orderId}`,
-          click_action: 'FLUTTER_NOTIFICATION_CLICK',
+    notifyCustomerOrderStatusChange(db, order, orderId, nextStatus);
+
+    if (nextKey === 'preparing' && updated.driverId == null && io) {
+      try {
+        const storesListForOffer = loadStores();
+        const storeForOffer = updated.storeId
+          ? storesListForOffer.find((s) => String(s.id) === String(updated.storeId))
+          : null;
+        const notifiedIds = notifyAllOnlineDrivers(db, io, orderId, updated, storeForOffer, offerCtx);
+        if (notifiedIds.length > 0) {
+          const { broadcastDriverOrdersUpdated } = require('../driverPresence');
+          broadcastDriverOrdersUpdated(io, { type: 'new_request', orderId });
         }
-      ).catch(() => {});
+      } catch (e) {
+        /* ignore */
+      }
     }
 
     if (nextStatus.toLowerCase() === 'delivered') {
@@ -2157,6 +2215,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       const { emitOrderEvent } = require('../order');
       if (emitOrderEvent) emitOrderEvent(orderId, 'status_update', { status: 'Cancelled' });
     } catch (e) { /* ignore */ }
+    notifyCustomerOrderStatusChange(db, order, orderId, 'Cancelled');
     const updated = findOrderById.get(orderId);
     const items = findOrderItems.all(orderId);
     logActivity(db, req, {
@@ -2416,6 +2475,77 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       success: true,
       message: 'Driver assigned automatically (clustered by delivery distance, max 1 km between consecutive stops).',
       data: { orderId, driverId: hit.driverId, order: updated, autoAssign: autoAssignResult },
+    });
+  });
+
+  // ——— Assign a specific driver to a store order (Admin / SuperAdmin). Same FCM/socket as cluster assign. ———
+  app.post('/api/admin/orders/:orderId/assign-driver', auth, requireAdminOrSuper, (req, res) => {
+    const orderId = parseInt(req.params.orderId, 10);
+    if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
+    const order = findOrderById.get(orderId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    const { driverId } = req.body || {};
+    const driverIdNum = driverId != null ? parseInt(String(driverId), 10) : NaN;
+    if (!driverIdNum || isNaN(driverIdNum)) {
+      return res.status(400).json({ success: false, message: 'driverId is required' });
+    }
+    const statusLower = String(order.status || '').trim().toLowerCase();
+    if (!statusLower.includes('preparing')) {
+      return res.status(400).json({ success: false, message: 'Can only assign when order is Preparing' });
+    }
+    if (order.driverId != null && Number(order.driverId) !== driverIdNum) {
+      return res.status(400).json({
+        success: false,
+        message: 'Order already has a different driver. Clear assignment first if reassignment is required.',
+      });
+    }
+    if (order.driverId != null && Number(order.driverId) === driverIdNum) {
+      const updatedSame = findOrderById.get(orderId);
+      const itemsSame = findOrderItems.all(orderId);
+      return res.status(200).json({
+        success: true,
+        message: 'Already assigned to this driver',
+        data: { order: { ...updatedSame, items: mapOrderItemsRows(itemsSame) } },
+      });
+    }
+    const driver = db.prepare('SELECT id, name FROM drivers WHERE id = ? AND isBlocked = 0').get(driverIdNum);
+    if (!driver) return res.status(400).json({ success: false, message: 'Invalid or blocked driver' });
+    assignDriverToOrder(db, orderId, driverIdNum, driver.name, order.status || 'Preparing');
+    try {
+      const { emitOrderEvent } = require('../order');
+      if (emitOrderEvent) emitOrderEvent(orderId, 'status_update', { status: order.status || 'Preparing' });
+    } catch (e) { /* ignore */ }
+    const updated = findOrderById.get(orderId);
+    const stores = loadStores();
+    const store = updated.storeId ? stores.find((s) => String(s.id) === String(updated.storeId)) : null;
+    notifyDriverAssigned(db, io, orderId, updated, driverIdNum, store);
+    try {
+      const { broadcastDriverOrdersUpdated } = require('../driverPresence');
+      broadcastDriverOrdersUpdated(io, { type: 'order_accepted', orderId, driverId: driverIdNum });
+    } catch (e) { /* ignore */ }
+    fcm
+      .sendToUserByPhone(
+        db,
+        updated.phoneNumber,
+        'Driver assigned',
+        `A driver has been assigned to Order #${orderId}.`,
+        null,
+        customerOrderTrackingData(orderId, updated.status || 'Preparing'),
+      )
+      .catch(() => {});
+    const items = findOrderItems.all(orderId);
+    logActivity(db, req, {
+      action: 'edit',
+      resourceType: 'order',
+      resourceId: String(orderId),
+      storeScopeId: order.storeId != null ? String(order.storeId) : null,
+      summary: `Order #${orderId}: assigned driver ${driverIdNum}`,
+      details: { driverId: driverIdNum },
+    });
+    return res.status(200).json({
+      success: true,
+      message: 'Driver assigned. They have been notified in the driver app.',
+      data: { orderId, driverId: driverIdNum, order: { ...updated, items: mapOrderItemsRows(items) } },
     });
   });
 

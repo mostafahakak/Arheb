@@ -280,4 +280,5 @@ module.exports = {
   ensureOrderAssignmentColumns,
   getOrderDeliveryCoords,
   DEFAULT_MAX_CHAIN_KM,
+  notifyDriverAssigned,
 };

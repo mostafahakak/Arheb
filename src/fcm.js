@@ -8,9 +8,32 @@
  */
 
 const { getStoreFcmToken } = require('./storeFcm');
+const { jordanMobileLookupKeys, normalizeJordanMobileKey } = require('./utils/jordanMobile');
 
 let admin = null;
 let messaging = null;
+
+function fcmDebugEnabled() {
+  const v = process.env.FCM_DEBUG;
+  return v === '1' || String(v).toLowerCase() === 'true';
+}
+
+/** Short phone for logs (avoid logging full numbers). */
+function maskPhoneForLog(phone) {
+  const s = String(phone ?? '').trim();
+  if (!s) return '(empty)';
+  if (s.length <= 4) return '****';
+  return `${s.slice(0, 2)}…${s.slice(-3)}`;
+}
+
+function logFcmSend(kind, info) {
+  const line = { kind, ...info };
+  if (line.extra === undefined) delete line.extra;
+  console.log('[fcm]', line);
+  if (fcmDebugEnabled() && info.extra != null) {
+    console.log('[fcm-debug]', info.extra);
+  }
+}
 
 /**
  * Initialize firebase-admin once; returns the admin namespace or null if unavailable.
@@ -157,9 +180,12 @@ async function sendToTokenWithMessaging(m, token, title, body, imageUrl, data, o
   }
   try {
     const result = await m.send(message);
+    if (fcmDebugEnabled()) {
+      console.log('[fcm-debug] send raw ok messageId=', result);
+    }
     return result;
   } catch (e) {
-    console.warn('fcm send failed:', e.message);
+    console.warn('[fcm] send failed:', e.message);
     return null;
   }
 }
@@ -195,7 +221,7 @@ async function sendToTokensWithMessaging(m, tokens, title, body, imageUrl, data)
       successCount += result.successCount;
       failureCount += result.failureCount;
     } catch (e) {
-      console.warn('fcm sendToTokens batch failed:', e.message);
+      console.warn('[fcm] sendToTokens batch failed:', e.message);
       failureCount += batch.length;
     }
   }
@@ -215,23 +241,52 @@ async function sendToTokens(tokens, title, body, imageUrl, data) {
  * @param {object} [data]
  */
 async function sendToDriver(db, driverId, title, body, data = {}) {
-  if (!db || driverId == null) return null;
+  if (!db || driverId == null) {
+    logFcmSend('driver_skip', { reason: 'missing_db_or_driverId' });
+    return null;
+  }
   const stmt = db.prepare('SELECT fcmToken FROM drivers WHERE id = ? AND fcmToken IS NOT NULL AND fcmToken != ?');
   const row = stmt.get(driverId, '');
+  const hasToken = !!(row?.fcmToken && String(row.fcmToken).trim());
+  logFcmSend('driver_send', {
+    driverId,
+    hasToken,
+    title: title != null ? String(title).slice(0, 80) : '',
+    notifyType: data?.type != null ? String(data.type) : undefined,
+    extra: fcmDebugEnabled() && hasToken ? { tokenLen: String(row.fcmToken).length } : undefined,
+  });
   const m = getMessagingForDriver();
-  return sendToTokenWithMessaging(m, row?.fcmToken, title, body, null, data, { highPriority: true });
+  if (!m) {
+    logFcmSend('driver_skip', { driverId, reason: 'firebase_messaging_unavailable' });
+    return null;
+  }
+  const out = await sendToTokenWithMessaging(m, row?.fcmToken, title, body, null, data, { highPriority: true });
+  logFcmSend('driver_result', { driverId, ok: !!out, messageId: out || null });
+  return out;
 }
 
 /**
  * Send to multiple drivers by driverIds.
  */
 async function sendToDrivers(db, driverIds, title, body, data = {}) {
-  if (!db || !Array.isArray(driverIds) || driverIds.length === 0) return { successCount: 0, failureCount: 0 };
+  if (!db || !Array.isArray(driverIds) || driverIds.length === 0) {
+    logFcmSend('drivers_batch_skip', { reason: 'missing_db_or_ids' });
+    return { successCount: 0, failureCount: 0 };
+  }
   const placeholders = driverIds.map(() => '?').join(',');
   const rows = db.prepare(`SELECT fcmToken FROM drivers WHERE id IN (${placeholders}) AND fcmToken IS NOT NULL AND fcmToken != ''`).all(...driverIds);
   const tokens = rows.map((r) => r.fcmToken).filter(Boolean);
+  logFcmSend('drivers_batch_send', {
+    requestedIds: driverIds.length,
+    tokensResolved: tokens.length,
+    title: title != null ? String(title).slice(0, 80) : '',
+    notifyType: data?.type != null ? String(data.type) : undefined,
+  });
   const m = getMessagingForDriver();
-  return sendToTokensWithMessaging(m, tokens, title, body, null, data);
+  if (!m) return { successCount: 0, failureCount: tokens.length };
+  const result = await sendToTokensWithMessaging(m, tokens, title, body, null, data);
+  logFcmSend('drivers_batch_result', result);
+  return result;
 }
 
 /**
@@ -263,12 +318,52 @@ async function sendToStore(db, storeId, title, body, data = {}) {
 
 /**
  * Send to user by phoneNumber (looks up fcmToken from users table).
+ * Tries all Jordan mobile key variants (079… vs 962… vs +962…) so order.phoneNumber can differ from users.phoneNumber.
  */
 async function sendToUserByPhone(db, phoneNumber, title, body, imageUrl, data = {}) {
-  if (!db || !phoneNumber) return null;
-  insertUserNotification(db, phoneNumber, title, body, imageUrl, data);
-  const row = db.prepare('SELECT fcmToken FROM users WHERE phoneNumber = ? AND fcmToken IS NOT NULL AND fcmToken != ?').get(phoneNumber, '');
-  return sendToToken(row?.fcmToken, title, body, imageUrl, data);
+  if (!db || !phoneNumber) {
+    logFcmSend('customer_skip', { reason: 'missing_db_or_phone' });
+    return null;
+  }
+  const keys = jordanMobileLookupKeys(phoneNumber);
+  if (keys.length === 0) {
+    logFcmSend('customer_skip', { phone: maskPhoneForLog(phoneNumber), reason: 'no_lookup_keys' });
+    return null;
+  }
+  const placeholders = keys.map(() => '?').join(',');
+  let row;
+  try {
+    row = db
+      .prepare(
+        `SELECT phoneNumber, fcmToken FROM users WHERE phoneNumber IN (${placeholders}) AND fcmToken IS NOT NULL AND fcmToken != '' LIMIT 1`,
+      )
+      .get(...keys);
+  } catch (e) {
+    row = null;
+  }
+  const hasToken = !!(row?.fcmToken && String(row.fcmToken).trim());
+  logFcmSend('customer_send', {
+    phone: maskPhoneForLog(phoneNumber),
+    lookupKeyCount: keys.length,
+    matchedUserToken: hasToken,
+    title: title != null ? String(title).slice(0, 80) : '',
+    notifyType: data?.type != null ? String(data.type) : undefined,
+    extra: fcmDebugEnabled() && hasToken ? { tokenLen: String(row.fcmToken).length } : undefined,
+  });
+  const inboxPhone = row?.phoneNumber || normalizeJordanMobileKey(phoneNumber) || String(phoneNumber).trim();
+  insertUserNotification(db, inboxPhone, title, body, imageUrl, data);
+  if (!getMessaging()) {
+    logFcmSend('customer_skip', { phone: maskPhoneForLog(phoneNumber), reason: 'firebase_messaging_unavailable' });
+    return null;
+  }
+  const out = await sendToToken(row?.fcmToken, title, body, imageUrl, data);
+  logFcmSend('customer_result', {
+    phone: maskPhoneForLog(phoneNumber),
+    ok: !!out,
+    hadToken: hasToken,
+    messageId: out || null,
+  });
+  return out;
 }
 
 /**

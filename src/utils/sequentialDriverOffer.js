@@ -271,6 +271,12 @@ function notifyArhebBoxDriversInRadius(db, io, requestId, requestRow, maxKm, get
     ? getActiveFromListWithDistance(candidateIds, pickup.lat, pickup.lon)
     : getActiveFromListWithDistance(candidateIds, null, null);
 
+  if (pickup) {
+    console.log(
+      `[driver-notify] arheb-box #${requestId} radius ${maxKm >= 1e6 ? 'ALL' : `${maxKm}km`} from pickup (${pickup.lat.toFixed(5)},${pickup.lon.toFixed(5)}): ${withDist.length} online drivers (sorted by distance)`,
+    );
+  }
+
   const notifiedIds = [];
   const unlimited = maxKm >= 1e6;
   for (const d of withDist) {
@@ -298,7 +304,9 @@ function notifyAllOnlineDriversArhebBox(db, io, requestId, requestRow, ctx) {
     }
     const candidateIds = drivers.map((d) => d.id);
     const online = getActiveFromListWithDistance(candidateIds, null, null);
-    console.log(`[driver-notify] arheb-box #${requestId}: no pickup GPS — notifying ${online.length} online drivers`);
+    console.log(
+      `[driver-notify] arheb-box #${requestId}: no pickup GPS in row (check pickup JSON has latitude/longitude) — notifying ${online.length} online drivers`,
+    );
     const notifiedIds = [];
     for (const d of online) {
       const result = notifyDriverArhebBoxRequest(db, io, requestId, requestRow, d.driverId);
@@ -364,4 +372,5 @@ module.exports = {
   notifyAllOnlineDriversArhebBox,
   clearArhebBoxOfferExpansion,
   fcmPayloadForArhebBoxRequest,
+  parsePickupLatLongFromArhebRow,
 };

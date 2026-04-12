@@ -294,9 +294,18 @@ function createArhebBoxRequest(db, phoneNumber, body, statusOverride, options = 
 function notifyDriversAboutNewArhebBox(db, io, row) {
   if (!row || row.id == null) return;
   try {
-    const { notifyAllOnlineDriversArhebBox } = require('../utils/sequentialDriverOffer');
+    const { notifyAllOnlineDriversArhebBox, parsePickupLatLongFromArhebRow } = require('../utils/sequentialDriverOffer');
     const { getActiveFromListWithDistance } = require('../driverPresence');
     const fullRow = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(row.id) || row;
+    const pickup = parsePickupLatLongFromArhebRow(fullRow);
+    console.log('[arheb-box] scheduling driver FCM/socket (near sender pickup)', {
+      requestId: fullRow.id,
+      socketIo: !!io,
+      pickupFromSender: pickup ? { lat: pickup.lat, lon: pickup.lon } : null,
+      strategy: pickup
+        ? 'waves 0.5 → 1.5 → 4 km from pickup, then any remaining online'
+        : 'all online drivers (pickup JSON missing lat/lon)',
+    });
     notifyAllOnlineDriversArhebBox(db, io, fullRow.id, fullRow, { getActiveFromListWithDistance });
     try {
       const { broadcastDriverOrdersUpdated } = require('../driverPresence');
