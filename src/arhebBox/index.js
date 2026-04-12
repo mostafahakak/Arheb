@@ -1,5 +1,5 @@
 const fcm = require('../fcm');
-const { enrichWithJordanTime } = require('../utils/jordanTime');
+const { enrichWithJordanTime, nowOrderCreatedAtForDb } = require('../utils/jordanTime');
 const { arhebBoxDeliveryFeeFromDistanceJod, STORE_MAX_JOD, ARHEB_BOX_SERVICE_FEE_JOD } = require('../utils/deliveryFees');
 const { quoteFromPickupDropoff, minAmountJod, distanceKm: haversineKm } = require('./pricing');
 const { isArhebBoxOrdersPaused } = require('./pause');
@@ -250,7 +250,7 @@ function createArhebBoxRequest(db, phoneNumber, body, statusOverride, options = 
     amount: amountNum, weightKg: round3(weightKgNum),
     deliveryFee: computedDeliveryFee, serviceFee: computedServiceFee,
     feesTax: computedFeesTax, distanceKm: quote.distanceKm, minAmountJod: minJod,
-    createdAt: new Date().toISOString(),
+    createdAt: nowOrderCreatedAtForDb(),
   };
 
   if (opts.dryRun === true) {

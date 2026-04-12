@@ -74,9 +74,51 @@ function enrichWithJordanTime(obj, keys = ['createdAt']) {
   return out;
 }
 
+/**
+ * Store on new orders / Arheb Box rows: Jordan wall clock with explicit offset (Asia/Amman, GMT+3).
+ * Same instant as `new Date().toISOString()`; the string reflects local Jordan date/time when read.
+ */
+function nowOrderCreatedAtForDb(date = new Date()) {
+  const d = date instanceof Date ? date : new Date(date);
+  if (isNaN(d.getTime())) return new Date().toISOString();
+  const tz = JORDAN_IANA_TIMEZONE;
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(d);
+  const get = (t) => parts.find((p) => p.type === t)?.value ?? '';
+  const y = get('year');
+  const mo = get('month');
+  const da = get('day');
+  const h = get('hour');
+  const mi = get('minute');
+  const se = get('second');
+  const ms = String(d.getMilliseconds()).padStart(3, '0');
+  const tzRaw =
+    new Intl.DateTimeFormat('en', { timeZone: tz, timeZoneName: 'longOffset' })
+      .formatToParts(d)
+      .find((p) => p.type === 'timeZoneName')?.value || 'GMT+03:00';
+  let offset = '+03:00';
+  const m = String(tzRaw)
+    .replace(/\s/g, '')
+    .match(/GMT([+-])(\d{2})(?::?(\d{2}))?/i);
+  if (m) {
+    const mm = (m[3] != null && m[3] !== '' ? m[3] : '00').padStart(2, '0');
+    offset = `${m[1]}${m[2]}:${mm}`;
+  }
+  return `${y}-${mo}-${da}T${h}:${mi}:${se}.${ms}${offset}`;
+}
+
 module.exports = {
   JORDAN_IANA_TIMEZONE,
   parseInstantForJordan,
   formatJordanDateTime,
   enrichWithJordanTime,
+  nowOrderCreatedAtForDb,
 };

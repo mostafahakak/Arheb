@@ -4,7 +4,7 @@ const { enrichArhebBoxRow, calcArhebBoxDeliveryFeeJod } = require('../arhebBox')
 const { quoteFromPickupDropoff } = require('../arhebBox/pricing');
 const { storeOrderDeliveryFeeJod, STORE_MAX_JOD, STORE_ORDER_SERVICE_FEE_JOD } = require('../utils/deliveryFees');
 const { mapOrderItemsRows } = require('../utils/orderItemApi');
-const { enrichWithJordanTime } = require('../utils/jordanTime');
+const { enrichWithJordanTime, nowOrderCreatedAtForDb } = require('../utils/jordanTime');
 const { promoAppliesToStore } = require('../utils/promoCode');
 const { validateSelectedAddOnsAgainstProduct } = require('../utils/productAddOns');
 const { sendToStore } = require('../fcm');
@@ -306,7 +306,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       paymentVerificationImage: orderData.paymentVerificationImage || null,
       paymentTranRef: orderData.paymentTranRef ?? null,
       paymentCartId: orderData.paymentCartId ?? null,
-      createdAt: new Date().toISOString(),
+      createdAt: nowOrderCreatedAtForDb(),
     });
 
     const orderId = orderResult.lastInsertRowid;
