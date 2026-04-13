@@ -19,7 +19,7 @@ const TAX_RATE = 0.07;
  * JoFotara PHP SDK (jafar-albadarneh/jofotara): DocumentCurrencyCode/TaxCurrencyCode = JOD,
  * but every cbc:Amount / monetary currencyID = JO (Jordan profile). Mixing JOD on amounts breaks total checks.
  */
-const AMT_CCY = 'JO';
+const AMT_CCY = process.env.JOFOTARA_AMOUNT_CURRENCY || 'JOD';
 const DOC_CCY = 'JOD';
 
 /** Normalize money from DB / fees (JOD fils) to avoid float dust like 0.649999. */
