@@ -102,12 +102,11 @@ function buildInvoiceXml(order, invoiceUUID, options = {}) {
 
   /**
    * Line tax total: TaxAmount + TaxSubtotal (TaxableAmount + TaxAmount + Category).
-   * Omit cbc:RoundingAmount — in UBL it is a rounding *adjustment*, not tax-inclusive line total; JoFotara
-   * business rules appear to mis-total when it is filled with inclusive amounts.
+   * Note: The PHP SDK puts the tax-inclusive line total in cbc:RoundingAmount on the line TaxTotal.
    */
-  function lineXml(lineId, itemName, qty, unitPrice, discount, lineTax) {
+  function lineXml(lineId, itemName, qty, unitPrice, discount, lineTax, lineIncl) {
     const taxExcl = roundJod(qty * unitPrice - discount);
-    return `<cac:InvoiceLine><cbc:ID>${esc(lineId)}</cbc:ID><cbc:InvoicedQuantity unitCode="PCE">${f9(qty)}</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="${AMT_CCY}">${f9(taxExcl)}</cbc:LineExtensionAmount><cac:TaxTotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(lineTax)}</cbc:TaxAmount><cac:TaxSubtotal><cbc:TaxableAmount currencyID="${AMT_CCY}">${f9(taxExcl)}</cbc:TaxableAmount><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(lineTax)}</cbc:TaxAmount><cac:TaxCategory><cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5305">S</cbc:ID><cbc:Percent>${f9(7)}</cbc:Percent><cac:TaxScheme><cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5153">VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal></cac:TaxTotal><cac:Item><cbc:Name>${esc(itemName)}</cbc:Name></cac:Item><cac:Price><cbc:PriceAmount currencyID="${AMT_CCY}">${f9(unitPrice)}</cbc:PriceAmount><cac:AllowanceCharge><cbc:ChargeIndicator>false</cbc:ChargeIndicator><cbc:AllowanceChargeReason>DISCOUNT</cbc:AllowanceChargeReason><cbc:Amount currencyID="${AMT_CCY}">${f9(discount)}</cbc:Amount></cac:AllowanceCharge></cac:Price></cac:InvoiceLine>`;
+    return `<cac:InvoiceLine><cbc:ID>${esc(lineId)}</cbc:ID><cbc:InvoicedQuantity unitCode="PCE">${f9(qty)}</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="${AMT_CCY}">${f9(taxExcl)}</cbc:LineExtensionAmount><cac:TaxTotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(lineTax)}</cbc:TaxAmount><cbc:RoundingAmount currencyID="${AMT_CCY}">${f9(lineIncl)}</cbc:RoundingAmount><cac:TaxSubtotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(lineTax)}</cbc:TaxAmount><cac:TaxCategory><cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5305">S</cbc:ID><cbc:Percent>${f9(7)}</cbc:Percent><cac:TaxScheme><cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5153">VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal></cac:TaxTotal><cac:Item><cbc:Name>${esc(itemName)}</cbc:Name></cac:Item><cac:Price><cbc:PriceAmount currencyID="${AMT_CCY}">${f9(unitPrice)}</cbc:PriceAmount><cac:AllowanceCharge><cbc:ChargeIndicator>false</cbc:ChargeIndicator><cbc:AllowanceChargeReason>DISCOUNT</cbc:AllowanceChargeReason><cbc:Amount currencyID="${AMT_CCY}">${f9(discount)}</cbc:Amount></cac:AllowanceCharge></cac:Price></cac:InvoiceLine>`;
   }
 
   const taxCategoryXml = `<cac:TaxCategory><cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5305">S</cbc:ID><cbc:Percent>${f9(7)}</cbc:Percent><cac:TaxScheme><cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5153">VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory>`;
@@ -132,10 +131,12 @@ function buildInvoiceXml(order, invoiceUUID, options = {}) {
     `<cac:AccountingSupplierParty><cac:Party><cac:PostalAddress><cac:Country><cbc:IdentificationCode>JO</cbc:IdentificationCode></cac:Country></cac:PostalAddress><cac:PartyTaxScheme><cbc:CompanyID>${esc(SELLER_TIN)}</cbc:CompanyID><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:PartyTaxScheme><cac:PartyLegalEntity><cbc:RegistrationName>${esc(SELLER_NAME)}</cbc:RegistrationName></cac:PartyLegalEntity></cac:Party></cac:AccountingSupplierParty>`,
     `<cac:AccountingCustomerParty><cac:Party><cac:PartyIdentification><cbc:ID schemeID="NIN"></cbc:ID></cac:PartyIdentification><cac:PartyLegalEntity><cbc:RegistrationName>${esc(buyerName)}</cbc:RegistrationName></cac:PartyLegalEntity></cac:Party></cac:AccountingCustomerParty>`,
     sellerSupplierXml,
-    `<cac:TaxTotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(taxAmount)}</cbc:TaxAmount><cac:TaxSubtotal><cbc:TaxableAmount currencyID="${AMT_CCY}">${f9(taxableBase)}</cbc:TaxableAmount><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(taxAmount)}</cbc:TaxAmount>${taxCategoryXml}</cac:TaxSubtotal></cac:TaxTotal>`,
-    `<cac:LegalMonetaryTotal><cbc:LineExtensionAmount currencyID="${AMT_CCY}">${f9(taxableBase)}</cbc:LineExtensionAmount><cbc:TaxExclusiveAmount currencyID="${AMT_CCY}">${f9(taxableBase)}</cbc:TaxExclusiveAmount><cbc:TaxInclusiveAmount currencyID="${AMT_CCY}">${f9(totalWithTax)}</cbc:TaxInclusiveAmount><cbc:PayableAmount currencyID="${AMT_CCY}">${f9(payableAmount)}</cbc:PayableAmount></cac:LegalMonetaryTotal>`,
-    lineXml('1', 'Delivery Fee', 1, deliveryFee, 0, deliveryTax),
-    includeServiceLine ? lineXml('2', 'Service Fee', 1, serviceFee, 0, serviceTax) : '',
+    /** Reference jofotara PHP: document TaxTotal is only cbc:TaxAmount (no document TaxSubtotal). */
+    `<cac:TaxTotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(taxAmount)}</cbc:TaxAmount></cac:TaxTotal>`,
+    /** SDK InvoiceTotals: LegalMonetaryTotal = TaxExclusive + TaxInclusive + Payable only (no LineExtensionAmount). */
+    `<cac:LegalMonetaryTotal><cbc:TaxExclusiveAmount currencyID="${AMT_CCY}">${f9(taxableBase)}</cbc:TaxExclusiveAmount><cbc:TaxInclusiveAmount currencyID="${AMT_CCY}">${f9(totalWithTax)}</cbc:TaxInclusiveAmount><cbc:PayableAmount currencyID="${AMT_CCY}">${f9(payableAmount)}</cbc:PayableAmount></cac:LegalMonetaryTotal>`,
+    lineXml('1', 'Delivery Fee', 1, deliveryFee, 0, deliveryTax, deliveryInclTax),
+    includeServiceLine ? lineXml('2', 'Service Fee', 1, serviceFee, 0, serviceTax, serviceInclTax) : '',
     '</Invoice>',
   ];
 
