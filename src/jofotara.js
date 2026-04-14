@@ -2,7 +2,7 @@
  * JOFOTARA e-invoicing integration (Jordan National Electronic Invoicing System).
  *
  * Submits Income Bills (فاتورة دخل) to the government API when orders are delivered.
- * The taxable amount is delivery fee + service fee at 7%.
+ * The taxable amount is delivery fee + service fee at 7% (VAT amounts rounded to 2 dp like checkout).
  *
  * Env vars (set on Render):
  *   JOFOTARA_CLIENT_ID, JOFOTARA_SECRET_KEY, JOFOTARA_INCOME_SOURCE,
@@ -28,7 +28,12 @@ function roundJod(n) {
   return Math.round((Number(n) + Number.EPSILON) * 1000) / 1000;
 }
 
-/** Match jofotara PHP `round($amount, 9)` on computed tax / totals. */
+/** Same as checkout `calcFeesTaxJod` / order summary: 2 decimal places for VAT on fees. */
+function round2(n) {
+  return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+}
+
+/** Match jofotara PHP `round($amount, 9)` for XML formatting only (values should already be round2 for money). */
 function round9(n) {
   return Math.round((Number(n) + Number.EPSILON) * 1e9) / 1e9;
 }
@@ -88,16 +93,16 @@ function buildInvoiceXml(order, invoiceUUID, options = {}) {
   /**
    * One taxed line for delivery+service avoids JoFotara summing two line TaxSubtotals differently
    * than the header (duplicate totalSpecialTaxesAmount errors matched two lines).
-   * Tax = round9(combinedBase × 7%) — same number as sum of per-line taxes when using one base.
+   * VAT must use round2(7% × base) like checkout — unrounded 0.2555 breaks JoFotara totalSpecialTaxesAmount / payable checks.
    */
   const useCombinedFeeLine = includeServiceLine;
-  const combinedTax = round9(taxableBase * TAX_RATE);
-  const deliveryTax = useCombinedFeeLine ? combinedTax : round9(deliveryFee * TAX_RATE);
-  const taxAmount = useCombinedFeeLine ? combinedTax : round9(deliveryFee * TAX_RATE);
+  const taxAmount = useCombinedFeeLine
+    ? round2(taxableBase * TAX_RATE)
+    : round2(deliveryFee * TAX_RATE);
 
-  const totalWithTax = useCombinedFeeLine
-    ? round9(taxableBase + combinedTax)
-    : round9(deliveryFee + taxAmount);
+  const totalWithTax = round2(
+    useCombinedFeeLine ? taxableBase + taxAmount : deliveryFee + taxAmount,
+  );
   const payableAmount = totalWithTax;
 
   const f9 = (n) => Number(n).toFixed(9);
@@ -112,7 +117,7 @@ function buildInvoiceXml(order, invoiceUUID, options = {}) {
    */
   function lineXml(lineId, itemName, qty, unitPrice, discount, lineTax) {
     const taxExcl = roundJod(qty * unitPrice - discount);
-    const lineTaxInclusive = round9(taxExcl + lineTax);
+    const lineTaxInclusive = round2(taxExcl + lineTax);
     return `<cac:InvoiceLine><cbc:ID>${esc(lineId)}</cbc:ID><cbc:InvoicedQuantity unitCode="PCE">${f9(qty)}</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="${AMT_CCY}">${f9(taxExcl)}</cbc:LineExtensionAmount><cac:TaxTotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(lineTax)}</cbc:TaxAmount><cbc:RoundingAmount currencyID="${AMT_CCY}">${f9(lineTaxInclusive)}</cbc:RoundingAmount><cac:TaxSubtotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(lineTax)}</cbc:TaxAmount><cac:TaxCategory><cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5305">S</cbc:ID><cbc:Percent>${f9(7)}</cbc:Percent><cac:TaxScheme><cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5153">VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal></cac:TaxTotal><cac:Item><cbc:Name>${esc(itemName)}</cbc:Name></cac:Item><cac:Price><cbc:PriceAmount currencyID="${AMT_CCY}">${f9(unitPrice)}</cbc:PriceAmount><cac:AllowanceCharge><cbc:ChargeIndicator>false</cbc:ChargeIndicator><cbc:AllowanceChargeReason>DISCOUNT</cbc:AllowanceChargeReason><cbc:Amount currencyID="${AMT_CCY}">${f9(discount)}</cbc:Amount></cac:AllowanceCharge></cac:Price></cac:InvoiceLine>`;
   }
 
@@ -141,7 +146,7 @@ function buildInvoiceXml(order, invoiceUUID, options = {}) {
     `<cac:LegalMonetaryTotal><cbc:TaxExclusiveAmount currencyID="${AMT_CCY}">${f9(taxableBase)}</cbc:TaxExclusiveAmount><cbc:TaxInclusiveAmount currencyID="${AMT_CCY}">${f9(totalWithTax)}</cbc:TaxInclusiveAmount><cbc:PayableAmount currencyID="${AMT_CCY}">${f9(payableAmount)}</cbc:PayableAmount></cac:LegalMonetaryTotal>`,
     useCombinedFeeLine
       ? lineXml('1', 'Delivery and service fees', 1, taxableBase, 0, taxAmount)
-      : lineXml('1', 'Delivery Fee', 1, deliveryFee, 0, deliveryTax),
+      : lineXml('1', 'Delivery Fee', 1, deliveryFee, 0, taxAmount),
     '</Invoice>',
   ];
 
