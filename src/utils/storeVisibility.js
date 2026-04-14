@@ -28,15 +28,15 @@ function isStoreVisibleToCustomers(store) {
 }
 
 /**
- * Listed in public store browse (GET /api/stores, etc.): must be open and visible.
- * Blocked, paused, closed (isOpen=false), hidden, and outside opening hours are all excluded.
+ * Listed in public store browse (GET /api/stores, home, offers, product filters, etc.).
+ * Excluded only when blocked or explicitly hidden from customers.
+ * Paused, merchant-closed (isOpen=false), and outside opening hours are still returned;
+ * use `customerFacingIsOpen` / `status` on each store (isOpen false when not accepting orders).
  */
 function isStoreListedForCustomerBrowse(store) {
   if (!store || store.blocked === true) return false;
   if (store.hiddenFromCustomers === true) return false;
-  if (store.paused === true) return false;
-  if (store.isOpen === false) return false;
-  return isWithinOpeningHours(store);
+  return true;
 }
 
 /** Admin dashboard bucket: open (customer-visible) → paused → closed. */

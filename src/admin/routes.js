@@ -2013,6 +2013,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         deliveryFee: o.deliveryFee ?? '',
         paymentType: o.paymentType,
         driverName: o.driverName || '',
+        notes: o.notes != null && String(o.notes).trim() !== '' ? String(o.notes).trim() : '',
         itemsSummary: (o.items || [])
           .map((i) => {
             const add = formatOrderItemAddOnsSummary(i);
