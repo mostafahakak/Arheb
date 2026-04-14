@@ -72,6 +72,7 @@ const {
   ensureOrderAssignmentColumns,
   notifyDriverAssigned,
 } = require('../utils/deliveryClusterAssignment');
+const { customerArhebBoxTrackingData } = require('../utils/arhebBoxFcm');
 
 const storesResponsePath = getJsonPath('stores_listing_response.json');
 const productsResponsePath = getJsonPath('products_listing_response.json');
@@ -2885,6 +2886,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         bodyStr,
         image,
         { type: 'admin_fcm_test', click_action: 'FLUTTER_NOTIFICATION_CLICK' },
+        { db },
       );
       if (!messageId) {
         return res.status(502).json({
@@ -3058,7 +3060,16 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         const { emitArhebBoxEvent } = require('../order');
         if (emitArhebBoxEvent) emitArhebBoxEvent(id, 'status_update', { status: nextStatus });
       } catch (e) { /* ignore */ }
-      fcm.sendToToken(rowBefore.fcmToken, 'Arheb Box update', `Your request #${id} is now: ${nextStatus}`, null, { type: 'arheb_box_status', requestId: String(id), status: nextStatus }).catch(() => {});
+      fcm
+        .sendToToken(
+          rowBefore.fcmToken,
+          'Arheb Box update',
+          `Your request #${id} is now: ${nextStatus}`,
+          null,
+          { type: 'arheb_box_status', requestId: String(id), status: nextStatus },
+          { db },
+        )
+        .catch(() => {});
       if (!rowBefore.fcmToken) {
         fcm.sendToUserByPhone(db, rowBefore.phoneNumber, 'Arheb Box update', `Your request #${id} is now: ${nextStatus}`, null, { type: 'arheb_box_status', requestId: String(id), status: nextStatus }).catch(() => {});
       }
@@ -3108,19 +3119,35 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       const updated = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(id);
       const driverFcmData = {
         ...fcmPayloadForArhebBoxRequest(updated, id),
-        type: 'arheb_box_assigned',
         status: 'assigned',
       };
       fcm
-        .sendToDriver(db, driverIdNum, 'New Arheb Box delivery', `Request #${id} has been assigned to you. Open the app to accept.`, driverFcmData)
+        .sendToDriver(
+          db,
+          driverIdNum,
+          'New delivery assigned',
+          `Arheb Box #${id} has been assigned to you. Open the app for details.`,
+          driverFcmData,
+        )
         .catch((err) => console.warn('[arheb-box] assign-driver FCM:', err?.message || err));
+      const custAssigned = customerArhebBoxTrackingData(id, 'assigned');
+      const custTitle = 'Driver assigned';
+      const custBody = `A driver has been assigned to your Arheb Box request #${id}.`;
+      if (updated.fcmToken && String(updated.fcmToken).trim()) {
+        fcm.sendToToken(updated.fcmToken, custTitle, custBody, null, custAssigned, { db }).catch(() => {});
+      } else {
+        fcm.sendToUserByPhone(db, updated.phoneNumber, custTitle, custBody, null, custAssigned).catch(() => {});
+      }
       try {
         const { emitDriverDeliveryRequest } = require('../driverPresence');
         if (io) {
           emitDriverDeliveryRequest(io, driverIdNum, {
+            orderId: id,
             requestId: id,
             status: 'assigned',
-            type: 'arheb_box_assigned',
+            storeName: 'Arheb Box',
+            type: 'driver_assigned',
+            orderType: 'arheb_box',
           });
         }
       } catch (_) { /* ignore */ }
@@ -3162,7 +3189,16 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       }
       const updatedRow = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(id);
       if (String(updatedRow?.status || '').toLowerCase() === 'confirmed') {
-        fcm.sendToToken(updatedRow.fcmToken, 'Arheb Box update', `Your request #${id} is now: confirmed`, null, { type: 'arheb_box_status', requestId: String(id), status: 'confirmed' }).catch(() => {});
+        fcm
+          .sendToToken(
+            updatedRow.fcmToken,
+            'Arheb Box update',
+            `Your request #${id} is now: confirmed`,
+            null,
+            { type: 'arheb_box_status', requestId: String(id), status: 'confirmed' },
+            { db },
+          )
+          .catch(() => {});
         if (!updatedRow.fcmToken) {
           fcm.sendToUserByPhone(db, updatedRow.phoneNumber, 'Arheb Box update', `Your request #${id} is now: confirmed`, null, { type: 'arheb_box_status', requestId: String(id), status: 'confirmed' }).catch(() => {});
         }

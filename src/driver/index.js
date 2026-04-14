@@ -22,6 +22,7 @@ const {
 } = require('../utils/driverCommission');
 const { getActiveFromListWithDistance } = require('../driverPresence');
 const { offerNextSequentialDriver, offerNextSequentialArhebBoxDriver, parseLatLongFromGoogleMapsUrl } = require('../utils/sequentialDriverOffer');
+const { customerArhebBoxTrackingData } = require('../utils/arhebBoxFcm');
 
 function parseMapsUrl(url) {
   if (!url || typeof url !== 'string') return null;
@@ -507,8 +508,14 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     let arhebBoxAvailable = [];
     try {
       const boxAssigned = db.prepare("SELECT * FROM arheb_box_requests WHERE driverId = ? AND LOWER(status) IN ('assigned', 'in_progress') ORDER BY createdAt DESC LIMIT 20").all(driverId);
-      const boxConfirmed = db.prepare("SELECT * FROM arheb_box_requests WHERE driverId IS NULL AND LOWER(status) = 'confirmed' ORDER BY createdAt DESC LIMIT 20").all();
-      arhebBoxAvailable = [...boxAssigned, ...boxConfirmed].map((r) => enrichArhebBoxRow(r, db));
+      const boxUnassignedOpen = db
+        .prepare(
+          `SELECT * FROM arheb_box_requests WHERE driverId IS NULL
+           AND LOWER(TRIM(status)) NOT IN ('delivered', 'cancelled')
+           ORDER BY createdAt DESC LIMIT 20`,
+        )
+        .all();
+      arhebBoxAvailable = [...boxAssigned, ...boxUnassignedOpen].map((r) => enrichArhebBoxRow(r, db));
     } catch (e) {
       if (!e.message || !e.message.includes('no such table')) throw e;
     }
@@ -771,8 +778,14 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     if (filter === 'available') {
       try {
         const boxAssigned = db.prepare("SELECT * FROM arheb_box_requests WHERE driverId = ? AND LOWER(status) IN ('assigned', 'in_progress') ORDER BY createdAt DESC LIMIT 50").all(driverId);
-        const boxConfirmed = db.prepare("SELECT * FROM arheb_box_requests WHERE driverId IS NULL AND LOWER(status) = 'confirmed' ORDER BY createdAt DESC LIMIT 50").all();
-        arhebBoxAvailable = [...boxAssigned, ...boxConfirmed].map((r) => enrichArhebBoxRow(r, db));
+        const boxUnassignedOpen = db
+          .prepare(
+            `SELECT * FROM arheb_box_requests WHERE driverId IS NULL
+             AND LOWER(TRIM(status)) NOT IN ('delivered', 'cancelled')
+             ORDER BY createdAt DESC LIMIT 50`,
+          )
+          .all();
+        arhebBoxAvailable = [...boxAssigned, ...boxUnassignedOpen].map((r) => enrichArhebBoxRow(r, db));
       } catch (e) {
         if (!e.message || !e.message.includes('no such table')) throw e;
       }
@@ -1191,8 +1204,14 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
       clearArhebBoxOfferExpansion(requestId);
     } catch (e) { /* ignore */ }
 
-    fcm.sendToToken(row.fcmToken, 'Arheb Box accepted', `A driver has accepted your request #${requestId}.`, null, { type: 'arheb_box_status', requestId: String(requestId), status: 'in_progress' }).catch(() => {});
-    if (!row.fcmToken) fcm.sendToUserByPhone(db, row.phoneNumber, 'Arheb Box accepted', `A driver has accepted your request #${requestId}.`, null, { type: 'arheb_box_status', requestId: String(requestId), status: 'in_progress' }).catch(() => {});
+    const custPayload = customerArhebBoxTrackingData(requestId, 'in_progress');
+    const custTitle = 'Driver assigned';
+    const custBody = `A driver has been assigned to your Arheb Box request #${requestId}.`;
+    if (row.fcmToken && String(row.fcmToken).trim()) {
+      fcm.sendToToken(row.fcmToken, custTitle, custBody, null, custPayload, { db }).catch(() => {});
+    } else {
+      fcm.sendToUserByPhone(db, row.phoneNumber, custTitle, custBody, null, custPayload).catch(() => {});
+    }
     const updated = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
     return res.status(200).json({
       success: true,
@@ -1281,7 +1300,16 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
         console.error(`[jofotara] Async submission failed for arheb box ${requestId}:`, e?.message || e);
       });
     } catch (e) { /* ignore */ }
-    fcm.sendToToken(row.fcmToken, 'Arheb Box delivered', `Your request #${requestId} has been delivered.`, null, { type: 'arheb_box_status', requestId: String(requestId), status: 'delivered' }).catch(() => {});
+    fcm
+      .sendToToken(
+        row.fcmToken,
+        'Arheb Box delivered',
+        `Your request #${requestId} has been delivered.`,
+        null,
+        { type: 'arheb_box_status', requestId: String(requestId), status: 'delivered' },
+        { db },
+      )
+      .catch(() => {});
     if (!row.fcmToken) {
       fcm.sendToUserByPhone(db, row.phoneNumber, 'Arheb Box delivered', `Your request #${requestId} has been delivered.`, null, { type: 'arheb_box_status', requestId: String(requestId), status: 'delivered' }).catch(() => {});
     }

@@ -6,6 +6,12 @@
 const fcm = require('../fcm');
 const { emitDriverDeliveryRequest } = require('../driverPresence');
 
+function arhebDebugLog(tag, payload) {
+  const v = process.env.ARHEB_DEBUG;
+  if (v !== '1' && String(v).toLowerCase() !== 'true') return;
+  console.log('[arheb-debug]', tag, JSON.stringify({ ...payload, t: new Date().toISOString() }));
+}
+
 function parseLatLongFromGoogleMapsUrl(url) {
   if (!url || typeof url !== 'string') return null;
   const text = url.trim();
@@ -181,10 +187,17 @@ function fcmPayloadForArhebBoxRequest(requestRow, requestId) {
   let dropoffAddr = '';
   try { pickupAddr = JSON.parse(requestRow.pickup || '{}').address || ''; } catch (e) { /* ignore */ }
   try { dropoffAddr = JSON.parse(requestRow.dropoff || '{}').address || ''; } catch (e) { /* ignore */ }
+  const idStr = String(requestId);
+  /** Same `type` / keys as store `fcmPayloadForDriverRequest` so the driver app handles the push like order details. */
   return {
-    requestId: String(requestId),
-    status: requestRow.status || 'confirmed',
-    type: 'arheb_box_delivery_request',
+    orderId: idStr,
+    requestId: idStr,
+    status: String(requestRow.status || 'confirmed'),
+    storeId: '',
+    storeName: 'Arheb Box',
+    storeMapsUrl: '',
+    orderType: 'arheb_box',
+    type: 'driver_request',
     screen: 'arheb_box_details',
     deepLink: `arheb://arheb-box/${requestId}`,
     pickupAddress: pickupAddr,
@@ -200,20 +213,42 @@ function fcmPayloadForArhebBoxRequest(requestRow, requestId) {
 function notifyDriverArhebBoxRequest(db, io, requestId, requestRow, driverId) {
   const pseudoOrderId = -requestId;
   const existing = db.prepare('SELECT status FROM driver_requests WHERE orderId = ? AND driverId = ?').get(pseudoOrderId, driverId);
-  if (existing?.status === 'pending') return { notified: false, reason: 'already_pending' };
-  if (existing?.status === 'rejected' || existing?.status === 'accepted') return { notified: false, reason: `already_${existing.status}` };
+  if (existing?.status === 'pending') {
+    arhebDebugLog('arheb_box_skip_driver', { requestId, driverId, reason: 'already_pending' });
+    return { notified: false, reason: 'already_pending' };
+  }
+  if (existing?.status === 'rejected' || existing?.status === 'accepted') {
+    arhebDebugLog('arheb_box_skip_driver', { requestId, driverId, reason: `already_${existing.status}` });
+    return { notified: false, reason: `already_${existing.status}` };
+  }
 
   db.prepare('INSERT INTO driver_requests (orderId, driverId, status) VALUES (?, ?, ?)').run(pseudoOrderId, driverId, 'pending');
 
   const payload = fcmPayloadForArhebBoxRequest(requestRow, requestId);
-  fcm.sendToDriver(db, driverId, 'New Arheb Box delivery request', `Box request #${requestId}. Open the app to accept or reject.`, payload)
-    .then((r) => console.log(`[driver-notify] FCM arheb-box result driver ${driverId}, req ${requestId}:`, JSON.stringify(r)))
-    .catch((err) => console.error(`[driver-notify] FCM FAILED arheb-box driver ${driverId}, req ${requestId}:`, err?.message || err));
+  arhebDebugLog('arheb_box_fcm_send_start', { requestId, driverId, payloadType: payload.type });
+  fcm.sendToDriver(
+    db,
+    driverId,
+    'New delivery request',
+    `Arheb Box #${requestId} — open the app to accept or reject.`,
+    payload,
+  )
+    .then((r) => {
+      arhebDebugLog('arheb_box_fcm_send_result', { requestId, driverId, messageId: r || null, ok: !!r });
+      console.log(`[driver-notify] FCM arheb-box result driver ${driverId}, req ${requestId}:`, JSON.stringify(r));
+    })
+    .catch((err) => {
+      arhebDebugLog('arheb_box_fcm_send_error', { requestId, driverId, error: err?.message || String(err) });
+      console.error(`[driver-notify] FCM FAILED arheb-box driver ${driverId}, req ${requestId}:`, err?.message || err);
+    });
 
   const socketSent = emitDriverDeliveryRequest(io, driverId, {
+    orderId: requestId,
     requestId,
     status: requestRow.status || 'confirmed',
-    type: 'arheb_box_delivery_request',
+    storeName: 'Arheb Box',
+    type: 'driver_request',
+    orderType: 'arheb_box',
   });
   console.log(`[driver-notify] Socket emit arheb-box driver ${driverId}, req ${requestId}: ${socketSent ? 'sent' : 'not connected'}`);
   return { notified: true };
@@ -299,7 +334,22 @@ function offerNextSequentialArhebBoxDriver(db, io, requestId, requestRow, ctx) {
 
   const freshRow = () => db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId) || requestRow;
 
-  for (const d of withDistance) {
+  let toTry = withDistance;
+  if (!toTry.length && candidateIds.length) {
+    toTry = candidateIds.map((driverId) => ({ driverId, distanceKm: undefined }));
+    console.log(
+      `[driver-notify] arheb-box #${requestId}: no drivers on /driver-presence — falling back to FCM for ${toTry.length} candidate driver(s)`,
+    );
+  }
+  arhebDebugLog('arheb_box_offer_next', {
+    requestId,
+    onlineCandidates: withDistance.length,
+    tryCount: toTry.length,
+    rejectedCount: rejected.size,
+    pendingOther: countPendingArhebBoxDriverRequests(db, requestId),
+  });
+
+  for (const d of toTry) {
     if (rejected.has(d.driverId)) continue;
     const n = notifyDriverArhebBoxRequest(db, io, requestId, freshRow(), d.driverId);
     if (n.notified) {

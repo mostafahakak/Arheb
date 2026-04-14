@@ -2179,11 +2179,13 @@ To connect to the order tracking system, you need to establish a WebSocket conne
 
 **WebSocket URL:** `wss://arheb-backend.onrender.com` (or `ws://localhost:4000` for local development)
 
-**Connection Requirements:**
-- `token` - Bearer JWT token from authentication
-- `orderId` - Order ID to track
+**Connection Requirements — store orders:**
+- `token` — Bearer JWT (customer, driver, or admin).
+- `orderId` — Numeric ID from the **`orders`** table (store checkout order).
 
-**Connection Example (Socket.IO):**
+**Arheb Box** uses the **same WebSocket URL and default namespace** but a different handshake (see [Arheb Box real-time tracking (Socket.IO)](#arheb-box-real-time-tracking-socketio) below). Sending only `orderId` set to a box request id **without** `requestId` or `trackingType` will make the server look up a **store** order and fail.
+
+**Connection Example (Socket.IO, store order):**
 ```javascript
 const socket = io('https://arheb-backend.onrender.com', {
   auth: {
@@ -2210,6 +2212,48 @@ socket.on('connected', (data) => {
   // }
 });
 ```
+
+---
+
+### Arheb Box real-time tracking (Socket.IO)
+
+**Yes — the handshake changed** for Arheb Box so clients can use either a dedicated **`requestId`** or reuse **`orderId`** together with an explicit **type** (useful when the mobile app only has one “id” field).
+
+**Handshake `auth` (default namespace, same URL as store tracking):**
+
+| Field | When |
+|--------|------|
+| `token` | **Required.** `Bearer …` customer JWT, driver JWT, or admin JWT (same as store). |
+| `requestId` | **Optional.** If set, the connection is **always** Arheb Box; value = **`arheb_box_requests.id`**. |
+| `orderId` | **Store:** required; must be an **`orders.id`**. **Box:** use as the box request id **only if** you also send `trackingType` / `orderType` (below). |
+| `trackingType` **or** `orderType` | **Optional.** If set to **`arheb_box`** (also accepted: `arhebbox`, `arheb box`, `box`), then `orderId` is treated as the **box request id** (same numeric id as `requestId`). |
+
+**Valid combinations:**
+
+1. **Recommended (clearest):** `{ token, requestId: <boxRequestId> }`
+2. **Same shape as store, different meaning:** `{ token, orderId: <boxRequestId>, trackingType: 'arheb_box' }`  
+   (You can use `orderType: 'arheb_box'` instead of `trackingType`.)
+
+**`connected` event (Arheb Box):** includes `requestId`, `trackingType: 'arheb_box'`, and `role`.
+
+**`location_update` (Arheb Box):** payload uses **`requestId`**, not `orderId`:
+
+```json
+{
+  "requestId": 42,
+  "longitude": 35.0063,
+  "latitude": 29.5320,
+  "timestamp": "2024-01-15T10:30:00.000Z"
+}
+```
+
+Drivers still emit **`driver_location`** with `{ longitude, latitude }` (or `lat` / `lng` aliases). Live forwarding from **`/driver-presence`** applies while the box is **`in_progress`** (see server: driver presence → box rooms).
+
+**REST (poll, customer app):** `GET /api/arheb-box/:id/tracking` — Bearer token; **`id`** = box request id; user must own the request (`phoneNumber` match).
+
+**REST (admin dashboard):** `GET /api/admin/orders/:requestId/tracking?type=arheb_box` — **`requestId`** is the Arheb Box id; response includes `requestId`, `orderType: 'arheb_box'`, `lastLocation`, etc.
+
+**Server debug (Render / env):** set **`ARHEB_DEBUG=1`** to log extra lines prefixed with **`[arheb-debug]`** (driver offer chain, per-driver FCM attempts/skips, customer “request received” attempts). **`FCM_DEBUG=1`** adds Firebase send details from **`[fcm]`** logs.
 
 ---
 
@@ -2358,6 +2402,32 @@ Retrieves the current tracking status for an order (REST endpoint).
 **Path Parameters:**
 - `orderId` - Order ID
 
+#### Arheb Box (customer REST) — same id as “orders” path
+
+If the app already calls **`GET /api/orders/:orderId`** for the tracking screen, pass a **query flag** so the id is resolved from **`arheb_box_requests`** (not **`orders`**):
+
+- **`GET /api/orders/:orderId?trackingType=arheb_box`** (also `type=arheb_box`, `orderType=arheb_box`, `arhebbox`, `box`)
+- Response: `data.order` with **`orderType: 'arheb_box'`** (enriched box payload, same idea as **`GET /api/arheb-box/:id`**).
+
+**Tracking poll:**
+
+- **`GET /api/orders/:orderId/tracking?trackingType=arheb_box`** — same query keys; returns `requestId`, `orderType`, `status`, `location`, etc.
+
+Alternatively, use the dedicated endpoints: **`GET /api/arheb-box/:id`** and **`GET /api/arheb-box/:id/tracking`**.
+
+**Endpoint:** `GET /api/arheb-box/:id/tracking`
+
+- **`id`** — Arheb Box request id (same as Socket.IO `requestId`).
+- **Auth:** customer Bearer token; must match **`arheb_box_requests.phoneNumber`** for that row.
+- Response shape includes `data.requestId`, `data.status`, `data.location`, `data.driverConnected`, etc.
+
+#### Arheb Box (admin REST)
+
+**Endpoint:** `GET /api/admin/orders/:requestId/tracking?type=arheb_box`
+
+- **`requestId`** — Arheb Box id in the path (same numeric id as customer/socket).
+- Query **`type=arheb_box`** is required so the server uses box tracking state, not the **`orders`** table.
+
 **Success Response (200):**
 ```json
 {
@@ -2489,10 +2559,14 @@ socket.on('location_update', (data) => {
 ### Error Handling
 
 **Authentication Errors:**
-- `Authentication failed: Token and orderId are required`
+- `Authentication failed: Token and orderId are required` (store order, or box without `requestId` / `trackingType`)
+- `Authentication failed: Token and orderId (or requestId / trackingType for Arheb Box) are required`
+- `Authentication failed: Invalid request id for Arheb Box tracking`
 - `Authentication failed: Invalid token`
 - `Order not found`
+- `Arheb Box request not found`
 - `Unauthorized: You are not authorized to track this order`
+- `Access denied: You can only track requests assigned to you` (box + driver)
 
 **Driver Location Errors:**
 - `Only drivers can send location updates`
@@ -3820,7 +3894,7 @@ For issues or questions, please contact: `contact@arheb.app`
 | POST | `/api/admin/orders/:orderId/request-driver` | **Admin / SuperAdmin only** | Sends a delivery request to one or more specific drivers. Body: `{ "driverIds": [1, 2, 3] }`. **Store Admin** (or `{ "all": true }` for Admin/SuperAdmin) uses **broadcast**: FCM to every online driver. Use that only when you intentionally want all drivers pinged; when an order becomes **Preparing** without a driver, the server offers **one** nearest online driver (FCM + socket); if that driver rejects, the next nearest is offered until one accepts or none remain. |
 | POST | `/api/driver/orders/:orderId/reject-request` | Driver | **Disabled** — returns **403** (automatic assignment; drivers cannot reject). |
 | GET | `/api/admin/orders/:orderId/driver-map` | Admin (Store Admin: own store orders only) | **Track** payload: `deliveryLocation`, `storeLocation`, `storeName`, assigned **`driver`** (id, name, mobile, vehicle, photo, **`liveLocation`**), `tracking`, **`mapPreviewUrl`**, `driverAssignmentStatus`, `driverSearchStartedAt`. |
-| GET | `/api/admin/orders/:orderId/tracking` | Admin (Store Admin: own store orders only) | Returns order tracking state for the dashboard: `orderId`, `orderStatus`, `driverId`, `driverName`, `isTracking`, `driverConnected`, `lastLocation` (latitude, longitude, timestamp). Used with Socket.IO for live driver tracking. |
+| GET | `/api/admin/orders/:orderId/tracking` | Admin (Store Admin: own store orders only) | **Store:** path id = `orders.id`. **Arheb Box:** same path param but add **`?type=arheb_box`** and use the box request id; response includes `requestId`, `orderType: 'arheb_box'`, `lastLocation`, etc. Used with Socket.IO (`auth`: `orderId` + `trackingType: 'arheb_box'` or `requestId`). |
 | GET | `/api/driver/requests` | Driver | Returns pending delivery requests for the authenticated driver. Each request includes full order payload (store name/address/mapsUrl, client address, total, delivery fee, item count, etc.). Driver accepts via existing `POST /api/driver/orders/accept`. |
 | GET | `/api/admin/info` | Admin / SuperAdmin | Returns app-level contact info including **`arhebBoxComingSoon`** (DB) and **`arhebBox`** (`{ comingSoon, paused, acceptingNewOrders }`). |
 | PATCH | `/api/admin/info` | Admin / SuperAdmin | Updates app contact info. Body: any subset of `{ email, phone, cliqNumber, driverDeliveryPercent, arhebBoxComingSoon }`. Missing fields are left unchanged. |

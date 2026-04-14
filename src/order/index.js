@@ -85,6 +85,16 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
 
   const findArhebBoxById = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?');
 
+  /** Query flags: `?type=arheb_box`, `?trackingType=arheb_box`, or `?orderType=arheb_box` (also `arhebbox`, `box`). */
+  function queryIndicatesArhebBox(req) {
+    const q = req.query || {};
+    const t = String(q.type || q.trackingType || q.orderType || '')
+      .toLowerCase()
+      .replace(/-/g, '_')
+      .trim();
+    return t === 'arheb_box' || t === 'arhebbox' || t === 'box';
+  }
+
   // WebSocket connection middleware for authentication
   io.use((socket, next) => {
     const token = socket.handshake.auth.token || socket.handshake.headers.authorization;
@@ -325,6 +335,34 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
       if (isNaN(orderId)) {
         return res.status(400).json({ success: false, message: 'Invalid order ID' });
       }
+
+      if (queryIndicatesArhebBox(req)) {
+        const boxRow = findArhebBoxById.get(orderId);
+        if (!boxRow) {
+          return res.status(404).json({ success: false, message: 'Order not found' });
+        }
+        if (boxRow.phoneNumber !== req.user.phoneNumber) {
+          return res.status(403).json({ success: false, message: 'Access denied' });
+        }
+        const { enrichArhebBoxRow } = require('../arhebBox');
+        const enriched = enrichArhebBoxRow(boxRow, db);
+        return res.status(200).json({
+          success: true,
+          message: 'Order retrieved successfully',
+          data: {
+            order: {
+              ...enriched,
+              orderType: 'arheb_box',
+              storeName: 'Arheb Box',
+              paymentType: boxRow.paymentMethod || 'cash',
+              name: enriched.userName,
+              userId: req.user.userId || req.user.phoneNumber,
+            },
+          },
+          timestamp: new Date().toISOString(),
+        });
+      }
+
       const order = findOrderById.get(orderId);
       if (!order) {
         return res.status(404).json({ success: false, message: 'Order not found' });
@@ -527,6 +565,56 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
         return res.status(400).json({
           success: false,
           message: 'Invalid order ID'
+        });
+      }
+
+      if (queryIndicatesArhebBox(req)) {
+        const boxRow = findArhebBoxById.get(orderId);
+        if (!boxRow) {
+          return res.status(404).json({ success: false, message: 'Order not found' });
+        }
+        if (boxRow.phoneNumber !== req.user.phoneNumber) {
+          return res.status(403).json({ success: false, message: 'Access denied' });
+        }
+        const trackKey = `box_${orderId}`;
+        const tracking = activeTrackings.get(trackKey);
+        let driverPhone = null;
+        if (boxRow.driverId != null) {
+          try {
+            const dr = db.prepare('SELECT mobile FROM drivers WHERE id = ?').get(boxRow.driverId);
+            driverPhone = dr?.mobile ?? null;
+          } catch (e) { /* ignore */ }
+        }
+        const baseData = {
+          requestId: orderId,
+          orderType: 'arheb_box',
+          orderId,
+          status: boxRow.status,
+          driverPhone,
+          isTracking: !!(tracking && tracking.lastLocation),
+          location: tracking?.lastLocation
+            ? {
+                longitude: tracking.lastLocation.longitude,
+                latitude: tracking.lastLocation.latitude,
+                timestamp: tracking.lastLocation.timestamp,
+              }
+            : null,
+          driverConnected: !!(tracking && tracking.driverSocket),
+          customerConnected: !!(tracking && tracking.customerSocket),
+        };
+        if (!tracking || !tracking.lastLocation) {
+          return res.status(200).json({
+            success: true,
+            message: 'No tracking data available yet',
+            data: baseData,
+            timestamp: new Date().toISOString(),
+          });
+        }
+        return res.status(200).json({
+          success: true,
+          message: 'Tracking data retrieved successfully',
+          data: baseData,
+          timestamp: new Date().toISOString(),
         });
       }
 

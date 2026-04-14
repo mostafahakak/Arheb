@@ -308,7 +308,9 @@ function notifyDriversAboutNewArhebBox(db, io, row) {
     if (next) {
       console.log(`[arheb-box] offered request #${fullRow.id} to driver ${next.driverId}${next.distanceKm != null ? ` (~${next.distanceKm.toFixed(2)} km)` : ''}`);
     } else {
-      console.log(`[arheb-box] no online driver to offer for request #${fullRow.id} (will retry when admin pings drivers or driver comes online)`);
+      console.log(
+        `[arheb-box] no driver could be offered for request #${fullRow.id} (no candidates / all skipped / FCM token missing). Set ARHEB_DEBUG=1 for details. Admin can use Request driver.`,
+      );
     }
     try {
       const { broadcastDriverOrdersUpdated } = require('../driverPresence');
@@ -441,6 +443,13 @@ module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest, io)
         });
       }
       notifyDriversAboutNewArhebBox(db, io, result.row);
+      try {
+        const { notifyArhebBoxCustomerRequestReceived } = require('../utils/arhebBoxFcm');
+        const fullRow = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(result.row.id) || result.row;
+        notifyArhebBoxCustomerRequestReceived(db, fullRow);
+      } catch (e) {
+        console.warn('[arheb-box] customer notify on create:', e?.message || e);
+      }
       try {
         const { emitArhebBoxEvent } = require('../order');
         if (emitArhebBoxEvent) emitArhebBoxEvent(result.row.id, 'created', {});

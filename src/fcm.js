@@ -35,6 +35,60 @@ function logFcmSend(kind, info) {
   }
 }
 
+/** Firebase rejects sends to uninstalled apps, stale tokens, or wrong-project tokens. */
+function isInvalidFcmRegistrationError(e) {
+  if (!e) return false;
+  const code = String(e.code || e.errorInfo?.code || '');
+  if (code.includes('registration-token-not-found') || code.includes('invalid-registration-token')) return true;
+  const msg = String(e.message || '').toLowerCase();
+  if (msg.includes('registration-token-not-found')) return true;
+  if (msg.includes('invalid-registration-token')) return true;
+  if (msg.includes('not a valid fcm registration token')) return true;
+  if (msg.includes('requested entity was not found')) return true;
+  return false;
+}
+
+/**
+ * Clear a bad token everywhere it appears so the next app open can register a fresh one.
+ */
+function invalidateStoredFcmToken(db, token) {
+  const t = typeof token === 'string' ? token.trim() : '';
+  if (!db || !t) return;
+  let users = 0;
+  let drivers = 0;
+  let boxes = 0;
+  let stores = 0;
+  try {
+    users = db.prepare('UPDATE users SET fcmToken = NULL WHERE fcmToken = ?').run(t).changes || 0;
+  } catch (e) {
+    /* ignore */
+  }
+  try {
+    drivers = db.prepare('UPDATE drivers SET fcmToken = NULL WHERE fcmToken = ?').run(t).changes || 0;
+  } catch (e) {
+    /* ignore */
+  }
+  try {
+    boxes = db.prepare('UPDATE arheb_box_requests SET fcmToken = NULL WHERE fcmToken = ?').run(t).changes || 0;
+  } catch (e) {
+    /* ignore */
+  }
+  try {
+    stores = db.prepare('UPDATE store_fcm_tokens SET fcmToken = NULL WHERE fcmToken = ?').run(t).changes || 0;
+  } catch (e) {
+    /* table may be missing in some deployments */
+  }
+  const n = users + drivers + boxes + stores;
+  if (n > 0) {
+    console.warn('[fcm] cleared invalid/expired FCM token from DB — user must open app to refresh token:', {
+      users,
+      drivers,
+      arhebBoxRows: boxes,
+      storeFcmRows: stores,
+    });
+  }
+}
+
 /**
  * Initialize firebase-admin once; returns the admin namespace or null if unavailable.
  */
@@ -186,6 +240,9 @@ async function sendToTokenWithMessaging(m, token, title, body, imageUrl, data, o
     return result;
   } catch (e) {
     console.warn('[fcm] send failed:', e.message);
+    if (options.db && isInvalidFcmRegistrationError(e)) {
+      invalidateStoredFcmToken(options.db, token);
+    }
     return null;
   }
 }
@@ -260,7 +317,7 @@ async function sendToDriver(db, driverId, title, body, data = {}) {
     logFcmSend('driver_skip', { driverId, reason: 'firebase_messaging_unavailable' });
     return null;
   }
-  const out = await sendToTokenWithMessaging(m, row?.fcmToken, title, body, null, data, { highPriority: true });
+  const out = await sendToTokenWithMessaging(m, row?.fcmToken, title, body, null, data, { highPriority: true, db });
   logFcmSend('driver_result', { driverId, ok: !!out, messageId: out || null });
   return out;
 }
@@ -313,7 +370,7 @@ async function sendToStore(db, storeId, title, body, data = {}) {
     console.warn('[fcm] store notify: Firebase Admin not configured (FIREBASE_SERVICE_ACCOUNT_JSON)');
     return null;
   }
-  return sendToToken(token, title, body, null, data, { highPriority: true });
+  return sendToToken(token, title, body, null, data, { highPriority: true, db });
 }
 
 /**
@@ -356,7 +413,7 @@ async function sendToUserByPhone(db, phoneNumber, title, body, imageUrl, data = 
     logFcmSend('customer_skip', { phone: maskPhoneForLog(phoneNumber), reason: 'firebase_messaging_unavailable' });
     return null;
   }
-  const out = await sendToToken(row?.fcmToken, title, body, imageUrl, data);
+  const out = await sendToToken(row?.fcmToken, title, body, imageUrl, data, { db });
   logFcmSend('customer_result', {
     phone: maskPhoneForLog(phoneNumber),
     ok: !!out,

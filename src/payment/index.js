@@ -134,6 +134,12 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest, io) 
         applyCardPaymentSuccessToArhebBox(createRes.requestId, tranRef);
         const newBoxRow = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(createRes.requestId);
         notifyDriversAboutNewArhebBox(db, io, newBoxRow);
+        try {
+          const { notifyArhebBoxCustomerRequestReceived } = require('../utils/arhebBoxFcm');
+          notifyArhebBoxCustomerRequestReceived(db, newBoxRow);
+        } catch (e2) {
+          console.warn('[payment] arheb-box customer notify:', e2?.message || e2);
+        }
       } catch (e) {
         console.error('finalizePendingEntitiesForTransaction arheb-box exception:', e);
       }
