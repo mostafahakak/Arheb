@@ -26,7 +26,7 @@ const fcm = require('../fcm');
 const { getActiveFromListWithDistance, getActiveDriversWithLocation } = require('../driverPresence');
 const enrichArhebBoxRow = require('../arhebBox').enrichArhebBoxRow;
 const { getArhebBoxPublicFlags } = require('../arhebBox/flags');
-const { mapOrderItemsRows, formatAddOnsSummary } = require('../utils/orderItemApi');
+const { mapOrderItemsRows, formatOrderItemAddOnsSummary } = require('../utils/orderItemApi');
 const { sanitizeAddOnGroups } = require('../utils/productAddOns');
 const {
   isWithinOpeningHours,
@@ -293,6 +293,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   const findOrderById = db.prepare('SELECT * FROM orders WHERE id = ?');
   const findOrderItems = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
 
+  /** Line items for admin/dashboard: resolves add-on group/option ids to names via product catalog. */
+  function mapOrderItemsForAdmin(orderItemRows) {
+    const products = loadProducts();
+    const byId = new Map(products.map((p) => [String(p.id), p]));
+    const findProductById = (id) => byId.get(String(id)) || null;
+    return mapOrderItemsRows(orderItemRows, findProductById);
+  }
+
   /** JSON/catalog store ids may be number or string; DB TEXT may differ — compare as strings. */
   function sameStoreId(a, b) {
     return String(a ?? '') === String(b ?? '');
@@ -474,7 +482,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         return {
           ...o,
           storeName: store ? (store.nameEn || store.name || store.nameAr) : (o.storeId || '-'),
-          items: mapOrderItemsRows(items),
+          items: mapOrderItemsForAdmin(items),
         };
       });
       return res.status(200).json({
@@ -1899,7 +1907,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             storeMapsUrl: store ? (store.mapsUrl || null) : null,
             storeLatitude: store?.latitude ?? store?.lat ?? null,
             storeLongitude: store?.longitude ?? store?.long ?? null,
-            items: mapOrderItemsRows(items),
+            items: mapOrderItemsForAdmin(items),
           },
           ['createdAt'],
         );
@@ -2007,7 +2015,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         driverName: o.driverName || '',
         itemsSummary: (o.items || [])
           .map((i) => {
-            const add = i.selectedAddOns ? formatAddOnsSummary(i.selectedAddOns) : '';
+            const add = formatOrderItemAddOnsSummary(i);
             return `${i.name} x${i.quantity}` + (add ? ` [${add}]` : '');
           })
           .join('; '),
@@ -2062,7 +2070,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             storeMapsUrl: store ? (store.mapsUrl || null) : null,
             storeLatitude: store?.latitude ?? store?.lat ?? null,
             storeLongitude: store?.longitude ?? store?.long ?? null,
-            items: mapOrderItemsRows(items),
+            items: mapOrderItemsForAdmin(items),
           },
           ['createdAt'],
         ),
@@ -2173,7 +2181,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       data: {
         order: {
           ...updated,
-          items: mapOrderItemsRows(items),
+          items: mapOrderItemsForAdmin(items),
         },
       },
     });
@@ -2231,7 +2239,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       data: {
         order: {
           ...updated,
-          items: mapOrderItemsRows(items),
+          items: mapOrderItemsForAdmin(items),
         },
       },
     });
@@ -2505,7 +2513,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       return res.status(200).json({
         success: true,
         message: 'Already assigned to this driver',
-        data: { order: { ...updatedSame, items: mapOrderItemsRows(itemsSame) } },
+        data: { order: { ...updatedSame, items: mapOrderItemsForAdmin(itemsSame) } },
       });
     }
     const driver = db.prepare('SELECT id, name FROM drivers WHERE id = ? AND isBlocked = 0').get(driverIdNum);
@@ -2545,7 +2553,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     return res.status(200).json({
       success: true,
       message: 'Driver assigned. They have been notified in the driver app.',
-      data: { orderId, driverId: driverIdNum, order: { ...updated, items: mapOrderItemsRows(items) } },
+      data: { orderId, driverId: driverIdNum, order: { ...updated, items: mapOrderItemsForAdmin(items) } },
     });
   });
 
@@ -3210,7 +3218,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         for (const did of driverIds) {
           const dNum = parseInt(did, 10);
           if (!isNaN(dNum)) {
-            const result = notifyDriverArhebBoxRequest(db, io, id, updatedRow, dNum);
+            const result = notifyDriverArhebBoxRequest(db, io, id, updatedRow, dNum, { resendFcmIfPending: true });
             if (result.notified) notifiedIds.push(dNum);
           }
         }

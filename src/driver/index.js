@@ -22,7 +22,7 @@ const {
 } = require('../utils/driverCommission');
 const { getActiveFromListWithDistance } = require('../driverPresence');
 const { offerNextSequentialDriver, offerNextSequentialArhebBoxDriver, parseLatLongFromGoogleMapsUrl } = require('../utils/sequentialDriverOffer');
-const { customerArhebBoxTrackingData } = require('../utils/arhebBoxFcm');
+const { notifyArhebBoxCustomerDriverEnRoute } = require('../utils/arhebBoxFcm');
 
 function parseMapsUrl(url) {
   if (!url || typeof url !== 'string') return null;
@@ -1204,14 +1204,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
       clearArhebBoxOfferExpansion(requestId);
     } catch (e) { /* ignore */ }
 
-    const custPayload = customerArhebBoxTrackingData(requestId, 'in_progress');
-    const custTitle = 'Driver assigned';
-    const custBody = `A driver has been assigned to your Arheb Box request #${requestId}.`;
-    if (row.fcmToken && String(row.fcmToken).trim()) {
-      fcm.sendToToken(row.fcmToken, custTitle, custBody, null, custPayload, { db }).catch(() => {});
-    } else {
-      fcm.sendToUserByPhone(db, row.phoneNumber, custTitle, custBody, null, custPayload).catch(() => {});
-    }
+    notifyArhebBoxCustomerDriverEnRoute(db, row, requestId);
     const updated = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
     return res.status(200).json({
       success: true,

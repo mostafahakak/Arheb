@@ -65,9 +65,47 @@ function notifyArhebBoxCustomerRequestReceived(db, row) {
   });
 }
 
+/** Customer push when a driver accepts / is en route to pickup (in_progress). */
+function notifyArhebBoxCustomerDriverEnRoute(db, row, requestId) {
+  if (!db || !row || requestId == null) return;
+  const id = requestId;
+  const payload = customerArhebBoxTrackingData(id, 'in_progress');
+  const title = 'Driver on the way';
+  const body = `A driver is heading to pick up your Arheb Box request #${id}. Track live in the app.`;
+  const hasBoxTok = !!(row.fcmToken && String(row.fcmToken).trim());
+  if (arhebDebugEnabled()) {
+    logArhebDebug('customer_driver_en_route', {
+      requestId: id,
+      hasBoxFcmToken: hasBoxTok,
+      phone: row.phoneNumber ? String(row.phoneNumber).slice(0, 4) + '…' : null,
+    });
+  }
+  if (hasBoxTok) {
+    fcm
+      .sendToToken(row.fcmToken, title, body, null, payload, { db })
+      .then((mid) => {
+        if (arhebDebugEnabled()) logArhebDebug('customer_driver_en_route_token', { requestId: id, messageId: mid || null });
+        if (!mid) {
+          return fcm.sendToUserByPhone(db, row.phoneNumber, title, body, null, payload);
+        }
+      })
+      .catch((e) => {
+        console.warn('[arheb-fcm] driver en route token send failed:', e?.message || e);
+        return fcm.sendToUserByPhone(db, row.phoneNumber, title, body, null, payload).catch((e2) => {
+          console.warn('[arheb-fcm] driver en route phone fallback failed:', e2?.message || e2);
+        });
+      });
+    return;
+  }
+  fcm.sendToUserByPhone(db, row.phoneNumber, title, body, null, payload).catch((e) => {
+    console.warn('[arheb-fcm] driver en route sendToUserByPhone failed:', e?.message || e);
+  });
+}
+
 module.exports = {
   customerArhebBoxTrackingData,
   notifyArhebBoxCustomerRequestReceived,
+  notifyArhebBoxCustomerDriverEnRoute,
   arhebDebugEnabled,
   logArhebDebug,
 };

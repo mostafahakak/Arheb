@@ -210,10 +210,41 @@ function fcmPayloadForArhebBoxRequest(requestRow, requestId) {
  * Notify a single driver about an Arheb Box request. Uses driver_requests table with
  * orderId = -requestId (negative) to distinguish from store orders.
  */
-function notifyDriverArhebBoxRequest(db, io, requestId, requestRow, driverId) {
+function notifyDriverArhebBoxRequest(db, io, requestId, requestRow, driverId, options = {}) {
+  const { resendFcmIfPending = false } = options;
   const pseudoOrderId = -requestId;
   const existing = db.prepare('SELECT status FROM driver_requests WHERE orderId = ? AND driverId = ?').get(pseudoOrderId, driverId);
   if (existing?.status === 'pending') {
+    if (resendFcmIfPending) {
+      const payload = fcmPayloadForArhebBoxRequest(requestRow, requestId);
+      arhebDebugLog('arheb_box_fcm_resend_pending', { requestId, driverId });
+      fcm
+        .sendToDriver(
+          db,
+          driverId,
+          'New delivery request',
+          `Arheb Box #${requestId} — open the app to accept or reject.`,
+          payload,
+        )
+        .then((r) => {
+          arhebDebugLog('arheb_box_fcm_send_result', { requestId, driverId, messageId: r || null, ok: !!r, resent: true });
+          console.log(`[driver-notify] FCM arheb-box (resent) driver ${driverId}, req ${requestId}:`, JSON.stringify(r));
+        })
+        .catch((err) => {
+          arhebDebugLog('arheb_box_fcm_send_error', { requestId, driverId, error: err?.message || String(err), resent: true });
+          console.error(`[driver-notify] FCM FAILED arheb-box (resent) driver ${driverId}, req ${requestId}:`, err?.message || err);
+        });
+      const socketSent = emitDriverDeliveryRequest(io, driverId, {
+        orderId: requestId,
+        requestId,
+        status: requestRow.status || 'confirmed',
+        storeName: 'Arheb Box',
+        type: 'driver_request',
+        orderType: 'arheb_box',
+      });
+      console.log(`[driver-notify] Socket emit arheb-box (resent) driver ${driverId}, req ${requestId}: ${socketSent ? 'sent' : 'not connected'}`);
+      return { notified: true, resent: true };
+    }
     arhebDebugLog('arheb_box_skip_driver', { requestId, driverId, reason: 'already_pending' });
     return { notified: false, reason: 'already_pending' };
   }
@@ -335,6 +366,10 @@ function offerNextSequentialArhebBoxDriver(db, io, requestId, requestRow, ctx) {
   const freshRow = () => db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId) || requestRow;
 
   let toTry = withDistance;
+  if (pickup && withDistance.length) {
+    const within4 = withDistance.filter((d) => d.distanceKm == null || d.distanceKm <= 4);
+    if (within4.length > 0) toTry = within4;
+  }
   if (!toTry.length && candidateIds.length) {
     toTry = candidateIds.map((driverId) => ({ driverId, distanceKm: undefined }));
     console.log(
@@ -362,7 +397,8 @@ function offerNextSequentialArhebBoxDriver(db, io, requestId, requestRow, ctx) {
 /**
  * Notify online drivers within maxKm of pickup. maxKm >= 1e6 means no distance cap (still sorted by distance when pickup exists).
  */
-function notifyArhebBoxDriversInRadius(db, io, requestId, requestRow, maxKm, getActiveFromListWithDistance) {
+function notifyArhebBoxDriversInRadius(db, io, requestId, requestRow, maxKm, getActiveFromListWithDistance, waveOptions = {}) {
+  const { resendFcmIfPending = false } = waveOptions;
   let drivers = [];
   try {
     drivers = db.prepare('SELECT id FROM drivers WHERE isBlocked = 0').all();
@@ -383,9 +419,23 @@ function notifyArhebBoxDriversInRadius(db, io, requestId, requestRow, maxKm, get
 
   const notifiedIds = [];
   const unlimited = maxKm >= 1e6;
-  for (const d of withDist) {
-    if (!unlimited && pickup && d.distanceKm != null && d.distanceKm > maxKm) continue;
-    const result = notifyDriverArhebBoxRequest(db, io, requestId, requestRow, d.driverId);
+  let toIterate = [];
+  if (!pickup || unlimited) {
+    toIterate = withDist;
+  } else {
+    const inRadius = withDist.filter((d) => d.distanceKm == null || d.distanceKm <= maxKm);
+    if (inRadius.length > 0) {
+      toIterate = inRadius;
+    } else if (withDist.length > 0) {
+      toIterate = [withDist[0]];
+      console.log(
+        `[driver-notify] arheb-box #${requestId}: no online drivers within ${maxKm}km — notifying nearest online driver ${withDist[0].driverId}`,
+      );
+    }
+  }
+
+  for (const d of toIterate) {
+    const result = notifyDriverArhebBoxRequest(db, io, requestId, requestRow, d.driverId, { resendFcmIfPending });
     if (result.notified) notifiedIds.push(d.driverId);
   }
   return notifiedIds;
@@ -413,7 +463,7 @@ function notifyAllOnlineDriversArhebBox(db, io, requestId, requestRow, ctx) {
     );
     const notifiedIds = [];
     for (const d of online) {
-      const result = notifyDriverArhebBoxRequest(db, io, requestId, requestRow, d.driverId);
+      const result = notifyDriverArhebBoxRequest(db, io, requestId, requestRow, d.driverId, { resendFcmIfPending: true });
       if (result.notified) notifiedIds.push(d.driverId);
     }
     return notifiedIds;
@@ -422,6 +472,7 @@ function notifyAllOnlineDriversArhebBox(db, io, requestId, requestRow, ctx) {
   const freshRow = () => db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId) || requestRow;
 
   let step = 0;
+  const waveOpts = { resendFcmIfPending: true };
   const firstNotified = notifyArhebBoxDriversInRadius(
     db,
     io,
@@ -429,6 +480,7 @@ function notifyAllOnlineDriversArhebBox(db, io, requestId, requestRow, ctx) {
     freshRow(),
     ARHEB_BOX_OFFER_RADIUS_STEPS_KM[0],
     getActiveFromListWithDistance,
+    waveOpts,
   );
   console.log(
     `[driver-notify] arheb-box #${requestId} wave ${ARHEB_BOX_OFFER_RADIUS_STEPS_KM[0]}km → ${firstNotified.length} drivers`,
@@ -441,7 +493,7 @@ function notifyAllOnlineDriversArhebBox(db, io, requestId, requestRow, ctx) {
         arhebBoxOfferExpansionTimers.delete(requestId);
         if (!isArhebBoxStillSeekingDriver(db, requestId)) return;
         const row = freshRow();
-        const rest = notifyArhebBoxDriversInRadius(db, io, requestId, row, 1e9, getActiveFromListWithDistance);
+        const rest = notifyArhebBoxDriversInRadius(db, io, requestId, row, 1e9, getActiveFromListWithDistance, waveOpts);
         console.log(`[driver-notify] arheb-box #${requestId} final wave (all online) → ${rest.length} newly notified`);
       }, ARHEB_BOX_OFFER_EXPAND_MS);
       arhebBoxOfferExpansionTimers.set(requestId, tid);
@@ -452,7 +504,7 @@ function notifyAllOnlineDriversArhebBox(db, io, requestId, requestRow, ctx) {
       arhebBoxOfferExpansionTimers.delete(requestId);
       if (!isArhebBoxStillSeekingDriver(db, requestId)) return;
       const row = freshRow();
-      const n = notifyArhebBoxDriversInRadius(db, io, requestId, row, maxKm, getActiveFromListWithDistance);
+      const n = notifyArhebBoxDriversInRadius(db, io, requestId, row, maxKm, getActiveFromListWithDistance, waveOpts);
       console.log(`[driver-notify] arheb-box #${requestId} wave ${maxKm}km → ${n.length} newly notified`);
       scheduleNext();
     }, ARHEB_BOX_OFFER_EXPAND_MS);
