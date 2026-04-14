@@ -88,12 +88,27 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
   // WebSocket connection middleware for authentication
   io.use((socket, next) => {
     const token = socket.handshake.auth.token || socket.handshake.headers.authorization;
-    const orderId = socket.handshake.auth.orderId;
-    const requestId = socket.handshake.auth.requestId;
-    const trackingType = requestId ? 'arheb_box' : 'store';
+    const rawOrderId = socket.handshake.auth.orderId;
+    let requestId = socket.handshake.auth.requestId;
+    const typeRaw = String(socket.handshake.auth.trackingType || socket.handshake.auth.orderType || '').trim();
+    const typeNorm = typeRaw.toLowerCase().replace(/-/g, '_');
+    const explicitBox =
+      typeNorm === 'arheb_box' ||
+      typeNorm === 'arhebbox' ||
+      typeNorm === 'arheb box' ||
+      typeNorm === 'box';
+    let trackingType;
+    if (explicitBox) {
+      trackingType = 'arheb_box';
+      if (requestId == null && rawOrderId != null) requestId = rawOrderId;
+    } else if (requestId != null) {
+      trackingType = 'arheb_box';
+    } else {
+      trackingType = 'store';
+    }
 
-    if (!token || (!orderId && !requestId)) {
-      return next(new Error('Authentication failed: Token and orderId (or requestId for Arheb Box) are required'));
+    if (!token || (trackingType === 'store' && !rawOrderId) || (trackingType === 'arheb_box' && requestId == null)) {
+      return next(new Error('Authentication failed: Token and orderId (or requestId / trackingType for Arheb Box) are required'));
     }
 
     const user = verifyToken(token);
@@ -105,7 +120,10 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
     socket.trackingType = trackingType;
 
     if (trackingType === 'arheb_box') {
-      socket.requestId = parseInt(requestId);
+      socket.requestId = parseInt(requestId, 10);
+      if (Number.isNaN(socket.requestId)) {
+        return next(new Error('Authentication failed: Invalid request id for Arheb Box tracking'));
+      }
       let boxRow;
       try { boxRow = findArhebBoxById.get(socket.requestId); } catch (e) { /* table may not exist */ }
       if (!boxRow) return next(new Error('Arheb Box request not found'));
@@ -129,7 +147,7 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
     }
 
     // Store order tracking
-    socket.orderId = parseInt(orderId);
+    socket.orderId = parseInt(rawOrderId, 10);
     const order = findOrderById.get(socket.orderId);
     if (!order) {
       return next(new Error('Order not found'));

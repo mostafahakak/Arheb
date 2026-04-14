@@ -255,6 +255,60 @@ function isArhebBoxStillSeekingDriver(db, requestId) {
   }
 }
 
+function countPendingArhebBoxDriverRequests(db, requestId) {
+  const pseudoOrderId = -requestId;
+  try {
+    return (
+      db.prepare('SELECT COUNT(*) AS n FROM driver_requests WHERE orderId = ? AND status = ?').get(pseudoOrderId, 'pending')?.n ?? 0
+    );
+  } catch (e) {
+    return 0;
+  }
+}
+
+/**
+ * One pending Arheb Box invite at a time (nearest online driver from pickup), same idea as store orders.
+ * @returns {null | { driverId: number, distanceKm?: number }}
+ */
+function offerNextSequentialArhebBoxDriver(db, io, requestId, requestRow, ctx) {
+  const { getActiveFromListWithDistance } = ctx;
+  if (!requestRow || requestRow.driverId != null) return null;
+  if (!isArhebBoxStillSeekingDriver(db, requestId)) return null;
+  if (countPendingArhebBoxDriverRequests(db, requestId) > 0) return null;
+
+  let drivers = [];
+  try {
+    drivers = db.prepare('SELECT id FROM drivers WHERE isBlocked = 0').all();
+  } catch (e) {
+    if (!e.message || !e.message.includes('no such table')) throw e;
+  }
+  const candidateIds = drivers.map((d) => d.id);
+  const pickup = parsePickupLatLongFromArhebRow(requestRow);
+  const withDistance = pickup
+    ? getActiveFromListWithDistance(candidateIds, pickup.lat, pickup.lon)
+    : getActiveFromListWithDistance(candidateIds, null, null);
+
+  const pseudoOrderId = -requestId;
+  let rejectedRows = [];
+  try {
+    rejectedRows = db.prepare('SELECT driverId FROM driver_requests WHERE orderId = ? AND status = ?').all(pseudoOrderId, 'rejected');
+  } catch (e) {
+    rejectedRows = [];
+  }
+  const rejected = new Set(rejectedRows.map((x) => x.driverId));
+
+  const freshRow = () => db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId) || requestRow;
+
+  for (const d of withDistance) {
+    if (rejected.has(d.driverId)) continue;
+    const n = notifyDriverArhebBoxRequest(db, io, requestId, freshRow(), d.driverId);
+    if (n.notified) {
+      return { driverId: d.driverId, distanceKm: d.distanceKm };
+    }
+  }
+  return null;
+}
+
 /**
  * Notify online drivers within maxKm of pickup. maxKm >= 1e6 means no distance cap (still sorted by distance when pickup exists).
  */
@@ -370,6 +424,7 @@ module.exports = {
   parseLatLongFromGoogleMapsUrl,
   notifyDriverArhebBoxRequest,
   notifyAllOnlineDriversArhebBox,
+  offerNextSequentialArhebBoxDriver,
   clearArhebBoxOfferExpansion,
   fcmPayloadForArhebBoxRequest,
   parsePickupLatLongFromArhebRow,

@@ -21,7 +21,7 @@ const {
   round2,
 } = require('../utils/driverCommission');
 const { getActiveFromListWithDistance } = require('../driverPresence');
-const { offerNextSequentialDriver, parseLatLongFromGoogleMapsUrl } = require('../utils/sequentialDriverOffer');
+const { offerNextSequentialDriver, offerNextSequentialArhebBoxDriver, parseLatLongFromGoogleMapsUrl } = require('../utils/sequentialDriverOffer');
 
 function parseMapsUrl(url) {
   if (!url || typeof url !== 'string') return null;
@@ -1219,6 +1219,23 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
       const { broadcastDriverOrdersUpdated } = require('../driverPresence');
       broadcastDriverOrdersUpdated(io, { type: 'arheb_box_request_rejected', requestId, driverId });
     } catch (e) { /* ignore */ }
+    try {
+      let boxRow;
+      try {
+        boxRow = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
+      } catch (e) {
+        boxRow = null;
+      }
+      if (boxRow && boxRow.driverId == null && io) {
+        const next = offerNextSequentialArhebBoxDriver(db, io, requestId, boxRow, sequentialOfferCtx);
+        if (next) {
+          const { broadcastDriverOrdersUpdated } = require('../driverPresence');
+          broadcastDriverOrdersUpdated(io, { type: 'arheb_box_new_request', requestId });
+        }
+      }
+    } catch (e) {
+      /* ignore chain offer */
+    }
     return res.status(200).json({ success: true, message: 'Arheb Box request rejected' });
   });
 

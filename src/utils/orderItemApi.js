@@ -2,12 +2,29 @@
  * Map SQLite order_items rows to API line items (includes selectedAddOns JSON).
  */
 
+function normalizeSelectedAddOnsParsed(o) {
+  if (o == null) return undefined;
+  if (typeof o === 'object' && !Array.isArray(o) && Object.keys(o).length) return o;
+  if (Array.isArray(o) && o.length) {
+    const out = {};
+    for (const entry of o) {
+      if (!entry || typeof entry !== 'object') continue;
+      const g = entry.groupName ?? entry.group ?? entry.groupId ?? entry.name;
+      const v = entry.optionName ?? entry.option ?? entry.optionId ?? entry.value;
+      const gk = String(g != null ? g : 'Add-on').trim() || 'Add-on';
+      const vk = String(v != null ? v : '').trim();
+      if (vk) out[gk] = vk;
+    }
+    return Object.keys(out).length ? out : undefined;
+  }
+  return undefined;
+}
+
 function parseSelectedAddOnsFromRow(row) {
   if (!row || row.selectedAddOns == null || row.selectedAddOns === '') return undefined;
   try {
     const o = JSON.parse(row.selectedAddOns);
-    if (typeof o !== 'object' || o === null || Array.isArray(o)) return undefined;
-    return Object.keys(o).length ? o : undefined;
+    return normalizeSelectedAddOnsParsed(o);
   } catch (_) {
     return undefined;
   }
@@ -39,6 +56,7 @@ function formatAddOnsSummary(selectedAddOns) {
 
 module.exports = {
   parseSelectedAddOnsFromRow,
+  normalizeSelectedAddOnsParsed,
   orderItemRowToClient,
   mapOrderItemsRows,
   formatAddOnsSummary,

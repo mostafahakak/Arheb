@@ -294,19 +294,22 @@ function createArhebBoxRequest(db, phoneNumber, body, statusOverride, options = 
 function notifyDriversAboutNewArhebBox(db, io, row) {
   if (!row || row.id == null) return;
   try {
-    const { notifyAllOnlineDriversArhebBox, parsePickupLatLongFromArhebRow } = require('../utils/sequentialDriverOffer');
+    const { offerNextSequentialArhebBoxDriver, parsePickupLatLongFromArhebRow } = require('../utils/sequentialDriverOffer');
     const { getActiveFromListWithDistance } = require('../driverPresence');
     const fullRow = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(row.id) || row;
     const pickup = parsePickupLatLongFromArhebRow(fullRow);
-    console.log('[arheb-box] scheduling driver FCM/socket (near sender pickup)', {
+    console.log('[arheb-box] scheduling driver FCM/socket (sequential nearest online from pickup)', {
       requestId: fullRow.id,
       socketIo: !!io,
       pickupFromSender: pickup ? { lat: pickup.lat, lon: pickup.lon } : null,
-      strategy: pickup
-        ? 'waves 0.5 → 1.5 → 4 km from pickup, then any remaining online'
-        : 'all online drivers (pickup JSON missing lat/lon)',
+      strategy: 'one driver at a time (nearest online); next on reject — same as store Preparing flow',
     });
-    notifyAllOnlineDriversArhebBox(db, io, fullRow.id, fullRow, { getActiveFromListWithDistance });
+    const next = offerNextSequentialArhebBoxDriver(db, io, fullRow.id, fullRow, { getActiveFromListWithDistance });
+    if (next) {
+      console.log(`[arheb-box] offered request #${fullRow.id} to driver ${next.driverId}${next.distanceKm != null ? ` (~${next.distanceKm.toFixed(2)} km)` : ''}`);
+    } else {
+      console.log(`[arheb-box] no online driver to offer for request #${fullRow.id} (will retry when admin pings drivers or driver comes online)`);
+    }
     try {
       const { broadcastDriverOrdersUpdated } = require('../driverPresence');
       if (io) broadcastDriverOrdersUpdated(io, { type: 'arheb_box_new', requestId: fullRow.id });

@@ -2550,9 +2550,48 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
 
   // ——— Get order tracking state (for dashboard live map; Store Admin / Admin / SuperAdmin) ———
   app.get('/api/admin/orders/:orderId/tracking', auth, (req, res) => {
-    const orderId = parseInt(req.params.orderId, 10);
-    if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
-    const order = findOrderById.get(orderId);
+    const paramId = parseInt(req.params.orderId, 10);
+    if (isNaN(paramId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
+
+    if (req.query.type === 'arheb_box') {
+      let boxRow;
+      try {
+        boxRow = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(paramId);
+      } catch (e) {
+        boxRow = null;
+      }
+      if (!boxRow) return res.status(404).json({ success: false, message: 'Arheb Box request not found' });
+      let getArhebBoxTrackingState;
+      try {
+        getArhebBoxTrackingState = require('../order').getArhebBoxTrackingState;
+      } catch (e) {
+        getArhebBoxTrackingState = null;
+      }
+      const tracking = getArhebBoxTrackingState ? getArhebBoxTrackingState(paramId) : null;
+      const lastLocation = tracking?.lastLocation || null;
+      return res.status(200).json({
+        success: true,
+        data: {
+          requestId: paramId,
+          orderType: 'arheb_box',
+          orderStatus: boxRow.status,
+          driverId: boxRow.driverId,
+          driverName: boxRow.driverName,
+          isTracking: !!lastLocation,
+          driverConnected: !!(tracking && tracking.driverSocket),
+          lastLocation: lastLocation
+            ? {
+                latitude: lastLocation.latitude,
+                longitude: lastLocation.longitude,
+                timestamp: lastLocation.timestamp,
+              }
+            : null,
+          trackFrom: 'arheb_box_in_progress',
+        },
+      });
+    }
+
+    const order = findOrderById.get(paramId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && !sameStoreId(order.storeId, req.admin.storeId)) {
       return res.status(403).json({ success: false, message: 'Access denied to this order' });
@@ -2563,12 +2602,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     } catch (e) {
       getOrderTrackingState = null;
     }
-    const tracking = getOrderTrackingState ? getOrderTrackingState(orderId) : null;
+    const tracking = getOrderTrackingState ? getOrderTrackingState(paramId) : null;
     const lastLocation = tracking?.lastLocation || null;
     return res.status(200).json({
       success: true,
       data: {
-        orderId,
+        orderId: paramId,
+        orderType: 'store',
         orderStatus: order.status,
         driverId: order.driverId,
         driverName: order.driverName,
