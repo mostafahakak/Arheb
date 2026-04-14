@@ -16,10 +16,11 @@ const { JORDAN_IANA_TIMEZONE } = require('./utils/jordanTime');
 const JOFOTARA_API_URL = 'https://backend.jofotara.gov.jo/core/invoices/';
 const TAX_RATE = 0.07;
 /**
- * JoFotara PHP SDK (jafar-albadarneh/jofotara): DocumentCurrencyCode/TaxCurrencyCode = JOD,
- * but every cbc:Amount / monetary currencyID = JO (Jordan profile). Mixing JOD on amounts breaks total checks.
+ * JoFotara official SDK: DocumentCurrencyCode + TaxCurrencyCode = JOD, but every monetary amount on lines/totals
+ * uses currencyID="JO". Using JOD on LineExtensionAmount / TaxAmount / LegalMonetaryTotal breaks JoFotara's
+ * totalSpecialTaxesAmount / TaxInclusiveAmount / PayableAmount rules (HTTP 400 after XSD passes).
  */
-const AMT_CCY = process.env.JOFOTARA_AMOUNT_CURRENCY || 'JOD';
+const AMT_CCY = process.env.JOFOTARA_AMOUNT_CURRENCY || 'JO';
 const DOC_CCY = 'JOD';
 
 /** Normalize money from DB / fees (JOD fils) to avoid float dust like 0.649999. */
@@ -106,12 +107,13 @@ function buildInvoiceXml(order, invoiceUUID, options = {}) {
   const buyerName = order.name || 'Customer';
 
   /**
-   * Match jofotara PHP InvoiceLineItem::toXml exactly: line TaxSubtotal has TaxAmount + TaxCategory only
-   * (no TaxableAmount — adding it may break their totalSpecialTaxesAmount checks).
+   * Match jofotara PHP InvoiceLineItem::toXml: TaxTotal has TaxAmount, RoundingAmount (= line tax-inclusive total),
+   * then TaxSubtotal (TaxAmount + TaxCategory). Omitting RoundingAmount or wrong currencyID breaks total checks.
    */
   function lineXml(lineId, itemName, qty, unitPrice, discount, lineTax) {
     const taxExcl = roundJod(qty * unitPrice - discount);
-    return `<cac:InvoiceLine><cbc:ID>${esc(lineId)}</cbc:ID><cbc:InvoicedQuantity unitCode="PCE">${f9(qty)}</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="${AMT_CCY}">${f9(taxExcl)}</cbc:LineExtensionAmount><cac:TaxTotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(lineTax)}</cbc:TaxAmount><cac:TaxSubtotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(lineTax)}</cbc:TaxAmount><cac:TaxCategory><cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5305">S</cbc:ID><cbc:Percent>${f9(7)}</cbc:Percent><cac:TaxScheme><cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5153">VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal></cac:TaxTotal><cac:Item><cbc:Name>${esc(itemName)}</cbc:Name></cac:Item><cac:Price><cbc:PriceAmount currencyID="${AMT_CCY}">${f9(unitPrice)}</cbc:PriceAmount><cac:AllowanceCharge><cbc:ChargeIndicator>false</cbc:ChargeIndicator><cbc:AllowanceChargeReason>DISCOUNT</cbc:AllowanceChargeReason><cbc:Amount currencyID="${AMT_CCY}">${f9(discount)}</cbc:Amount></cac:AllowanceCharge></cac:Price></cac:InvoiceLine>`;
+    const lineTaxInclusive = round9(taxExcl + lineTax);
+    return `<cac:InvoiceLine><cbc:ID>${esc(lineId)}</cbc:ID><cbc:InvoicedQuantity unitCode="PCE">${f9(qty)}</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="${AMT_CCY}">${f9(taxExcl)}</cbc:LineExtensionAmount><cac:TaxTotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(lineTax)}</cbc:TaxAmount><cbc:RoundingAmount currencyID="${AMT_CCY}">${f9(lineTaxInclusive)}</cbc:RoundingAmount><cac:TaxSubtotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(lineTax)}</cbc:TaxAmount><cac:TaxCategory><cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5305">S</cbc:ID><cbc:Percent>${f9(7)}</cbc:Percent><cac:TaxScheme><cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5153">VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal></cac:TaxTotal><cac:Item><cbc:Name>${esc(itemName)}</cbc:Name></cac:Item><cac:Price><cbc:PriceAmount currencyID="${AMT_CCY}">${f9(unitPrice)}</cbc:PriceAmount><cac:AllowanceCharge><cbc:ChargeIndicator>false</cbc:ChargeIndicator><cbc:AllowanceChargeReason>DISCOUNT</cbc:AllowanceChargeReason><cbc:Amount currencyID="${AMT_CCY}">${f9(discount)}</cbc:Amount></cac:AllowanceCharge></cac:Price></cac:InvoiceLine>`;
   }
 
   // JoFotara PHP SDK: SellerSupplierParty holds activity serial (not cac:Delivery).
