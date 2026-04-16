@@ -522,15 +522,15 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
               longitude: addressLong,
             });
             if (qOrder) {
-              computedDeliveryFee = storeOrderDeliveryFeeJod(qOrder.distanceKm);
+              computedDeliveryFee = storeOrderDeliveryFeeJod(qOrder.distanceKm, addressLat, addressLong);
             } else {
-              computedDeliveryFee = storeOrderDeliveryFeeJod(0);
+              computedDeliveryFee = storeOrderDeliveryFeeJod(0, addressLat, addressLong);
             }
           } else {
-            computedDeliveryFee = storeOrderDeliveryFeeJod(0);
+            computedDeliveryFee = storeOrderDeliveryFeeJod(0, addressLat, addressLong);
           }
         } else {
-          computedDeliveryFee = storeOrderDeliveryFeeJod(0);
+          computedDeliveryFee = storeOrderDeliveryFeeJod(0, addressLat, addressLong);
         }
       } else {
         computedDeliveryFee = storeOrderDeliveryFeeJod(0);
@@ -702,7 +702,11 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         });
       }
       const weightKgNum = Math.max(0, safeNumber(weightKg, 0));
-      const deliveryFee = storeOrderDeliveryFeeJod(q.distanceKm);
+      const deliveryFee = storeOrderDeliveryFeeJod(
+        q.distanceKm,
+        deliveryLocation.latitude,
+        deliveryLocation.longitude,
+      );
       const serviceFee = SERVICE_FEE_JOD;
       const invoice = buildInvoice(deliveryFee, serviceFee);
       return res.status(200).json({

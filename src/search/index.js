@@ -1,11 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { getJsonPath } = require('../config/jsonPaths');
-const {
-  isStoreListedForCustomerBrowse,
-  isStoreVisibleToCustomers,
-  customerFacingIsOpen,
-} = require('../utils/storeVisibility');
+const { isStoreVisibleToCustomers, customerFacingIsOpen } = require('../utils/storeVisibility');
 
 const storesResponsePath = getJsonPath('stores_listing_response.json');
 const productsResponsePath = getJsonPath('products_listing_response.json');
@@ -48,12 +44,13 @@ function matchesText(item, q, fields) {
 }
 
 /**
- * Search must not surface paused or closed stores (or products tied to them).
- * Same rule as public browse: blocked, hiddenFromCustomers, paused, merchant isOpen === false,
- * or outside Jordan opening hours → excluded.
+ * Search products/stores: only stores that are open for ordering (same as checkout visibility).
+ * Unlike GET /api/stores (which lists paused/closed with isOpen false), search omits paused, merchant-closed,
+ * outside hours, blocked, and hiddenFromCustomers.
  */
 function storeEligibleForCustomerSearch(store) {
-  return isStoreListedForCustomerBrowse(store);
+  if (!store || store.hiddenFromCustomers === true) return false;
+  return isStoreVisibleToCustomers(store);
 }
 
 module.exports = function attachSearchRoutes(app) {

@@ -1,6 +1,11 @@
 const fcm = require('../fcm');
 const { enrichWithJordanTime, nowOrderCreatedAtForDb } = require('../utils/jordanTime');
-const { arhebBoxDeliveryFeeFromDistanceJod, STORE_MAX_JOD, ARHEB_BOX_SERVICE_FEE_JOD } = require('../utils/deliveryFees');
+const {
+  arhebBoxDeliveryFeeFromDistanceJod,
+  remoteDeliveryZoneFixedFeeJod,
+  STORE_MAX_JOD,
+  ARHEB_BOX_SERVICE_FEE_JOD,
+} = require('../utils/deliveryFees');
 const { quoteFromPickupDropoff, minAmountJod, distanceKm: haversineKm } = require('./pricing');
 const { isArhebBoxOrdersPaused } = require('./pause');
 
@@ -25,11 +30,22 @@ function calcArhebBoxDeliveryFeeJod(_weightKg) {
   return round2(1);
 }
 
-/** Arheb Box: 1 JOD first km + 0.5 JOD per additional km; no maximum. Distance-only; weight ignored. */
-function calcDeliveryFeeFromDistanceAndWeight(distanceKm, _weightKg) {
+/**
+ * Arheb Box: 1 JOD first km + 0.5 JOD per additional km; no maximum. Distance-only; weight ignored.
+ * @param {number|null|undefined} distanceKm
+ * @param {number} [_weightKg]
+ * @param {{ latitude?: number, longitude?: number }} [dropoff] — remote zones use fixed fee from dropoff coords
+ */
+function calcDeliveryFeeFromDistanceAndWeight(distanceKm, _weightKg, dropoff) {
+  const lat = dropoff?.latitude;
+  const lng = dropoff?.longitude;
   const d = typeof distanceKm === 'number' && Number.isFinite(distanceKm) ? Math.max(0, distanceKm) : null;
-  if (d == null) return round2(1);
-  return arhebBoxDeliveryFeeFromDistanceJod(d);
+  if (d == null) {
+    const fixed = remoteDeliveryZoneFixedFeeJod(lat, lng);
+    if (fixed != null) return fixed;
+    return round2(1);
+  }
+  return arhebBoxDeliveryFeeFromDistanceJod(d, lat, lng);
 }
 
 function calcFeesTaxJod(deliveryFeeJod) {
@@ -75,7 +91,7 @@ function enrichRequestRow(row, db) {
     row.deliveryFee != null
       ? Number(row.deliveryFee)
       : dKm != null && Number.isFinite(dKm)
-        ? calcDeliveryFeeFromDistanceAndWeight(dKm, weightKg)
+        ? calcDeliveryFeeFromDistanceAndWeight(dKm, weightKg, dropoffObj)
         : calcArhebBoxDeliveryFeeJod(weightKg);
   /** No platform service fee on Arheb Box; VAT is 7% on delivery fee only. Ignore legacy DB values. */
   const serviceFee = SERVICE_FEE_JOD;
@@ -226,7 +242,7 @@ function createArhebBoxRequest(db, phoneNumber, body, statusOverride, options = 
   const quote = quoteFromPickupDropoff(pickup, dropoff);
   if (!quote) return { ok: false, statusCode: 400, message: 'Could not compute route distance' };
   const dKm = haversineKm(pickup.latitude, pickup.longitude, dropoff.latitude, dropoff.longitude);
-  const minJod = minAmountJod(dKm);
+  const minJod = minAmountJod(dKm, dropoff);
   const amountNum = amount != null ? Number(amount) : NaN;
   if (Number.isNaN(amountNum) || amountNum < minJod) {
     return { ok: false, statusCode: 400, message: `amount must be at least ${minJod} JOD for this distance (${quote.distanceKm} km). Call POST /api/arheb-box/quote first.`, data: { minAmountJod: minJod, distanceKm: quote.distanceKm } };
@@ -236,7 +252,7 @@ function createArhebBoxRequest(db, phoneNumber, body, statusOverride, options = 
   const dropoffJson = JSON.stringify({ latitude: dropoff.latitude, longitude: dropoff.longitude, address: dropoff.address != null ? String(dropoff.address) : '' });
   const notesStr = notes != null ? String(notes) : '';
   const weightKgNum = Math.max(0, safeNumber(weightKg, 0));
-  const computedDeliveryFee = calcDeliveryFeeFromDistanceAndWeight(quote.distanceKm, weightKgNum);
+  const computedDeliveryFee = calcDeliveryFeeFromDistanceAndWeight(quote.distanceKm, weightKgNum, dropoff);
   const computedServiceFee = SERVICE_FEE_JOD;
   const computedFeesTax = calcFeesTaxJod(computedDeliveryFee);
 
@@ -346,7 +362,7 @@ module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest, io)
         });
       }
       const weightKgNum = Math.max(0, safeNumber(weightKg, 0));
-      const deliveryFee = calcDeliveryFeeFromDistanceAndWeight(q.distanceKm, weightKgNum);
+      const deliveryFee = calcDeliveryFeeFromDistanceAndWeight(q.distanceKm, weightKgNum, dropoff);
       const serviceFee = SERVICE_FEE_JOD;
       const feesTax = calcFeesTaxJod(deliveryFee);
       const invoice = buildInvoice(deliveryFee, serviceFee);

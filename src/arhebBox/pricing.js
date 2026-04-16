@@ -17,11 +17,13 @@ function distanceKm(lat1, lon1, lat2, lon2) {
  * Minimum parcel amount (JOD) for the route — same basis as Arheb Box delivery fee:
  * 1 JOD first km + 0.5 JOD per additional km (uncapped).
  */
-function minAmountJod(distanceKm) {
+function minAmountJod(distanceKm, dropoff) {
+  const lat = dropoff?.latitude;
+  const lng = dropoff?.longitude;
   if (typeof distanceKm !== 'number' || distanceKm < 0 || Number.isNaN(distanceKm)) {
-    return arhebBoxDeliveryFeeFromDistanceJod(0);
+    return arhebBoxDeliveryFeeFromDistanceJod(0, lat, lng);
   }
-  return arhebBoxDeliveryFeeFromDistanceJod(distanceKm);
+  return arhebBoxDeliveryFeeFromDistanceJod(distanceKm, lat, lng);
 }
 
 function quoteFromPickupDropoff(pickup, dropoff) {
@@ -35,7 +37,7 @@ function quoteFromPickupDropoff(pickup, dropoff) {
   const dKm = distanceKm(lat1, lon1, lat2, lon2);
   return {
     distanceKm: Math.round(dKm * 1000) / 1000,
-    minAmountJod: minAmountJod(dKm),
+    minAmountJod: minAmountJod(dKm, dropoff),
   };
 }
 

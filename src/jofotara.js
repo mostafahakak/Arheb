@@ -2,11 +2,12 @@
  * JOFOTARA e-invoicing integration (Jordan National Electronic Invoicing System).
  *
  * Submits Income Bills (فاتورة دخل) to the government API when orders are delivered.
- * The taxable amount is delivery fee + service fee at 7% (VAT amounts rounded to 2 dp like checkout).
+ * VAT on delivery + service uses JOFOTARA_VAT_PERCENT (default 7). JoFotara validates TaxSubtotal:
+ * TaxableAmount × Percent must match TaxAmount — use per-line round9 tax (not checkout round2).
  *
  * Env vars (set on Render):
  *   JOFOTARA_CLIENT_ID, JOFOTARA_SECRET_KEY, JOFOTARA_INCOME_SOURCE,
- *   JOFOTARA_SELLER_TIN, JOFOTARA_SELLER_NAME
+ *   JOFOTARA_SELLER_TIN, JOFOTARA_SELLER_NAME, JOFOTARA_VAT_PERCENT (optional, default 7)
  */
 
 const crypto = require('crypto');
@@ -14,7 +15,7 @@ const axios = require('axios');
 const { JORDAN_IANA_TIMEZONE } = require('./utils/jordanTime');
 
 const JOFOTARA_API_URL = 'https://backend.jofotara.gov.jo/core/invoices/';
-const TAX_RATE = 0.07;
+const DEFAULT_VAT_PERCENT = 7;
 /**
  * JoFotara official SDK: DocumentCurrencyCode + TaxCurrencyCode = JOD, but every monetary amount on lines/totals
  * uses currencyID="JO". Using JOD on LineExtensionAmount / TaxAmount / LegalMonetaryTotal breaks JoFotara's
@@ -28,14 +29,15 @@ function roundJod(n) {
   return Math.round((Number(n) + Number.EPSILON) * 1000) / 1000;
 }
 
-/** Same as checkout `calcFeesTaxJod` / order summary: 2 decimal places for VAT on fees. */
-function round2(n) {
-  return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
-}
-
-/** Match jofotara PHP `round($amount, 9)` for XML formatting only (values should already be round2 for money). */
+/** Match jofotara PHP `round($amount, 9)` on VAT and invoice totals. */
 function round9(n) {
   return Math.round((Number(n) + Number.EPSILON) * 1e9) / 1e9;
+}
+
+function vatPercentFromEnv() {
+  const v = Number(process.env.JOFOTARA_VAT_PERCENT);
+  if (Number.isFinite(v) && v > 0 && v <= 100) return v;
+  return DEFAULT_VAT_PERCENT;
 }
 
 /** Activity / income-source serial: digits only, 1–15 chars (JoFotara rule). */
@@ -70,7 +72,8 @@ function esc(str) {
 
 /**
  * Build UBL 2.1 XML for a JOFOTARA Income Bill.
- * Store orders: one line (delivery + service),7% VAT on combined base. Arheb Box: delivery fee only.
+ * Store orders: two lines when both delivery and service are positive (per-line VAT), else one combined line.
+ * Arheb Box: delivery fee only (includeServiceLine false).
  */
 function buildInvoiceXml(order, invoiceUUID, options = {}) {
   const {
@@ -86,24 +89,12 @@ function buildInvoiceXml(order, invoiceUUID, options = {}) {
   const invoiceId = `${idPrefix}-${order.id}`;
   const activitySerial = incomeSourceDigits(INCOME_SOURCE);
 
+  const vatPct = vatPercentFromEnv();
+  const rate = vatPct / 100;
+
   const deliveryFee = roundJod(Number(order.deliveryFee) || 0);
   const serviceFee = includeServiceLine ? roundJod(Number(order.serviceFee) || 0) : 0;
   const taxableBase = roundJod(deliveryFee + serviceFee);
-
-  /**
-   * One taxed line for delivery+service avoids JoFotara summing two line TaxSubtotals differently
-   * than the header (duplicate totalSpecialTaxesAmount errors matched two lines).
-   * VAT must use round2(7% × base) like checkout — unrounded 0.2555 breaks JoFotara totalSpecialTaxesAmount / payable checks.
-   */
-  const useCombinedFeeLine = includeServiceLine;
-  const taxAmount = useCombinedFeeLine
-    ? round2(taxableBase * TAX_RATE)
-    : round2(deliveryFee * TAX_RATE);
-
-  const totalWithTax = round2(
-    useCombinedFeeLine ? taxableBase + taxAmount : deliveryFee + taxAmount,
-  );
-  const payableAmount = totalWithTax;
 
   const f9 = (n) => Number(n).toFixed(9);
 
@@ -111,15 +102,43 @@ function buildInvoiceXml(order, invoiceUUID, options = {}) {
   const paymentCode = isCash ? '011' : '021';
   const buyerName = order.name || 'Customer';
 
+  function taxCategoryXml() {
+    return `<cac:TaxCategory><cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5305">S</cbc:ID><cbc:Percent>${f9(vatPct)}</cbc:Percent><cac:TaxScheme><cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5153">VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory>`;
+  }
+
   /**
-   * Match jofotara PHP InvoiceLineItem::toXml: TaxTotal has TaxAmount, RoundingAmount (= line tax-inclusive total),
-   * then TaxSubtotal (TaxAmount + TaxCategory). Omitting RoundingAmount or wrong currencyID breaks total checks.
+   * JoFotara / UBL: TaxSubtotal must include TaxableAmount so totalSpecialTaxesAmount checks pass.
+   * RoundingAmount = tax-inclusive line total (same as official PHP SDK).
    */
   function lineXml(lineId, itemName, qty, unitPrice, discount, lineTax) {
     const taxExcl = roundJod(qty * unitPrice - discount);
-    const lineTaxInclusive = round2(taxExcl + lineTax);
-    return `<cac:InvoiceLine><cbc:ID>${esc(lineId)}</cbc:ID><cbc:InvoicedQuantity unitCode="PCE">${f9(qty)}</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="${AMT_CCY}">${f9(taxExcl)}</cbc:LineExtensionAmount><cac:TaxTotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(lineTax)}</cbc:TaxAmount><cbc:RoundingAmount currencyID="${AMT_CCY}">${f9(lineTaxInclusive)}</cbc:RoundingAmount><cac:TaxSubtotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(lineTax)}</cbc:TaxAmount><cac:TaxCategory><cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5305">S</cbc:ID><cbc:Percent>${f9(7)}</cbc:Percent><cac:TaxScheme><cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5153">VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal></cac:TaxTotal><cac:Item><cbc:Name>${esc(itemName)}</cbc:Name></cac:Item><cac:Price><cbc:PriceAmount currencyID="${AMT_CCY}">${f9(unitPrice)}</cbc:PriceAmount><cac:AllowanceCharge><cbc:ChargeIndicator>false</cbc:ChargeIndicator><cbc:AllowanceChargeReason>DISCOUNT</cbc:AllowanceChargeReason><cbc:Amount currencyID="${AMT_CCY}">${f9(discount)}</cbc:Amount></cac:AllowanceCharge></cac:Price></cac:InvoiceLine>`;
+    const lineTaxInclusive = round9(taxExcl + lineTax);
+    return `<cac:InvoiceLine><cbc:ID>${esc(lineId)}</cbc:ID><cbc:InvoicedQuantity unitCode="PCE">${f9(qty)}</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="${AMT_CCY}">${f9(taxExcl)}</cbc:LineExtensionAmount><cac:TaxTotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(lineTax)}</cbc:TaxAmount><cbc:RoundingAmount currencyID="${AMT_CCY}">${f9(lineTaxInclusive)}</cbc:RoundingAmount><cac:TaxSubtotal><cbc:TaxableAmount currencyID="${AMT_CCY}">${f9(taxExcl)}</cbc:TaxableAmount><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(lineTax)}</cbc:TaxAmount>${taxCategoryXml()}</cac:TaxSubtotal></cac:TaxTotal><cac:Item><cbc:Name>${esc(itemName)}</cbc:Name></cac:Item><cac:Price><cbc:PriceAmount currencyID="${AMT_CCY}">${f9(unitPrice)}</cbc:PriceAmount><cac:AllowanceCharge><cbc:ChargeIndicator>false</cbc:ChargeIndicator><cbc:AllowanceChargeReason>DISCOUNT</cbc:AllowanceChargeReason><cbc:Amount currencyID="${AMT_CCY}">${f9(discount)}</cbc:Amount></cac:AllowanceCharge></cac:Price></cac:InvoiceLine>`;
   }
+
+  let taxAmount;
+  let linesXml;
+  if (includeServiceLine && deliveryFee > 0 && serviceFee > 0) {
+    const tDel = round9(deliveryFee * rate);
+    const tSvc = round9(serviceFee * rate);
+    taxAmount = round9(tDel + tSvc);
+    linesXml =
+      lineXml('1', 'Delivery fee', 1, deliveryFee, 0, tDel) + lineXml('2', 'Service fee', 1, serviceFee, 0, tSvc);
+  } else if (includeServiceLine) {
+    const base = taxableBase;
+    taxAmount = round9(base * rate);
+    linesXml = lineXml('1', 'Delivery and service fees', 1, base, 0, taxAmount);
+  } else {
+    taxAmount = round9(deliveryFee * rate);
+    linesXml = lineXml('1', 'Delivery Fee', 1, deliveryFee, 0, taxAmount);
+  }
+
+  const totalWithTax = round9(
+    includeServiceLine ? taxableBase + taxAmount : deliveryFee + taxAmount,
+  );
+  const payableAmount = totalWithTax;
+
+  const documentTaxSubtotal = `<cac:TaxSubtotal><cbc:TaxableAmount currencyID="${AMT_CCY}">${f9(includeServiceLine ? taxableBase : deliveryFee)}</cbc:TaxableAmount><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(taxAmount)}</cbc:TaxAmount>${taxCategoryXml()}</cac:TaxSubtotal>`;
 
   // JoFotara PHP SDK: SellerSupplierParty holds activity serial (not cac:Delivery).
   const sellerSupplierXml = activitySerial
@@ -141,12 +160,9 @@ function buildInvoiceXml(order, invoiceUUID, options = {}) {
     `<cac:AccountingSupplierParty><cac:Party><cac:PostalAddress><cac:Country><cbc:IdentificationCode>JO</cbc:IdentificationCode></cac:Country></cac:PostalAddress><cac:PartyTaxScheme><cbc:CompanyID>${esc(SELLER_TIN)}</cbc:CompanyID><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:PartyTaxScheme><cac:PartyLegalEntity><cbc:RegistrationName>${esc(SELLER_NAME)}</cbc:RegistrationName></cac:PartyLegalEntity></cac:Party></cac:AccountingSupplierParty>`,
     `<cac:AccountingCustomerParty><cac:Party><cac:PartyIdentification><cbc:ID schemeID="NIN"></cbc:ID></cac:PartyIdentification><cac:PartyLegalEntity><cbc:RegistrationName>${esc(buyerName)}</cbc:RegistrationName></cac:PartyLegalEntity></cac:Party></cac:AccountingCustomerParty>`,
     sellerSupplierXml,
-    /** PHP InvoiceTotals: document TaxTotal is only cbc:TaxAmount (no header TaxSubtotal). */
-    `<cac:TaxTotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(taxAmount)}</cbc:TaxAmount></cac:TaxTotal>`,
-    `<cac:LegalMonetaryTotal><cbc:TaxExclusiveAmount currencyID="${AMT_CCY}">${f9(taxableBase)}</cbc:TaxExclusiveAmount><cbc:TaxInclusiveAmount currencyID="${AMT_CCY}">${f9(totalWithTax)}</cbc:TaxInclusiveAmount><cbc:PayableAmount currencyID="${AMT_CCY}">${f9(payableAmount)}</cbc:PayableAmount></cac:LegalMonetaryTotal>`,
-    useCombinedFeeLine
-      ? lineXml('1', 'Delivery and service fees', 1, taxableBase, 0, taxAmount)
-      : lineXml('1', 'Delivery Fee', 1, deliveryFee, 0, taxAmount),
+    `<cac:TaxTotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(taxAmount)}</cbc:TaxAmount>${documentTaxSubtotal}</cac:TaxTotal>`,
+    `<cac:LegalMonetaryTotal><cbc:TaxExclusiveAmount currencyID="${AMT_CCY}">${f9(includeServiceLine ? taxableBase : deliveryFee)}</cbc:TaxExclusiveAmount><cbc:TaxInclusiveAmount currencyID="${AMT_CCY}">${f9(totalWithTax)}</cbc:TaxInclusiveAmount><cbc:PayableAmount currencyID="${AMT_CCY}">${f9(payableAmount)}</cbc:PayableAmount></cac:LegalMonetaryTotal>`,
+    linesXml,
     '</Invoice>',
   ];
 
