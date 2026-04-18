@@ -7,6 +7,7 @@ const {
   STORE_MAX_JOD,
   STORE_ORDER_SERVICE_FEE_JOD,
   resolveStoreOrderServiceFeeJod,
+  resolveStoreOrderDeliveryFeeJod,
 } = require('../utils/deliveryFees');
 const { getPlatformCheckoutFeeTiers, ensurePlatformCheckoutFeesTable } = require('../utils/platformCheckoutFees');
 const { mapOrderItemsRows } = require('../utils/orderItemApi');
@@ -538,9 +539,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
     let storeJsonForFees = null;
     if (finalStoreId != null && String(finalStoreId).trim() !== '') {
       storeJsonForFees = loadStoreFromJsonById(finalStoreId);
-      if (storeJsonForFees?.checkoutDeliveryFeeZero === true) {
-        computedDeliveryFee = 0;
-      } else if (
+      if (
         typeof addressLat === 'number' &&
         !Number.isNaN(addressLat) &&
         typeof addressLong === 'number' &&
@@ -577,6 +576,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         computedDeliveryFee = storeOrderDeliveryFeeFromDistanceTiers(0, undefined, undefined, platformTiers);
       }
     }
+    computedDeliveryFee = resolveStoreOrderDeliveryFeeJod(storeJsonForFees, computedDeliveryFee);
     const computedServiceFee = resolveStoreOrderServiceFeeJod(storeJsonForFees, platformTiers.defaultServiceFeeJod);
     const computedFeesTax = calcFeesTaxJod(computedDeliveryFee, computedServiceFee);
 
@@ -744,15 +744,13 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       }
       const weightKgNum = Math.max(0, safeNumber(weightKg, 0));
       const platformTiers = getPlatformCheckoutFeeTiers(db);
-      const deliveryFee =
-        store.checkoutDeliveryFeeZero === true
-          ? 0
-          : storeOrderDeliveryFeeFromDistanceTiers(
-              q.distanceKm,
-              deliveryLocation.latitude,
-              deliveryLocation.longitude,
-              platformTiers,
-            );
+      const distanceFee = storeOrderDeliveryFeeFromDistanceTiers(
+        q.distanceKm,
+        deliveryLocation.latitude,
+        deliveryLocation.longitude,
+        platformTiers,
+      );
+      const deliveryFee = resolveStoreOrderDeliveryFeeJod(store, distanceFee);
       const serviceFee = resolveStoreOrderServiceFeeJod(store, platformTiers.defaultServiceFeeJod);
       const invoice = buildInvoice(deliveryFee, serviceFee);
       return res.status(200).json({

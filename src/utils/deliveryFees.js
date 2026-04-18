@@ -117,6 +117,24 @@ function resolveStoreOrderServiceFeeJod(storeJson, platformDefaultServiceFeeJod)
 }
 
 /**
+ * Checkout delivery: `checkoutDeliveryFeeZero` → 0; else optional fixed `checkoutDeliveryFeeJod`;
+ * otherwise distance-based `computedFromDistanceJod` (tiers / remote zones).
+ */
+function resolveStoreOrderDeliveryFeeJod(storeJson, computedFromDistanceJod) {
+  const base =
+    computedFromDistanceJod != null && Number.isFinite(Number(computedFromDistanceJod))
+      ? Number(computedFromDistanceJod)
+      : 0;
+  if (!storeJson) return round2(Math.max(0, base));
+  if (storeJson.checkoutDeliveryFeeZero === true) return 0;
+  if (storeJson.checkoutDeliveryFeeJod != null && storeJson.checkoutDeliveryFeeJod !== '') {
+    const v = Number(storeJson.checkoutDeliveryFeeJod);
+    if (Number.isFinite(v) && v >= 0) return round2(v);
+  }
+  return round2(Math.max(0, base));
+}
+
+/**
  * @param {number} distanceKm
  * @param {number} [dropoffLat]
  * @param {number} [dropoffLng]
@@ -139,6 +157,7 @@ module.exports = {
   storeOrderDeliveryFeeFromDistanceTiers,
   storeOrderDeliveryFeeJod,
   resolveStoreOrderServiceFeeJod,
+  resolveStoreOrderDeliveryFeeJod,
   arhebBoxDeliveryFeeFromDistanceJod,
   round2,
 };

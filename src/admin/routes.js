@@ -1105,7 +1105,11 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       }
       stores[idx].blocked = Boolean(body.blocked);
     }
-    if (req.admin.role === ROLES.SUPERADMIN || req.admin.role === ROLES.ADMIN) {
+    if (
+      req.admin.role === ROLES.SUPERADMIN ||
+      req.admin.role === ROLES.ADMIN ||
+      req.admin.role === ROLES.STORE_ADMIN
+    ) {
       if (body.checkoutDeliveryFeeZero !== undefined) {
         stores[idx].checkoutDeliveryFeeZero = Boolean(body.checkoutDeliveryFeeZero);
       }
@@ -1118,6 +1122,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         } else {
           const v = Number(body.checkoutServiceFeeJod);
           stores[idx].checkoutServiceFeeJod = Number.isFinite(v) && v >= 0 ? v : 0;
+        }
+      }
+      if (body.checkoutDeliveryFeeJod !== undefined) {
+        if (body.checkoutDeliveryFeeJod === null || body.checkoutDeliveryFeeJod === '') {
+          delete stores[idx].checkoutDeliveryFeeJod;
+        } else {
+          const v = Number(body.checkoutDeliveryFeeJod);
+          stores[idx].checkoutDeliveryFeeJod = Number.isFinite(v) && v >= 0 ? v : 0;
         }
       }
     }
@@ -1186,32 +1198,51 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     if (targetIds.length === 0) {
       return res.status(400).json({ success: false, message: 'applyToAll: true or non-empty storeIds[] is required' });
     }
+    const resetAll = body.resetCheckoutFeeOverrides === true;
     const hasAny =
+      resetAll ||
       body.checkoutDeliveryFeeZero !== undefined ||
       body.checkoutServiceFeeDisabled !== undefined ||
-      body.checkoutServiceFeeJod !== undefined;
+      body.checkoutServiceFeeJod !== undefined ||
+      body.checkoutDeliveryFeeJod !== undefined;
     if (!hasAny) {
       return res.status(400).json({
         success: false,
-        message: 'No policy fields (checkoutDeliveryFeeZero, checkoutServiceFeeDisabled, checkoutServiceFeeJod)',
+        message:
+          'No policy fields (resetCheckoutFeeOverrides or checkoutDeliveryFeeZero, checkoutDeliveryFeeJod, checkoutServiceFeeDisabled, checkoutServiceFeeJod)',
       });
     }
     let updatedCount = 0;
     for (const sid of targetIds) {
       const idx = stores.findIndex((s) => String(s.id) === String(sid));
       if (idx === -1) continue;
-      if (body.checkoutDeliveryFeeZero !== undefined) {
-        stores[idx].checkoutDeliveryFeeZero = Boolean(body.checkoutDeliveryFeeZero);
-      }
-      if (body.checkoutServiceFeeDisabled !== undefined) {
-        stores[idx].checkoutServiceFeeDisabled = Boolean(body.checkoutServiceFeeDisabled);
-      }
-      if (body.checkoutServiceFeeJod !== undefined) {
-        if (body.checkoutServiceFeeJod === null || body.checkoutServiceFeeJod === '') {
-          delete stores[idx].checkoutServiceFeeJod;
-        } else {
-          const v = Number(body.checkoutServiceFeeJod);
-          stores[idx].checkoutServiceFeeJod = Number.isFinite(v) && v >= 0 ? v : 0;
+      if (resetAll) {
+        stores[idx].checkoutDeliveryFeeZero = false;
+        stores[idx].checkoutServiceFeeDisabled = false;
+        delete stores[idx].checkoutServiceFeeJod;
+        delete stores[idx].checkoutDeliveryFeeJod;
+      } else {
+        if (body.checkoutDeliveryFeeZero !== undefined) {
+          stores[idx].checkoutDeliveryFeeZero = Boolean(body.checkoutDeliveryFeeZero);
+        }
+        if (body.checkoutServiceFeeDisabled !== undefined) {
+          stores[idx].checkoutServiceFeeDisabled = Boolean(body.checkoutServiceFeeDisabled);
+        }
+        if (body.checkoutServiceFeeJod !== undefined) {
+          if (body.checkoutServiceFeeJod === null || body.checkoutServiceFeeJod === '') {
+            delete stores[idx].checkoutServiceFeeJod;
+          } else {
+            const v = Number(body.checkoutServiceFeeJod);
+            stores[idx].checkoutServiceFeeJod = Number.isFinite(v) && v >= 0 ? v : 0;
+          }
+        }
+        if (body.checkoutDeliveryFeeJod !== undefined) {
+          if (body.checkoutDeliveryFeeJod === null || body.checkoutDeliveryFeeJod === '') {
+            delete stores[idx].checkoutDeliveryFeeJod;
+          } else {
+            const v = Number(body.checkoutDeliveryFeeJod);
+            stores[idx].checkoutDeliveryFeeJod = Number.isFinite(v) && v >= 0 ? v : 0;
+          }
         }
       }
       updatedCount += 1;
@@ -4437,7 +4468,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           perKmJod: tiers.perKmJod,
           maxJod: tiers.maxJod,
           defaultServiceFeeJod: tiers.defaultServiceFeeJod,
-          note: 'SuperAdmin can change tiers; per-store overrides: checkoutDeliveryFeeZero, checkoutServiceFeeDisabled, checkoutServiceFeeJod on each store.',
+          note: 'SuperAdmin can change tiers; per-store overrides: checkoutDeliveryFeeZero, checkoutDeliveryFeeJod (fixed JOD at checkout), checkoutServiceFeeDisabled, checkoutServiceFeeJod.',
         },
       });
     } catch (e) {
