@@ -7,10 +7,11 @@ function normalizeHomeContentLinkFields(item) {
   if (!item || typeof item !== 'object') return item;
   const out = { ...item };
   const t = out.linkTarget;
-  const valid = t === 'product' || t === 'category';
+  const valid = t === 'product' || t === 'category' || t === 'store';
   if (!valid) {
     delete out.linkTarget;
     delete out.linkTargetId;
+    delete out.linkStoreId;
     return out;
   }
   out.linkTarget = t;
@@ -19,6 +20,30 @@ function normalizeHomeContentLinkFields(item) {
     out.linkTargetId = String(idRaw).trim();
   } else {
     delete out.linkTargetId;
+  }
+  const storeRaw = out.linkStoreId;
+  if (storeRaw != null && String(storeRaw).trim() !== '') {
+    out.linkStoreId = String(storeRaw).trim();
+  } else {
+    delete out.linkStoreId;
+  }
+  if (t === 'product' && !out.linkTargetId) {
+    delete out.linkTarget;
+    delete out.linkTargetId;
+    delete out.linkStoreId;
+    return out;
+  }
+  if (t === 'store' && !out.linkTargetId) {
+    delete out.linkTarget;
+    delete out.linkTargetId;
+    delete out.linkStoreId;
+    return out;
+  }
+  if (t === 'category' && !out.linkTargetId) {
+    delete out.linkTarget;
+    delete out.linkTargetId;
+    delete out.linkStoreId;
+    return out;
   }
   return out;
 }

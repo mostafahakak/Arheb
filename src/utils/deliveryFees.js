@@ -78,13 +78,42 @@ const ARHEB_BOX_SERVICE_FEE_JOD = 0;
  * @param {number} [deliveryLat] customer delivery latitude — if inside a remote zone, fee is fixed (default 8 JOD)
  * @param {number} [deliveryLng]
  */
-function storeOrderDeliveryFeeJod(distanceKm, deliveryLat, deliveryLng) {
+/**
+ * Distance-based store delivery using configurable tiers (defaults match legacy1 + 0.1/km, max 3).
+ * @param {{ firstKmJod?: number, perKmJod?: number, maxJod?: number }} [tiers]
+ */
+function storeOrderDeliveryFeeFromDistanceTiers(distanceKm, deliveryLat, deliveryLng, tiers) {
   const remote = remoteDeliveryZoneFixedFeeJod(deliveryLat, deliveryLng);
   if (remote != null) return remote;
+  const firstKm = tiers?.firstKmJod != null && Number.isFinite(Number(tiers.firstKmJod)) ? Number(tiers.firstKmJod) : 1;
+  const perKm = tiers?.perKmJod != null && Number.isFinite(Number(tiers.perKmJod)) ? Number(tiers.perKmJod) : 0.1;
+  const maxJod = tiers?.maxJod != null && Number.isFinite(Number(tiers.maxJod)) ? Number(tiers.maxJod) : STORE_MAX_JOD;
   const d = typeof distanceKm === 'number' && Number.isFinite(distanceKm) ? Math.max(0, distanceKm) : 0;
   const beyondFirst = Math.max(0, d - 1);
-  const fee = 1 + 0.1 * beyondFirst;
-  return round2(Math.min(STORE_MAX_JOD, fee));
+  const fee = firstKm + perKm * beyondFirst;
+  return round2(Math.min(maxJod, fee));
+}
+
+function storeOrderDeliveryFeeJod(distanceKm, deliveryLat, deliveryLng) {
+  return storeOrderDeliveryFeeFromDistanceTiers(distanceKm, deliveryLat, deliveryLng, {});
+}
+
+/**
+ * Platform service fee default (JOD) with per-store overrides from stores JSON.
+ * `checkoutServiceFeeDisabled: true` → 0; `checkoutServiceFeeJod` → fixed amount; else platform default.
+ */
+function resolveStoreOrderServiceFeeJod(storeJson, platformDefaultServiceFeeJod) {
+  const def =
+    platformDefaultServiceFeeJod != null && Number.isFinite(Number(platformDefaultServiceFeeJod))
+      ? Number(platformDefaultServiceFeeJod)
+      : STORE_ORDER_SERVICE_FEE_JOD;
+  if (!storeJson) return round2(Math.max(0, def));
+  if (storeJson.checkoutServiceFeeDisabled === true) return 0;
+  if (storeJson.checkoutServiceFeeJod != null && storeJson.checkoutServiceFeeJod !== '') {
+    const v = Number(storeJson.checkoutServiceFeeJod);
+    if (Number.isFinite(v) && v >= 0) return round2(v);
+  }
+  return round2(Math.max(0, def));
 }
 
 /**
@@ -107,7 +136,9 @@ module.exports = {
   REMOTE_DELIVERY_ZONE_FEE_JOD,
   REMOTE_DELIVERY_ZONE_RADIUS_KM,
   remoteDeliveryZoneFixedFeeJod,
+  storeOrderDeliveryFeeFromDistanceTiers,
   storeOrderDeliveryFeeJod,
+  resolveStoreOrderServiceFeeJod,
   arhebBoxDeliveryFeeFromDistanceJod,
   round2,
 };

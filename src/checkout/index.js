@@ -2,7 +2,13 @@ const fs = require('fs');
 const path = require('path');
 const { enrichArhebBoxRow, calcArhebBoxDeliveryFeeJod } = require('../arhebBox');
 const { quoteFromPickupDropoff } = require('../arhebBox/pricing');
-const { storeOrderDeliveryFeeJod, STORE_MAX_JOD, STORE_ORDER_SERVICE_FEE_JOD } = require('../utils/deliveryFees');
+const {
+  storeOrderDeliveryFeeFromDistanceTiers,
+  STORE_MAX_JOD,
+  STORE_ORDER_SERVICE_FEE_JOD,
+  resolveStoreOrderServiceFeeJod,
+} = require('../utils/deliveryFees');
+const { getPlatformCheckoutFeeTiers, ensurePlatformCheckoutFeesTable } = require('../utils/platformCheckoutFees');
 const { mapOrderItemsRows } = require('../utils/orderItemApi');
 const { enrichWithJordanTime, nowOrderCreatedAtForDb } = require('../utils/jordanTime');
 const { promoAppliesToStore } = require('../utils/promoCode');
@@ -12,6 +18,7 @@ const { canonicalStoreId } = require('../storeFcm');
 
 module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   const { getJsonPath } = require('../config/jsonPaths');
+  ensurePlatformCheckoutFeesTable(db);
   const SERVICE_FEE_JOD = STORE_ORDER_SERVICE_FEE_JOD;
   const FEES_TAX_RATE = 0.07;
 
@@ -124,6 +131,13 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   } catch (e) {
     /* exists */
   }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS promo_code_stores (
+      promoCodeId INTEGER NOT NULL,
+      storeId TEXT NOT NULL,
+      PRIMARY KEY (promoCodeId, storeId)
+    );
+  `);
 
   // Create orders and order_items tables
   db.exec(`
@@ -205,6 +219,11 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   } catch (e) {
     // Column already exists
   }
+  try {
+    db.exec(`ALTER TABLE order_items ADD COLUMN notes TEXT`);
+  } catch (e) {
+    /* exists */
+  }
   try { db.exec(`ALTER TABLE orders ADD COLUMN paymentTranRef TEXT`); } catch (e) { /* exists */ }
   try { db.exec(`ALTER TABLE orders ADD COLUMN paymentCartId TEXT`); } catch (e) { /* exists */ }
   try { db.exec(`ALTER TABLE orders ADD COLUMN einvoiceStatus TEXT`); } catch (e) { /* exists */ }
@@ -221,6 +240,13 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   
   // Promo code queries
   const findPromoCodeByName = db.prepare('SELECT * FROM promo_codes WHERE name = ?');
+  const findPromoStoreIdsByPromoId = db.prepare('SELECT storeId FROM promo_code_stores WHERE promoCodeId = ?');
+
+  function promoExtraStoreIdsForRow(promoRow) {
+    if (!promoRow || promoRow.id == null) return null;
+    const rows = findPromoStoreIdsByPromoId.all(promoRow.id);
+    return rows.length ? rows.map((r) => String(r.storeId).trim()).filter(Boolean) : null;
+  }
   
   // Store rating queries
   const findStoreById = db.prepare('SELECT * FROM store_listings WHERE id = ?');
@@ -318,20 +344,25 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
             productName,
             price,
             quantity,
-            selectedAddOns
+            selectedAddOns,
+            notes
           ) VALUES (
             @orderId,
             @productId,
             @productName,
             @price,
             @quantity,
-            @selectedAddOns
+            @selectedAddOns,
+            @notes
           )
         `);
 
     for (const item of orderData.items) {
       const addOnsObj = item._normalizedAddOns || {};
       const addOnsStr = Object.keys(addOnsObj).length ? JSON.stringify(addOnsObj) : null;
+      const noteRaw = item.notes ?? item.note ?? item.itemNotes ?? null;
+      const noteStr =
+        noteRaw != null && String(noteRaw).trim() !== '' ? String(noteRaw).trim().slice(0, 2000) : null;
       insertOrderItem.run({
         orderId: orderId,
         productId: item.id,
@@ -339,6 +370,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         price: item.price,
         quantity: item.quantity,
         selectedAddOns: addOnsStr,
+        notes: noteStr,
       });
     }
 
@@ -448,7 +480,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       if (!promoCodeRecord) {
         return { ok: false, statusCode: 400, message: 'invalid promoCode' };
       }
-      if (!promoAppliesToStore(promoCodeRecord, finalStoreId)) {
+      if (!promoAppliesToStore(promoCodeRecord, finalStoreId, promoExtraStoreIdsForRow(promoCodeRecord))) {
         return { ok: false, statusCode: 400, message: 'promo code not available for this store' };
       }
       finalDiscount = promoCodeRecord.value;
@@ -500,17 +532,21 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
     }
 
     const weightKgNum = Math.max(0, safeNumber(weightKg, 0));
+    const platformTiers = getPlatformCheckoutFeeTiers(db);
     /** Non-store checkout (edge): legacy weight-only floor. Store orders use distance fee below. */
     let computedDeliveryFee = calcArhebBoxDeliveryFeeJod(weightKgNum);
+    let storeJsonForFees = null;
     if (finalStoreId != null && String(finalStoreId).trim() !== '') {
-      /** Store orders: 1 JOD first km + 0.1/km extra, max 3 JOD (distance-only). */
-      if (
+      storeJsonForFees = loadStoreFromJsonById(finalStoreId);
+      if (storeJsonForFees?.checkoutDeliveryFeeZero === true) {
+        computedDeliveryFee = 0;
+      } else if (
         typeof addressLat === 'number' &&
         !Number.isNaN(addressLat) &&
         typeof addressLong === 'number' &&
         !Number.isNaN(addressLong)
       ) {
-        const st = loadStoreFromJsonById(finalStoreId);
+        const st = storeJsonForFees;
         if (st) {
           const storeLoc =
             (st.latitude != null && st.longitude != null)
@@ -522,21 +558,26 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
               longitude: addressLong,
             });
             if (qOrder) {
-              computedDeliveryFee = storeOrderDeliveryFeeJod(qOrder.distanceKm, addressLat, addressLong);
+              computedDeliveryFee = storeOrderDeliveryFeeFromDistanceTiers(
+                qOrder.distanceKm,
+                addressLat,
+                addressLong,
+                platformTiers,
+              );
             } else {
-              computedDeliveryFee = storeOrderDeliveryFeeJod(0, addressLat, addressLong);
+              computedDeliveryFee = storeOrderDeliveryFeeFromDistanceTiers(0, addressLat, addressLong, platformTiers);
             }
           } else {
-            computedDeliveryFee = storeOrderDeliveryFeeJod(0, addressLat, addressLong);
+            computedDeliveryFee = storeOrderDeliveryFeeFromDistanceTiers(0, addressLat, addressLong, platformTiers);
           }
         } else {
-          computedDeliveryFee = storeOrderDeliveryFeeJod(0, addressLat, addressLong);
+          computedDeliveryFee = storeOrderDeliveryFeeFromDistanceTiers(0, addressLat, addressLong, platformTiers);
         }
       } else {
-        computedDeliveryFee = storeOrderDeliveryFeeJod(0);
+        computedDeliveryFee = storeOrderDeliveryFeeFromDistanceTiers(0, undefined, undefined, platformTiers);
       }
     }
-    const computedServiceFee = SERVICE_FEE_JOD;
+    const computedServiceFee = resolveStoreOrderServiceFeeJod(storeJsonForFees, platformTiers.defaultServiceFeeJod);
     const computedFeesTax = calcFeesTaxJod(computedDeliveryFee, computedServiceFee);
 
     if (options.dryRun === true) {
@@ -702,12 +743,17 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         });
       }
       const weightKgNum = Math.max(0, safeNumber(weightKg, 0));
-      const deliveryFee = storeOrderDeliveryFeeJod(
-        q.distanceKm,
-        deliveryLocation.latitude,
-        deliveryLocation.longitude,
-      );
-      const serviceFee = SERVICE_FEE_JOD;
+      const platformTiers = getPlatformCheckoutFeeTiers(db);
+      const deliveryFee =
+        store.checkoutDeliveryFeeZero === true
+          ? 0
+          : storeOrderDeliveryFeeFromDistanceTiers(
+              q.distanceKm,
+              deliveryLocation.latitude,
+              deliveryLocation.longitude,
+              platformTiers,
+            );
+      const serviceFee = resolveStoreOrderServiceFeeJod(store, platformTiers.defaultServiceFeeJod);
       const invoice = buildInvoice(deliveryFee, serviceFee);
       return res.status(200).json({
         success: true,
@@ -716,7 +762,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
           storeName: store.name ?? null,
           storeLocation,
           distanceKm: q.distanceKm,
-          deliveryFeeMaxJod: STORE_MAX_JOD,
+          deliveryFeeMaxJod: platformTiers.maxJod,
           weightKg: round3(weightKgNum),
           currency: 'JOD',
           deliveryFee: invoice.deliveryFee,
@@ -1099,21 +1145,29 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         });
       }
 
-      if (storeIdQ != null && !promoAppliesToStore(promoCodeRecord, storeIdQ)) {
+      const promoStoreIds = promoExtraStoreIdsForRow(promoCodeRecord);
+      if (storeIdQ != null && !promoAppliesToStore(promoCodeRecord, storeIdQ, promoStoreIds)) {
         return res.status(404).json({
           success: false,
           message: 'promo code not available for this store'
         });
       }
 
+      const restrictedList =
+        promoStoreIds && promoStoreIds.length
+          ? promoStoreIds
+          : promoCodeRecord.storeId != null && String(promoCodeRecord.storeId).trim() !== ''
+            ? [String(promoCodeRecord.storeId).trim()]
+            : [];
       const data = {
         value: promoCodeRecord.value,
         name: promoCodeRecord.name,
-        appliesToAllStores:
-          promoCodeRecord.storeId == null || String(promoCodeRecord.storeId).trim() === '',
+        appliesToAllStores: restrictedList.length === 0,
       };
-      if (!data.appliesToAllStores) {
-        data.storeId = String(promoCodeRecord.storeId).trim();
+      if (restrictedList.length === 1) {
+        data.storeId = restrictedList[0];
+      } else if (restrictedList.length > 1) {
+        data.storeIds = restrictedList;
       }
 
       return res.status(200).json({

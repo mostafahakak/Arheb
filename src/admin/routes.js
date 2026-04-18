@@ -73,6 +73,12 @@ const {
   notifyDriverAssigned,
 } = require('../utils/deliveryClusterAssignment');
 const { customerArhebBoxTrackingData } = require('../utils/arhebBoxFcm');
+const {
+  getPlatformCheckoutFeeTiers,
+  setPlatformCheckoutFeeTiers,
+  ensurePlatformCheckoutFeesTable,
+} = require('../utils/platformCheckoutFees');
+const { round2: round2Money } = require('../utils/deliveryFees');
 
 const storesResponsePath = getJsonPath('stores_listing_response.json');
 const productsResponsePath = getJsonPath('products_listing_response.json');
@@ -193,9 +199,14 @@ function saveCategories(categories) {
 function loadPopup() {
   try {
     const raw = fs.readFileSync(popupJsonPath, 'utf-8');
-    return JSON.parse(raw);
+    const data = JSON.parse(raw);
+    if (!data || typeof data !== 'object') {
+      return { enabled: true, image: '', call_of_action_button: '', destination: '', destination_value: '' };
+    }
+    if (data.enabled === undefined) data.enabled = true;
+    return data;
   } catch (e) {
-    return { image: '', call_of_action_button: '', destination: '', destination_value: '' };
+    return { enabled: true, image: '', call_of_action_button: '', destination: '', destination_value: '' };
   }
 }
 
@@ -211,6 +222,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   seedAdmins(db);
   ensureActivityLogTable(db);
   ensureOrderAssignmentColumns(db);
+  ensurePlatformCheckoutFeesTable(db);
 
   const offerCtx = {
     loadStores,
@@ -500,6 +512,91 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     } catch (e) {
       console.error('Admin user orders error:', e);
       return res.status(500).json({ success: false, message: 'Failed to load user orders' });
+    }
+  });
+
+  /** Full customer profile: user, orders, Arheb Box, top stores, delivery locations. */
+  app.get('/api/admin/customers/:phone/profile', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      const phone = decodeURIComponent(String(req.params.phone || '').trim());
+      if (!phone) return res.status(400).json({ success: false, message: 'Invalid phone' });
+      const user = findUserByPhone.get(phone);
+      if (!user || user.deleted) return res.status(404).json({ success: false, message: 'User not found' });
+      const uid = user.userId || phone;
+      const orders = db
+        .prepare('SELECT * FROM orders WHERE phoneNumber = ? OR userId = ? ORDER BY createdAt DESC, id DESC')
+        .all(phone, uid);
+      let boxRows = [];
+      try {
+        boxRows = db
+          .prepare('SELECT * FROM arheb_box_requests WHERE phoneNumber = ? ORDER BY createdAt DESC, id DESC')
+          .all(phone);
+      } catch (e) {
+        boxRows = [];
+      }
+      const storesList = loadStores();
+      const storeById = Object.fromEntries(storesList.map((s) => [String(s.id), s]));
+      const storeOrderCount = {};
+      let storeOrdersSubtotalSum = 0;
+      const locationKeys = new Set();
+      const locations = [];
+      const ordersOut = orders.map((o) => {
+        const items = findOrderItems.all(o.id);
+        const store = o.storeId != null ? storeById[String(o.storeId)] : null;
+        if (o.storeId) {
+          const sid = String(o.storeId);
+          storeOrderCount[sid] = (storeOrderCount[sid] || 0) + 1;
+        }
+        storeOrdersSubtotalSum += Number(o.totalAmount) || 0;
+        const locKey = `${o.addressLat ?? ''}|${o.addressLong ?? ''}|${(o.addressName || '').slice(0, 120)}`;
+        if (!locationKeys.has(locKey) && (o.addressName || o.addressLat != null)) {
+          locationKeys.add(locKey);
+          locations.push({
+            addressName: o.addressName || '',
+            addressLat: o.addressLat,
+            addressLong: o.addressLong,
+          });
+        }
+        return {
+          ...o,
+          orderType: 'store',
+          storeName: store ? (store.nameEn || store.name || store.nameAr) : (o.storeId || '-'),
+          items: mapOrderItemsForAdmin(items),
+        };
+      });
+      const topStores = Object.entries(storeOrderCount)
+        .map(([storeId, count]) => ({
+          storeId,
+          orderCount: count,
+          storeName: storeById[storeId] ? (storeById[storeId].nameEn || storeById[storeId].name || storeId) : storeId,
+        }))
+        .sort((a, b) => b.orderCount - a.orderCount);
+      const boxOut = boxRows.map((r) => enrichArhebBoxRow(r, db));
+      return res.status(200).json({
+        success: true,
+        data: {
+          user: {
+            phoneNumber: user.phoneNumber,
+            userId: uid,
+            name: user.name || '',
+            addressName: user.addressName || '',
+            isBlocked: Boolean(user.isBlocked),
+            createdAt: user.createdAt,
+          },
+          stats: {
+            storeOrderCount: orders.length,
+            arhebBoxCount: boxRows.length,
+            storeOrdersSubtotalSumJod: round2Money(storeOrdersSubtotalSum),
+          },
+          topStores,
+          deliveryLocations: locations,
+          orders: ordersOut,
+          arhebBoxRequests: boxOut,
+        },
+      });
+    } catch (e) {
+      console.error('Customer profile error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to load customer profile' });
     }
   });
 
@@ -1006,6 +1103,22 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       }
       stores[idx].blocked = Boolean(body.blocked);
     }
+    if (req.admin.role === ROLES.SUPERADMIN || req.admin.role === ROLES.ADMIN) {
+      if (body.checkoutDeliveryFeeZero !== undefined) {
+        stores[idx].checkoutDeliveryFeeZero = Boolean(body.checkoutDeliveryFeeZero);
+      }
+      if (body.checkoutServiceFeeDisabled !== undefined) {
+        stores[idx].checkoutServiceFeeDisabled = Boolean(body.checkoutServiceFeeDisabled);
+      }
+      if (body.checkoutServiceFeeJod !== undefined) {
+        if (body.checkoutServiceFeeJod === null || body.checkoutServiceFeeJod === '') {
+          delete stores[idx].checkoutServiceFeeJod;
+        } else {
+          const v = Number(body.checkoutServiceFeeJod);
+          stores[idx].checkoutServiceFeeJod = Number.isFinite(v) && v >= 0 ? v : 0;
+        }
+      }
+    }
     const skipAllowed = new Set();
     if (body.openingHours !== undefined) {
       const n = normalizeOpeningHoursFromBody(body.openingHours, stores[idx]);
@@ -1056,6 +1169,65 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       success: true,
       data: { store: patched },
     });
+  });
+
+  /** Apply checkout delivery/service fee flags to many stores (Admin / SuperAdmin). */
+  app.post('/api/admin/stores/bulk-checkout-policy', auth, requireAdminOrSuper, (req, res) => {
+    const body = req.body || {};
+    const stores = loadStores();
+    const targetIds =
+      body.applyToAll === true
+        ? stores.map((s) => String(s.id))
+        : Array.isArray(body.storeIds)
+          ? body.storeIds.map((x) => String(x).trim()).filter(Boolean)
+          : [];
+    if (targetIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'applyToAll: true or non-empty storeIds[] is required' });
+    }
+    const hasAny =
+      body.checkoutDeliveryFeeZero !== undefined ||
+      body.checkoutServiceFeeDisabled !== undefined ||
+      body.checkoutServiceFeeJod !== undefined;
+    if (!hasAny) {
+      return res.status(400).json({
+        success: false,
+        message: 'No policy fields (checkoutDeliveryFeeZero, checkoutServiceFeeDisabled, checkoutServiceFeeJod)',
+      });
+    }
+    let updatedCount = 0;
+    for (const sid of targetIds) {
+      const idx = stores.findIndex((s) => String(s.id) === String(sid));
+      if (idx === -1) continue;
+      if (body.checkoutDeliveryFeeZero !== undefined) {
+        stores[idx].checkoutDeliveryFeeZero = Boolean(body.checkoutDeliveryFeeZero);
+      }
+      if (body.checkoutServiceFeeDisabled !== undefined) {
+        stores[idx].checkoutServiceFeeDisabled = Boolean(body.checkoutServiceFeeDisabled);
+      }
+      if (body.checkoutServiceFeeJod !== undefined) {
+        if (body.checkoutServiceFeeJod === null || body.checkoutServiceFeeJod === '') {
+          delete stores[idx].checkoutServiceFeeJod;
+        } else {
+          const v = Number(body.checkoutServiceFeeJod);
+          stores[idx].checkoutServiceFeeJod = Number.isFinite(v) && v >= 0 ? v : 0;
+        }
+      }
+      updatedCount += 1;
+    }
+    try {
+      saveStores(stores);
+    } catch (e) {
+      console.error(e);
+      return res.status(500).json({ success: false, message: 'Failed to save stores' });
+    }
+    logActivity(db, req, {
+      action: 'edit',
+      resourceType: 'store',
+      resourceId: 'bulk-checkout-policy',
+      storeScopeId: null,
+      summary: `Bulk checkout policy for ${updatedCount} store(s)`,
+    });
+    return res.status(200).json({ success: true, data: { updatedCount } });
   });
 
   // Clone store: SuperAdmin/Admin can clone any store; Store Admin can clone only their store
@@ -1898,6 +2070,15 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       storeOrders = orders.map((order) => {
         const items = findOrderItems.all(order.id);
         const store = order.storeId != null ? storeById[String(order.storeId)] : null;
+        let driverEarningsJod = null;
+        let deliveryNetAfterDriverJod = null;
+        if (order.driverId != null) {
+          const share = resolveOrderDriverShare(db, order);
+          driverEarningsJod = share.earningsJod;
+          deliveryNetAfterDriverJod = round2Money(
+            Math.max(0, Number(order.deliveryFee) || 0) - (share.earningsJod || 0),
+          );
+        }
         return enrichWithJordanTime(
           {
             ...order,
@@ -1908,6 +2089,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             storeLatitude: store?.latitude ?? store?.lat ?? null,
             storeLongitude: store?.longitude ?? store?.long ?? null,
             items: mapOrderItemsForAdmin(items),
+            driverEarningsJod,
+            deliveryNetAfterDriverJod,
           },
           ['createdAt'],
         );
@@ -1951,6 +2134,15 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         boxOrders = boxRows.map((r) => {
           const enriched = enrichArhebBoxRow(r, db);
           const parcelAmount = enriched.amount != null ? Number(enriched.amount) : 0;
+          let driverEarningsJod = null;
+          let deliveryNetAfterDriverJod = null;
+          if (r.driverId != null) {
+            const share = resolveArhebBoxDriverShare(db, enriched);
+            driverEarningsJod = share.earningsJod;
+            deliveryNetAfterDriverJod = round2Money(
+              Math.max(0, Number(enriched.deliveryFee) || 0) - (share.earningsJod || 0),
+            );
+          }
           return enrichWithJordanTime({
             id: r.id,
             orderType: 'arheb_box',
@@ -1978,6 +2170,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             notes: r.notes,
             invoice: enriched.invoice,
             items: [],
+            driverEarningsJod,
+            deliveryNetAfterDriverJod,
           }, ['createdAt']);
         });
       } catch (e) { /* table may not exist yet */ }
@@ -2554,6 +2748,91 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     return res.status(200).json({
       success: true,
       message: 'Driver assigned. They have been notified in the driver app.',
+      data: { orderId, driverId: driverIdNum, order: { ...updated, items: mapOrderItemsForAdmin(items) } },
+    });
+  });
+
+  /** Change driver on an order that already has one (Admin / SuperAdmin). */
+  app.post('/api/admin/orders/:orderId/reassign-driver', auth, requireAdminOrSuper, (req, res) => {
+    const orderId = parseInt(req.params.orderId, 10);
+    if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
+    const order = findOrderById.get(orderId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    const { driverId } = req.body || {};
+    const driverIdNum = driverId != null ? parseInt(String(driverId), 10) : NaN;
+    if (!driverIdNum || isNaN(driverIdNum)) {
+      return res.status(400).json({ success: false, message: 'driverId is required' });
+    }
+    const statusLower = String(order.status || '').trim().toLowerCase();
+    if (!statusLower.includes('preparing') && !statusLower.includes('on the way')) {
+      return res.status(400).json({
+        success: false,
+        message: 'Can only reassign when order is Preparing or On the way',
+      });
+    }
+    if (order.driverId != null && Number(order.driverId) === driverIdNum) {
+      const updatedSame = findOrderById.get(orderId);
+      const itemsSame = findOrderItems.all(orderId);
+      return res.status(200).json({
+        success: true,
+        message: 'Already assigned to this driver',
+        data: { order: { ...updatedSame, items: mapOrderItemsForAdmin(itemsSame) } },
+      });
+    }
+    const oldDriverId = order.driverId != null ? Number(order.driverId) : null;
+    const driver = db.prepare('SELECT id, name FROM drivers WHERE id = ? AND isBlocked = 0').get(driverIdNum);
+    if (!driver) return res.status(400).json({ success: false, message: 'Invalid or blocked driver' });
+    const keepStatus = order.status || 'Preparing';
+    assignDriverToOrder(db, orderId, driverIdNum, driver.name, keepStatus);
+    try {
+      const { emitOrderEvent } = require('../order');
+      if (emitOrderEvent) emitOrderEvent(orderId, 'status_update', { status: keepStatus });
+    } catch (e) {
+      /* ignore */
+    }
+    const updated = findOrderById.get(orderId);
+    const stores = loadStores();
+    const store = updated.storeId ? stores.find((s) => String(s.id) === String(updated.storeId)) : null;
+    notifyDriverAssigned(db, io, orderId, updated, driverIdNum, store);
+    try {
+      const { broadcastDriverOrdersUpdated } = require('../driverPresence');
+      broadcastDriverOrdersUpdated(io, { type: 'order_accepted', orderId, driverId: driverIdNum });
+    } catch (e) {
+      /* ignore */
+    }
+    if (oldDriverId && oldDriverId !== driverIdNum) {
+      fcm
+        .sendToDriver(
+          db,
+          oldDriverId,
+          'Order reassigned',
+          `Order #${orderId} was assigned to another driver.`,
+          { type: 'order_reassigned', orderId: String(orderId) },
+        )
+        .catch(() => {});
+    }
+    fcm
+      .sendToUserByPhone(
+        db,
+        updated.phoneNumber,
+        'Driver update',
+        `A new driver is handling Order #${orderId}.`,
+        null,
+        customerOrderTrackingData(orderId, updated.status || keepStatus),
+      )
+      .catch(() => {});
+    const items = findOrderItems.all(orderId);
+    logActivity(db, req, {
+      action: 'edit',
+      resourceType: 'order',
+      resourceId: String(orderId),
+      storeScopeId: order.storeId != null ? String(order.storeId) : null,
+      summary: `Order #${orderId}: reassigned driver → ${driverIdNum}`,
+      details: { driverId: driverIdNum, previousDriverId: oldDriverId },
+    });
+    return res.status(200).json({
+      success: true,
+      message: 'Driver reassigned.',
       data: { orderId, driverId: driverIdNum, order: { ...updated, items: mapOrderItemsForAdmin(items) } },
     });
   });
@@ -3337,9 +3616,72 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           ['createdAt'],
         ),
       );
+
+      const dateFrom = req.query.dateFrom ? String(req.query.dateFrom).slice(0, 10) : '';
+      const dateTo = req.query.dateTo ? String(req.query.dateTo).slice(0, 10) : '';
+      const paymentTypeQ = req.query.paymentType ? String(req.query.paymentType).trim() : '';
+      const storeIdQ = req.query.storeId ? String(req.query.storeId).trim() : '';
+      const driverIdQ = req.query.driverId ? String(req.query.driverId).trim() : '';
+      const oCond = ['driverId IS NOT NULL'];
+      const oParams = [];
+      if (dateFrom) {
+        oCond.push('date(createdAt) >= date(?)');
+        oParams.push(dateFrom);
+      }
+      if (dateTo) {
+        oCond.push('date(createdAt) <= date(?)');
+        oParams.push(dateTo);
+      }
+      if (paymentTypeQ) {
+        oCond.push("LOWER(TRIM(COALESCE(paymentType, ''))) = LOWER(?)");
+        oParams.push(paymentTypeQ);
+      }
+      if (storeIdQ) {
+        oCond.push('CAST(storeId AS TEXT) = ?');
+        oParams.push(storeIdQ);
+      }
+      if (driverIdQ) {
+        const did = parseInt(driverIdQ, 10);
+        if (!isNaN(did)) {
+          oCond.push('driverId = ?');
+          oParams.push(did);
+        }
+      }
+      let assignOrders = [];
+      try {
+        assignOrders = db
+          .prepare(`SELECT * FROM orders WHERE ${oCond.join(' AND ')} ORDER BY createdAt DESC LIMIT 5000`)
+          .all(...oParams);
+      } catch (e) {
+        assignOrders = [];
+      }
+      const storesList = loadStores();
+      const storeById = Object.fromEntries(storesList.map((s) => [String(s.id), s]));
+      const assignRows = assignOrders.map((o) => {
+        const st = o.storeId ? storeById[String(o.storeId)] : null;
+        return {
+          orderId: o.id,
+          driverId: o.driverId,
+          driverName: o.driverName || '',
+          storeId: o.storeId || '',
+          storeName: st ? (st.nameEn || st.name || st.nameAr) : '',
+          customerName: o.name || '',
+          phoneNumber: o.phoneNumber || '',
+          orderSubtotalJod: o.totalAmount,
+          deliveryFeeJod: o.deliveryFee,
+          serviceFeeJod: o.serviceFee,
+          driverEarningsJod: o.driverEarnings,
+          paymentType: o.paymentType,
+          status: o.status,
+          createdAt: o.createdAt,
+        };
+      });
+
       const wb = XLSX.utils.book_new();
       const ws = XLSX.utils.json_to_sheet(exportRows);
       XLSX.utils.book_append_sheet(wb, ws, 'Drivers');
+      const wsA = XLSX.utils.json_to_sheet(assignRows.length ? assignRows : [{ message: 'No assignment rows for filters' }]);
+      XLSX.utils.book_append_sheet(wb, wsA, 'Assignments');
       const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', 'attachment; filename="drivers-export.xlsx"');
@@ -3821,6 +4163,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     const body = req.body || {};
     const current = loadPopup();
     const updated = {
+      enabled: body.enabled !== undefined ? Boolean(body.enabled) : current.enabled !== false,
       image: body.image !== undefined ? body.image : current.image,
       call_of_action_button: body.call_of_action_button !== undefined ? body.call_of_action_button : current.call_of_action_button,
       destination: body.destination !== undefined ? body.destination : current.destination,
@@ -4059,6 +4402,52 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     }
   });
 
+  // ——— Platform store checkout fees (distance tiers + default service fee) ———
+  app.get('/api/admin/settings/checkout-fees', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      const tiers = getPlatformCheckoutFeeTiers(db);
+      return res.status(200).json({
+        success: true,
+        data: {
+          firstKmJod: tiers.firstKmJod,
+          perKmJod: tiers.perKmJod,
+          maxJod: tiers.maxJod,
+          defaultServiceFeeJod: tiers.defaultServiceFeeJod,
+          note: 'SuperAdmin can change tiers; per-store overrides: checkoutDeliveryFeeZero, checkoutServiceFeeDisabled, checkoutServiceFeeJod on each store.',
+        },
+      });
+    } catch (e) {
+      console.error(e);
+      return res.status(500).json({ success: false, message: 'Failed to load checkout fee settings' });
+    }
+  });
+
+  app.patch('/api/admin/settings/checkout-fees', auth, requireSuperAdmin, (req, res) => {
+    try {
+      const body = req.body || {};
+      const tiers = setPlatformCheckoutFeeTiers(db, {
+        firstKmJod: body.firstKmJod,
+        perKmJod: body.perKmJod,
+        maxJod: body.maxJod,
+        defaultServiceFeeJod: body.defaultServiceFeeJod,
+      });
+      logActivity(db, req, {
+        action: 'edit',
+        resourceType: 'settings',
+        resourceId: 'checkout-fees',
+        storeScopeId: null,
+        summary: 'Updated platform checkout fee tiers',
+      });
+      return res.status(200).json({ success: true, data: tiers });
+    } catch (e) {
+      if (e.code === 'VALIDATION') {
+        return res.status(400).json({ success: false, message: e.message });
+      }
+      console.error(e);
+      return res.status(500).json({ success: false, message: 'Failed to update checkout fees' });
+    }
+  });
+
   // ——— Promo codes (SuperAdmin / Admin only) ———
   db.exec(`
     CREATE TABLE IF NOT EXISTS promo_codes (
@@ -4073,13 +4462,40 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   } catch (e) {
     /* exists */
   }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS promo_code_stores (
+      promoCodeId INTEGER NOT NULL,
+      storeId TEXT NOT NULL,
+      PRIMARY KEY (promoCodeId, storeId)
+    );
+  `);
+  const deletePromoStoresForPromo = db.prepare('DELETE FROM promo_code_stores WHERE promoCodeId = ?');
+  const insertPromoStoreRow = db.prepare('INSERT INTO promo_code_stores (promoCodeId, storeId) VALUES (?, ?)');
+  const selectPromoStores = db.prepare('SELECT storeId FROM promo_code_stores WHERE promoCodeId = ? ORDER BY storeId');
+
+  function readPromoStoreIds(promoId) {
+    return selectPromoStores.all(promoId).map((r) => String(r.storeId));
+  }
+
+  function writePromoStoreIds(promoId, storeIds) {
+    deletePromoStoresForPromo.run(promoId);
+    if (!Array.isArray(storeIds)) return;
+    for (const sid of storeIds) {
+      const s = String(sid ?? '').trim();
+      if (s) insertPromoStoreRow.run(promoId, s);
+    }
+  }
+
   const findAllPromoCodes = db.prepare('SELECT * FROM promo_codes ORDER BY id');
   const findPromoCodeById = db.prepare('SELECT * FROM promo_codes WHERE id = ?');
   const findPromoCodeByName = db.prepare('SELECT * FROM promo_codes WHERE name = ?');
 
   app.get('/api/admin/promo-codes', auth, requireAdminOrSuper, (req, res) => {
     try {
-      const rows = findAllPromoCodes.all();
+      const rows = findAllPromoCodes.all().map((r) => ({
+        ...r,
+        storeIds: readPromoStoreIds(r.id),
+      }));
       return res.status(200).json({ success: true, data: { promoCodes: rows } });
     } catch (e) {
       if (e.message && e.message.includes('no such table')) {
@@ -4091,7 +4507,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   app.post('/api/admin/promo-codes', auth, requireAdminOrSuper, (req, res) => {
-    const { name, value, storeId } = req.body || {};
+    const { name, value, storeId, storeIds } = req.body || {};
     if (!name || typeof name !== 'string' || !name.trim()) {
       return res.status(400).json({ success: false, message: 'name is required' });
     }
@@ -4100,7 +4516,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       return res.status(400).json({ success: false, message: 'value must be a non-negative number' });
     }
     let storeIdVal = null;
-    if (storeId !== undefined && storeId !== null && String(storeId).trim() !== '') {
+    const multiIds = Array.isArray(storeIds) ? storeIds.map((x) => String(x).trim()).filter(Boolean) : [];
+    if (multiIds.length > 0) {
+      storeIdVal = null;
+    } else if (storeId !== undefined && storeId !== null && String(storeId).trim() !== '') {
       storeIdVal = String(storeId).trim();
     }
     try {
@@ -4110,21 +4529,27 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         storeIdVal,
       );
       const created = findPromoCodeByName.get(name.trim());
+      if (multiIds.length > 0) {
+        db.prepare('UPDATE promo_codes SET storeId = NULL WHERE id = ?').run(created.id);
+        writePromoStoreIds(created.id, multiIds);
+      }
+      const refreshed = findPromoCodeById.get(created.id);
       logActivity(db, req, {
         action: 'add',
         resourceType: 'promo_code',
         resourceId: String(created.id),
-        storeScopeId: created.storeId != null ? String(created.storeId) : null,
+        storeScopeId: refreshed.storeId != null ? String(refreshed.storeId) : null,
         summary: `Added promo code ${created.name}`,
       });
       return res.status(201).json({
         success: true,
         data: {
-          id: created.id,
-          name: created.name,
-          value: created.value,
-          storeId: created.storeId != null ? created.storeId : null,
-          createdAt: created.createdAt,
+          id: refreshed.id,
+          name: refreshed.name,
+          value: refreshed.value,
+          storeId: refreshed.storeId != null ? refreshed.storeId : null,
+          storeIds: readPromoStoreIds(refreshed.id),
+          createdAt: refreshed.createdAt,
         },
       });
     } catch (e) {
@@ -4140,7 +4565,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
     const target = findPromoCodeById.get(id);
     if (!target) return res.status(404).json({ success: false, message: 'Promo code not found' });
-    const { name, value, storeId } = req.body || {};
+    const { name, value, storeId, storeIds } = req.body || {};
     const updates = [];
     const values = [];
     if (name !== undefined) {
@@ -4158,21 +4583,32 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       updates.push('value = ?');
       values.push(numValue);
     }
-    if (storeId !== undefined) {
-      updates.push('storeId = ?');
-      values.push(storeId != null && String(storeId).trim() !== '' ? String(storeId).trim() : null);
-    }
-    if (updates.length === 0) {
-      return res.status(200).json({ success: true, data: target });
-    }
-    values.push(id);
-    try {
-      db.prepare(`UPDATE promo_codes SET ${updates.join(', ')} WHERE id = ?`).run(...values);
-    } catch (e) {
-      if (e.message && e.message.includes('UNIQUE')) {
-        return res.status(400).json({ success: false, message: 'Promo code name already exists' });
+    if (updates.length > 0) {
+      values.push(id);
+      try {
+        db.prepare(`UPDATE promo_codes SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+      } catch (e) {
+        if (e.message && e.message.includes('UNIQUE')) {
+          return res.status(400).json({ success: false, message: 'Promo code name already exists' });
+        }
+        throw e;
       }
-      throw e;
+    }
+    if (Array.isArray(storeIds)) {
+      const multi = storeIds.map((x) => String(x).trim()).filter(Boolean);
+      if (multi.length > 0) {
+        db.prepare('UPDATE promo_codes SET storeId = NULL WHERE id = ?').run(id);
+        writePromoStoreIds(id, multi);
+      } else {
+        writePromoStoreIds(id, []);
+        db.prepare('UPDATE promo_codes SET storeId = NULL WHERE id = ?').run(id);
+      }
+    } else if (storeId !== undefined) {
+      writePromoStoreIds(id, []);
+      db.prepare('UPDATE promo_codes SET storeId = ? WHERE id = ?').run(
+        storeId != null && String(storeId).trim() !== '' ? String(storeId).trim() : null,
+        id,
+      );
     }
     const updated = findPromoCodeById.get(id);
     logActivity(db, req, {
@@ -4189,6 +4625,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         name: updated.name,
         value: updated.value,
         storeId: updated.storeId != null ? updated.storeId : null,
+        storeIds: readPromoStoreIds(updated.id),
         createdAt: updated.createdAt,
       },
     });
@@ -4199,6 +4636,11 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
     const target = findPromoCodeById.get(id);
     if (!target) return res.status(404).json({ success: false, message: 'Promo code not found' });
+    try {
+      deletePromoStoresForPromo.run(id);
+    } catch (e) {
+      /* ignore */
+    }
     db.prepare('DELETE FROM promo_codes WHERE id = ?').run(id);
     logActivity(db, req, {
       action: 'delete',

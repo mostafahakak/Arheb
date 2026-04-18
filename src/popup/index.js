@@ -22,18 +22,20 @@ module.exports = function attachPopupRoutes(app) {
         message: 'Popup configuration is unavailable'
       });
     }
+    const enabled = data.enabled !== false && data.enabled !== 0 && String(data.enabled).toLowerCase() !== 'false';
     return res.status(200).json({
       success: true,
       message: 'Popup retrieved successfully',
       data: {
         popup: {
+          enabled,
           image: data.image ?? '',
           call_of_action_button: data.call_of_action_button ?? '',
           destination: data.destination ?? '',
-          destination_value: data.destination_value ?? ''
-        }
+          destination_value: data.destination_value ?? '',
+        },
       },
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     });
   });
 };

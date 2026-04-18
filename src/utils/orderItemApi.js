@@ -71,6 +71,9 @@ function orderItemRowToClient(row, findProductById) {
       /* ignore */
     }
   }
+  if (row.notes != null && String(row.notes).trim() !== '') {
+    out.notes = String(row.notes).trim();
+  }
   return out;
 }
 
