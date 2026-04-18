@@ -60,10 +60,12 @@ const { normalizeHomeContentLinkArray } = require('../utils/homeContentLinks');
 const {
   parseLatLongFromGoogleMapsUrl,
   notifyDriverDeliveryRequest,
-  notifyAllOnlineDrivers,
   offerNextSequentialDriver,
+  offerNextSequentialArhebBoxDriver,
+  countPendingDriverRequests,
+  clearStoreOrderOfferTimeout,
+  rejectAllPendingDriverRequestsForStoreOrder,
   notifyDriverArhebBoxRequest,
-  notifyAllOnlineDriversArhebBox,
   clearArhebBoxOfferExpansion,
   fcmPayloadForArhebBoxRequest,
 } = require('../utils/sequentialDriverOffer');
@@ -2337,8 +2339,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     const items = findOrderItems.all(orderId);
     notifyCustomerOrderStatusChange(db, order, orderId, nextStatus);
 
-    // One driver at a time (nearest online → FCM), same idea as customer getting a single push per event.
-    // Use POST /api/admin/orders/:orderId/request-driver with all: true to ping every online driver.
+    // One driver at a time (nearest online → FCM); 20s timeout advances to next nearest (see sequentialDriverOffer).
     if (nextKey === 'preparing' && updated.driverId == null && io) {
       try {
         const next = offerNextSequentialDriver(db, io, orderId, updated, offerCtx);
@@ -2588,15 +2589,12 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     });
   });
 
-  // ——— Request driver(s) to pick up order. Store Admin: send to all online drivers. Admin/SuperAdmin: pick specific or all. ———
-  app.post('/api/admin/orders/:orderId/request-driver', auth, (req, res) => {
+  // ——— Request nearest online driver (one at a time; 20s then next nearest). Admin / SuperAdmin only ———
+  app.post('/api/admin/orders/:orderId/request-driver', auth, requireAdminOrSuper, (req, res) => {
     const orderId = parseInt(req.params.orderId, 10);
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && !sameStoreId(order.storeId, req.admin.storeId)) {
-      return res.status(403).json({ success: false, message: 'Access denied to this order' });
-    }
     const statusLower = (order.status || '').toLowerCase();
     if (!statusLower.includes('preparing')) {
       return res.status(400).json({ success: false, message: 'Can only request driver when order is Preparing' });
@@ -2604,42 +2602,31 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     if (order.driverId != null) {
       return res.status(400).json({ success: false, message: 'Order already has a driver assigned' });
     }
-    const stores = loadStores();
-    const store = order.storeId ? stores.find((s) => String(s.id) === String(order.storeId)) : null;
-    const { driverIds, all } = req.body || {};
-
-    if (all === true || req.admin.role === ROLES.STORE_ADMIN) {
-      const notifiedIds = notifyAllOnlineDrivers(db, io, orderId, order, store, offerCtx);
-      if (notifiedIds.length === 0) {
-        return res.status(400).json({ success: false, message: 'No online drivers available. Drivers must open the app and go online.' });
-      }
-      try {
-        const { broadcastDriverOrdersUpdated } = require('../driverPresence');
-        broadcastDriverOrdersUpdated(io, { type: 'new_request', orderId });
-      } catch (e) { /* ignore */ }
-      return res.status(200).json({
-        success: true,
-        message: `Request sent to ${notifiedIds.length} online driver(s). They can accept in the driver app.`,
-        data: { orderId, driverIds: notifiedIds },
+    const pendingN = countPendingDriverRequests(db, orderId);
+    if (pendingN > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'A driver request is already pending for this order. Wait for accept/reject or assign manually.',
       });
     }
-
-    const ids = Array.isArray(driverIds) ? driverIds.map((id) => parseInt(id, 10)).filter((n) => !isNaN(n)) : [];
-    if (ids.length === 0) return res.status(400).json({ success: false, message: 'driverIds array is required (or send all: true)' });
-    const insertedIds = [];
-    for (const driverId of ids) {
-      const driver = db.prepare('SELECT id FROM drivers WHERE id = ? AND isBlocked = 0').get(driverId);
-      if (!driver) continue;
-      const n = notifyDriverDeliveryRequest(db, io, orderId, order, driverId, store);
-      if (n.notified) insertedIds.push(driverId);
+    const next = offerNextSequentialDriver(db, io, orderId, order, offerCtx);
+    if (!next) {
+      return res.status(400).json({
+        success: false,
+        message:
+          'No driver could be notified (no online drivers / all candidates already tried). Drivers should open the app and connect, or assign manually.',
+      });
     }
-    if (insertedIds.length === 0) {
-      return res.status(400).json({ success: false, message: 'No valid drivers to notify (duplicate invite or invalid id).' });
+    try {
+      const { broadcastDriverOrdersUpdated } = require('../driverPresence');
+      broadcastDriverOrdersUpdated(io, { type: 'new_request', orderId });
+    } catch (e) {
+      /* ignore */
     }
     return res.status(200).json({
       success: true,
-      message: 'Request sent to driver(s). They can accept in the driver app.',
-      data: { orderId, driverIds: insertedIds },
+      message: `Request sent to nearest available driver (#${next.driverId}). Next driver is tried if they do not accept within 20 seconds.`,
+      data: { orderId, driverId: next.driverId, distanceKm: next.distanceKm ?? null },
     });
   });
 
@@ -2713,6 +2700,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     }
     const driver = db.prepare('SELECT id, name FROM drivers WHERE id = ? AND isBlocked = 0').get(driverIdNum);
     if (!driver) return res.status(400).json({ success: false, message: 'Invalid or blocked driver' });
+    clearStoreOrderOfferTimeout(orderId);
+    rejectAllPendingDriverRequestsForStoreOrder(db, orderId);
     assignDriverToOrder(db, orderId, driverIdNum, driver.name, order.status || 'Preparing');
     try {
       const { emitOrderEvent } = require('../order');
@@ -2783,6 +2772,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     const driver = db.prepare('SELECT id, name FROM drivers WHERE id = ? AND isBlocked = 0').get(driverIdNum);
     if (!driver) return res.status(400).json({ success: false, message: 'Invalid or blocked driver' });
     const keepStatus = order.status || 'Preparing';
+    clearStoreOrderOfferTimeout(orderId);
+    rejectAllPendingDriverRequestsForStoreOrder(db, orderId);
     assignDriverToOrder(db, orderId, driverIdNum, driver.name, keepStatus);
     try {
       const { emitOrderEvent } = require('../order');
@@ -3460,20 +3451,22 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     }
   });
 
-  // ——— Arheb Box: request driver (broadcast to all or specific drivers) ———
-  app.post('/api/admin/arheb-box/:id/request-driver', auth, (req, res) => {
+  // ——— Arheb Box: nearest driver only (sequential + 20s timeout). Admin / SuperAdmin only ———
+  app.post('/api/admin/arheb-box/:id/request-driver', auth, requireAdminOrSuper, (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
     try {
       const row = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(id);
       if (!row) return res.status(404).json({ success: false, message: 'Arheb box request not found' });
 
-      const { driverIds, all } = req.body || {};
-      let notifiedIds = [];
-
       if (row.status === 'pending' || row.status === 'pending_payment') {
         db.prepare("UPDATE arheb_box_requests SET status = 'confirmed' WHERE id = ?").run(id);
-        try { const { emitArhebBoxEvent } = require('../order'); if (emitArhebBoxEvent) emitArhebBoxEvent(id, 'status_update', { status: 'confirmed' }); } catch (e) { /* ignore */ }
+        try {
+          const { emitArhebBoxEvent } = require('../order');
+          if (emitArhebBoxEvent) emitArhebBoxEvent(id, 'status_update', { status: 'confirmed' });
+        } catch (e) {
+          /* ignore */
+        }
       }
       const updatedRow = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(id);
       if (String(updatedRow?.status || '').toLowerCase() === 'confirmed') {
@@ -3488,35 +3481,66 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           )
           .catch(() => {});
         if (!updatedRow.fcmToken) {
-          fcm.sendToUserByPhone(db, updatedRow.phoneNumber, 'Arheb Box update', `Your request #${id} is now: confirmed`, null, { type: 'arheb_box_status', requestId: String(id), status: 'confirmed' }).catch(() => {});
+          fcm
+            .sendToUserByPhone(
+              db,
+              updatedRow.phoneNumber,
+              'Arheb Box update',
+              `Your request #${id} is now: confirmed`,
+              null,
+              { type: 'arheb_box_status', requestId: String(id), status: 'confirmed' },
+            )
+            .catch(() => {});
         }
       }
 
-      if (all === true || (req.admin.role === ROLES.STORE_ADMIN)) {
-        notifiedIds = notifyAllOnlineDriversArhebBox(db, io, id, updatedRow, { getActiveFromListWithDistance });
-      } else if (Array.isArray(driverIds) && driverIds.length > 0) {
-        for (const did of driverIds) {
-          const dNum = parseInt(did, 10);
-          if (!isNaN(dNum)) {
-            const result = notifyDriverArhebBoxRequest(db, io, id, updatedRow, dNum, { resendFcmIfPending: true });
-            if (result.notified) notifiedIds.push(dNum);
-          }
-        }
-      } else {
-        notifiedIds = notifyAllOnlineDriversArhebBox(db, io, id, updatedRow, { getActiveFromListWithDistance });
+      if (updatedRow.driverId != null) {
+        return res.status(400).json({ success: false, message: 'Request already has a driver assigned' });
       }
+
+      const pendingBox =
+        db.prepare('SELECT COUNT(*) AS n FROM driver_requests WHERE orderId = ? AND status = ?').get(-id, 'pending')?.n ?? 0;
+      if (pendingBox > 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'A driver request is already pending for this Arheb Box. Wait for accept/reject or assign manually.',
+        });
+      }
+
+      clearArhebBoxOfferExpansion(id);
+      const next = offerNextSequentialArhebBoxDriver(db, io, id, updatedRow, { getActiveFromListWithDistance });
+      const notifiedIds = next ? [next.driverId] : [];
 
       if (io) io.emit('orders_updated', { source: 'arheb_box_request_driver', requestId: id });
 
       logActivity(db, req, {
-        action: 'edit', resourceType: 'arheb_box', resourceId: String(id), storeScopeId: null,
-        summary: `Arheb Box #${id}: requested driver (${notifiedIds.length} notified)`,
+        action: 'edit',
+        resourceType: 'arheb_box',
+        resourceId: String(id),
+        storeScopeId: null,
+        summary: `Arheb Box #${id}: requested driver (sequential nearest${next ? ` → ${next.driverId}` : ''})`,
       });
+
+      if (!next) {
+        return res.status(400).json({
+          success: false,
+          message:
+            'No driver could be notified. Drivers should open the app and connect near pickup, or assign manually.',
+          data: { notifiedDriverIds: [], request: enrichArhebBoxRow(updatedRow, db) },
+        });
+      }
+
+      try {
+        const { broadcastDriverOrdersUpdated } = require('../driverPresence');
+        broadcastDriverOrdersUpdated(io, { type: 'arheb_box_new_request', requestId: id });
+      } catch (e) {
+        /* ignore */
+      }
 
       return res.status(200).json({
         success: true,
-        message: `Driver request sent to ${notifiedIds.length} driver(s)`,
-        data: { notifiedDriverIds: notifiedIds, request: enrichArhebBoxRow(updatedRow, db) },
+        message: `Request sent to nearest available driver (#${next.driverId}). Next driver is tried if they do not accept within 20 seconds.`,
+        data: { notifiedDriverIds: notifiedIds, request: enrichArhebBoxRow(updatedRow, db), driverId: next.driverId },
       });
     } catch (e) {
       console.error('Arheb box request-driver error:', e);

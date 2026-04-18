@@ -985,6 +985,12 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     const driverRowForAccept = findDriverById.get(driverId);
     const driverName = driverRowForAccept ? driverRowForAccept.name : null;
     const currentStatus = order.status || 'Preparing';
+    try {
+      const { clearStoreOrderOfferTimeout } = require('../utils/sequentialDriverOffer');
+      clearStoreOrderOfferTimeout(orderId);
+    } catch (e) {
+      /* ignore */
+    }
     assignDriverToOrder(db, orderId, driverId, driverName, currentStatus);
     emitOrderStatus(orderId, currentStatus);
     try {

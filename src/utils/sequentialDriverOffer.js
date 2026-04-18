@@ -117,6 +117,99 @@ function countPendingDriverRequests(db, orderId) {
   }
 }
 
+/** One pending invite at a time; if no accept/reject in this window, offer passes to the next nearest driver. */
+const SEQUENTIAL_DRIVER_OFFER_TIMEOUT_MS = 20_000;
+
+/** orderId (positive, store order) -> Timeout */
+const storeOrderOfferTimers = new Map();
+
+function clearStoreOrderOfferTimeout(orderId) {
+  if (orderId == null) return;
+  const t = storeOrderOfferTimers.get(orderId);
+  if (t) clearTimeout(t);
+  storeOrderOfferTimers.delete(orderId);
+}
+
+function rejectAllPendingDriverRequestsForStoreOrder(db, orderId) {
+  try {
+    db.prepare('UPDATE driver_requests SET status = ? WHERE orderId = ? AND status = ?').run('rejected', orderId, 'pending');
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+function scheduleStoreOrderOfferTimeout(db, io, orderId, offeredDriverId, ctx) {
+  clearStoreOrderOfferTimeout(orderId);
+  const tid = setTimeout(() => {
+    storeOrderOfferTimers.delete(orderId);
+    try {
+      const row = db.prepare('SELECT status FROM driver_requests WHERE orderId = ? AND driverId = ?').get(orderId, offeredDriverId);
+      if (!row || row.status !== 'pending') return;
+      const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
+      if (!order || order.driverId != null) return;
+      const st = String(order.status || '').toLowerCase();
+      if (!st.includes('prepar')) return;
+      db.prepare('UPDATE driver_requests SET status = ? WHERE orderId = ? AND driverId = ?').run('rejected', orderId, offeredDriverId);
+      const next = offerNextSequentialDriver(db, io, orderId, order, ctx);
+      if (next && io) {
+        try {
+          const { broadcastDriverOrdersUpdated } = require('../driverPresence');
+          broadcastDriverOrdersUpdated(io, { type: 'new_request', orderId });
+        } catch (e) {
+          /* ignore */
+        }
+      }
+    } catch (e) {
+      console.error('[driver-offer] store order offer timeout:', e?.message || e);
+    }
+  }, SEQUENTIAL_DRIVER_OFFER_TIMEOUT_MS);
+  storeOrderOfferTimers.set(orderId, tid);
+}
+
+/** Arheb Box sequential (pseudo order id negative) */
+const arhebBoxSequentialOfferTimers = new Map();
+
+function clearArhebBoxSequentialOfferTimeout(requestId) {
+  if (requestId == null) return;
+  const t = arhebBoxSequentialOfferTimers.get(requestId);
+  if (t) clearTimeout(t);
+  arhebBoxSequentialOfferTimers.delete(requestId);
+}
+
+function scheduleArhebBoxSequentialOfferTimeout(db, io, requestId, offeredDriverId, ctx) {
+  clearArhebBoxSequentialOfferTimeout(requestId);
+  const pseudoOrderId = -requestId;
+  const tid = setTimeout(() => {
+    arhebBoxSequentialOfferTimers.delete(requestId);
+    try {
+      const row = db.prepare('SELECT status FROM driver_requests WHERE orderId = ? AND driverId = ?').get(pseudoOrderId, offeredDriverId);
+      if (!row || row.status !== 'pending') return;
+      let boxRow;
+      try {
+        boxRow = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
+      } catch (e) {
+        boxRow = null;
+      }
+      if (!boxRow || boxRow.driverId != null) return;
+      if (!isArhebBoxStillSeekingDriver(db, requestId)) return;
+      db.prepare('UPDATE driver_requests SET status = ? WHERE orderId = ? AND driverId = ?').run('rejected', pseudoOrderId, offeredDriverId);
+      const fresh = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId) || boxRow;
+      const next = offerNextSequentialArhebBoxDriver(db, io, requestId, fresh, ctx);
+      if (next && io) {
+        try {
+          const { broadcastDriverOrdersUpdated } = require('../driverPresence');
+          broadcastDriverOrdersUpdated(io, { type: 'arheb_box_new_request', requestId });
+        } catch (e) {
+          /* ignore */
+        }
+      }
+    } catch (e) {
+      console.error('[driver-offer] arheb-box offer timeout:', e?.message || e);
+    }
+  }, SEQUENTIAL_DRIVER_OFFER_TIMEOUT_MS);
+  arhebBoxSequentialOfferTimers.set(requestId, tid);
+}
+
 /**
  * Next nearest **online** (socket presence) driver who has not rejected this order yet.
  * @returns {null | { driverId: number, distanceKm?: number }}
@@ -125,6 +218,7 @@ function offerNextSequentialDriver(db, io, orderId, order, ctx) {
   const { loadStores, getActiveFromListWithDistance, parseLatLongFromGoogleMapsUrl: parseFn } = ctx;
   const parseLat = parseFn || parseLatLongFromGoogleMapsUrl;
   if (!order || order.driverId != null) return null;
+  if (countPendingDriverRequests(db, orderId) > 0) return null;
 
   let drivers = [];
   try {
@@ -145,10 +239,19 @@ function offerNextSequentialDriver(db, io, orderId, order, ctx) {
   }
   const rejected = new Set(rejectedRows.map((x) => x.driverId));
 
-  for (const d of withDistance) {
+  let toTry = withDistance;
+  if (!toTry.length && candidateIds.length) {
+    toTry = candidateIds.map((driverId) => ({ driverId, distanceKm: undefined }));
+    console.log(
+      `[driver-notify] order #${orderId}: no drivers on /driver-presence — falling back to FCM for candidates (one at a time)`,
+    );
+  }
+
+  for (const d of toTry) {
     if (rejected.has(d.driverId)) continue;
     const n = notifyDriverDeliveryRequest(db, io, orderId, order, d.driverId, store);
     if (n.notified) {
+      scheduleStoreOrderOfferTimeout(db, io, orderId, d.driverId, ctx);
       return { driverId: d.driverId, distanceKm: d.distanceKm };
     }
   }
@@ -297,6 +400,7 @@ function clearArhebBoxOfferExpansion(requestId) {
   const t = arhebBoxOfferExpansionTimers.get(requestId);
   if (t) clearTimeout(t);
   arhebBoxOfferExpansionTimers.delete(requestId);
+  clearArhebBoxSequentialOfferTimeout(requestId);
 }
 
 function parsePickupLatLongFromArhebRow(requestRow) {
@@ -388,6 +492,7 @@ function offerNextSequentialArhebBoxDriver(db, io, requestId, requestRow, ctx) {
     if (rejected.has(d.driverId)) continue;
     const n = notifyDriverArhebBoxRequest(db, io, requestId, freshRow(), d.driverId);
     if (n.notified) {
+      scheduleArhebBoxSequentialOfferTimeout(db, io, requestId, d.driverId, ctx);
       return { driverId: d.driverId, distanceKm: d.distanceKm };
     }
   }
@@ -520,6 +625,10 @@ module.exports = {
   notifyAllOnlineDrivers,
   offerNextSequentialDriver,
   countPendingDriverRequests,
+  clearStoreOrderOfferTimeout,
+  rejectAllPendingDriverRequestsForStoreOrder,
+  clearArhebBoxSequentialOfferTimeout,
+  SEQUENTIAL_DRIVER_OFFER_TIMEOUT_MS,
   getStoreForOrder,
   getStoreLatLong,
   fcmPayloadForDriverRequest,
