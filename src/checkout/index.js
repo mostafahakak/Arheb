@@ -576,7 +576,12 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         computedDeliveryFee = storeOrderDeliveryFeeFromDistanceTiers(0, undefined, undefined, platformTiers);
       }
     }
-    computedDeliveryFee = resolveStoreOrderDeliveryFeeJod(storeJsonForFees, computedDeliveryFee);
+    computedDeliveryFee = resolveStoreOrderDeliveryFeeJod(
+      storeJsonForFees,
+      computedDeliveryFee,
+      addressLat,
+      addressLong,
+    );
     const computedServiceFee = resolveStoreOrderServiceFeeJod(storeJsonForFees, platformTiers.defaultServiceFeeJod);
     const computedFeesTax = calcFeesTaxJod(computedDeliveryFee, computedServiceFee);
 
@@ -750,7 +755,12 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         deliveryLocation.longitude,
         platformTiers,
       );
-      const deliveryFee = resolveStoreOrderDeliveryFeeJod(store, distanceFee);
+      const deliveryFee = resolveStoreOrderDeliveryFeeJod(
+        store,
+        distanceFee,
+        deliveryLocation.latitude,
+        deliveryLocation.longitude,
+      );
       const serviceFee = resolveStoreOrderServiceFeeJod(store, platformTiers.defaultServiceFeeJod);
       const invoice = buildInvoice(deliveryFee, serviceFee);
       return res.status(200).json({
