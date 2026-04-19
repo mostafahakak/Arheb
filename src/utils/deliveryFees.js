@@ -57,23 +57,26 @@ const SPECIAL_FAR_DELIVERY_ZONE_FEE_JOD = (() => {
   return Number.isFinite(v) && v > 0 ? v : 10;
 })();
 
+/** Wider than generic remote (3 km): shared map pins often differ from town-centroid coords. */
 const SPECIAL_FAR_DELIVERY_ZONE_RADIUS_KM = (() => {
   const raw =
     process.env.SPECIAL_FAR_DELIVERY_ZONE_RADIUS_KM ?? process.env.STORE_UNCAPPED_DELIVERY_ZONE_RADIUS_KM;
   const v = Number(raw);
-  return Number.isFinite(v) && v > 0 ? v : REMOTE_DELIVERY_ZONE_RADIUS_KM;
+  return Number.isFinite(v) && v > 0 ? v : 10;
 })();
 
 /**
  * Far south / desert pins: fixed SPECIAL_FAR_DELIVERY_ZONE_FEE_JOD — not eligible for store checkout overrides.
- * Coordinates are approximate — replace with exact Google Maps pin lat/lon if needed.
+ * Centers align with Maps pins shared by ops (Wadi Rum, Al Quwayrah, Al Shakriyah, Ar Rashidiyah, At-Tuweisa).
+ * Tune radius with SPECIAL_FAR_DELIVERY_ZONE_RADIUS_KM if needed (default 10 km).
  */
 const SPECIAL_FAR_DELIVERY_ZONE_CENTERS = [
   { id: 'wadi-rum', lat: 29.5743, lon: 35.421 },
-  { id: 'al-quwayrah', lat: 29.8005, lon: 35.3116 },
-  /** Approximate — confirm from shared pin if fee edge cases appear */
-  { id: 'al-shakriyah', lat: 29.677, lon: 35.345 },
+  { id: 'al-quwayrah', lat: 29.7967, lon: 35.3153 },
+  { id: 'al-shakriyah', lat: 29.642, lon: 35.362 },
   { id: 'ar-rashidiyah', lat: 29.7324, lon: 35.281 },
+  /** Same locality as maps.app short link → At-Tuweisa */
+  { id: 'at-tuweisa', lat: 29.6523356, lon: 35.5447918 },
 ];
 
 /**
