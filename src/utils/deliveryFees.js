@@ -1,14 +1,14 @@
 /**
- * Store orders: 1 JOD for the first km + 0.1 JOD per additional km, max 3 JOD (unless uncapped zone).
+ * Store orders: 1 JOD for the first km + 0.1 JOD per additional km, max 3 JOD.
  * Arheb Box: 1 JOD for the first km + 0.5 JOD per additional km, no cap.
  *
- * Uncapped store delivery (south Aqaba / desert pins): within STORE_UNCAPPED_DELIVERY_RADIUS_KM of a
- * configured center, the same tier formula applies but without the usual 3 JOD maximum — fee grows with distance.
+ * Special far desert zones (Wadi Rum, Al Quwayrah, etc.): fixed SPECIAL_FAR_DELIVERY_ZONE_FEE_JOD
+ * (default 10) when the customer dropoff is within SPECIAL_FAR_DELIVERY_ZONE_RADIUS_KM of a pin.
+ * This overrides per-store checkout delivery settings (custom fee, free delivery).
  *
- * Remote delivery zones (far south / desert): fixed fee REMOTE_DELIVERY_ZONE_FEE_JOD (default 8)
- * when the customer dropoff (store order: delivery address) is within REMOTE_DELIVERY_ZONE_RADIUS_KM
- * of a configured center — overrides store max (3) and Arheb Box distance pricing.
- * Evaluated only if the dropoff is not in an uncapped zone (so fixed 8 and uncapped tier never double-apply).
+ * Remote delivery zones (other pins): fixed fee REMOTE_DELIVERY_ZONE_FEE_JOD (default 8)
+ * when dropoff is within REMOTE_DELIVERY_ZONE_RADIUS_KM of those centers.
+ * Evaluated only outside special far zones.
  *
  * Service fee: applies to store orders only (added to taxable base with delivery).
  * Arheb Box: service fee is always 0; VAT is 7% on delivery fee only.
@@ -52,16 +52,23 @@ const REMOTE_DELIVERY_ZONE_CENTERS = [
   { id: 'at-tuweisa', lat: 29.6523356, lon: 35.5447918 },
 ];
 
-const STORE_UNCAPPED_DELIVERY_RADIUS_KM = (() => {
-  const v = Number(process.env.STORE_UNCAPPED_DELIVERY_ZONE_RADIUS_KM);
+const SPECIAL_FAR_DELIVERY_ZONE_FEE_JOD = (() => {
+  const v = Number(process.env.SPECIAL_FAR_DELIVERY_ZONE_FEE_JOD);
+  return Number.isFinite(v) && v > 0 ? v : 10;
+})();
+
+const SPECIAL_FAR_DELIVERY_ZONE_RADIUS_KM = (() => {
+  const raw =
+    process.env.SPECIAL_FAR_DELIVERY_ZONE_RADIUS_KM ?? process.env.STORE_UNCAPPED_DELIVERY_ZONE_RADIUS_KM;
+  const v = Number(raw);
   return Number.isFinite(v) && v > 0 ? v : REMOTE_DELIVERY_ZONE_RADIUS_KM;
 })();
 
 /**
- * Desert / south route pins (Wadi Rum, Al Quwayrah, etc.): same tier rates as normal store delivery * but no 3 JOD cap inside STORE_UNCAPPED_DELIVERY_RADIUS_KM.
- * Coordinates are approximate town/village centers — replace with exact Google Maps pin lat/lon if needed.
+ * Far south / desert pins: fixed SPECIAL_FAR_DELIVERY_ZONE_FEE_JOD — not eligible for store checkout overrides.
+ * Coordinates are approximate — replace with exact Google Maps pin lat/lon if needed.
  */
-const STORE_UNCAPPED_DELIVERY_ZONE_CENTERS = [
+const SPECIAL_FAR_DELIVERY_ZONE_CENTERS = [
   { id: 'wadi-rum', lat: 29.5743, lon: 35.421 },
   { id: 'al-quwayrah', lat: 29.8005, lon: 35.3116 },
   /** Approximate — confirm from shared pin if fee edge cases appear */
@@ -72,16 +79,27 @@ const STORE_UNCAPPED_DELIVERY_ZONE_CENTERS = [
 /**
  * @param {unknown} lat
  * @param {unknown} lng
- * @returns {boolean}
+ * @returns {number | null} fixed JOD fee if inside any special far zone, else null
  */
-function dropoffInStoreUncappedDeliveryZone(lat, lng) {
+function specialFarDeliveryZoneFixedFeeJod(lat, lng) {
   const la = typeof lat === 'number' ? lat : Number(lat);
   const ln = typeof lng === 'number' ? lng : Number(lng);
-  if (!Number.isFinite(la) || !Number.isFinite(ln)) return false;
-  for (const z of STORE_UNCAPPED_DELIVERY_ZONE_CENTERS) {
-    if (haversineKm(la, ln, z.lat, z.lon) <= STORE_UNCAPPED_DELIVERY_RADIUS_KM) return true;
+  if (!Number.isFinite(la) || !Number.isFinite(ln)) return null;
+  for (const z of SPECIAL_FAR_DELIVERY_ZONE_CENTERS) {
+    if (haversineKm(la, ln, z.lat, z.lon) <= SPECIAL_FAR_DELIVERY_ZONE_RADIUS_KM) {
+      return round2(SPECIAL_FAR_DELIVERY_ZONE_FEE_JOD);
+    }
   }
-  return false;
+  return null;
+}
+
+/**
+ * @param {unknown} lat
+ * @param {unknown} lng
+ * @returns {boolean}
+ */
+function dropoffInSpecialFarDeliveryZone(lat, lng) {
+  return specialFarDeliveryZoneFixedFeeJod(lat, lng) != null;
 }
 
 /**
@@ -110,25 +128,19 @@ const STORE_ORDER_SERVICE_FEE_JOD = 0.65;
 const ARHEB_BOX_SERVICE_FEE_JOD = 0;
 
 /**
- * @param {number} distanceKm
- * @param {number} [deliveryLat] customer delivery latitude — if inside a remote zone, fee is fixed (default 8 JOD)
- * @param {number} [deliveryLng]
- */
-/**
  * Distance-based store delivery using configurable tiers (defaults match legacy1 + 0.1/km, max 3).
  * @param {{ firstKmJod?: number, perKmJod?: number, maxJod?: number }} [tiers]
  */
 function storeOrderDeliveryFeeFromDistanceTiers(distanceKm, deliveryLat, deliveryLng, tiers) {
+  const special = specialFarDeliveryZoneFixedFeeJod(deliveryLat, deliveryLng);
+  if (special != null) return special;
+
   const firstKm = tiers?.firstKmJod != null && Number.isFinite(Number(tiers.firstKmJod)) ? Number(tiers.firstKmJod) : 1;
   const perKm = tiers?.perKmJod != null && Number.isFinite(Number(tiers.perKmJod)) ? Number(tiers.perKmJod) : 0.1;
   const maxJod = tiers?.maxJod != null && Number.isFinite(Number(tiers.maxJod)) ? Number(tiers.maxJod) : STORE_MAX_JOD;
   const d = typeof distanceKm === 'number' && Number.isFinite(distanceKm) ? Math.max(0, distanceKm) : 0;
   const beyondFirst = Math.max(0, d - 1);
   const fee = firstKm + perKm * beyondFirst;
-
-  if (dropoffInStoreUncappedDeliveryZone(deliveryLat, deliveryLng)) {
-    return round2(fee);
-  }
 
   const remote = remoteDeliveryZoneFixedFeeJod(deliveryLat, deliveryLng);
   if (remote != null) return remote;
@@ -158,16 +170,19 @@ function resolveStoreOrderServiceFeeJod(storeJson, platformDefaultServiceFeeJod)
 }
 
 /**
- * Checkout delivery: optional fixed `checkoutDeliveryFeeJod` (wins over other store flags);
- * else `checkoutDeliveryFeeZero` → 0 for non–remote-zone dropoffs only (remote tier fee still applies);
- * else distance-based `computedFromDistanceJod` (tiers / remote zones).
+ * Checkout delivery: special far desert dropoffs → fixed platform fee (ignores store overrides);
+ * else optional fixed `checkoutDeliveryFeeJod`; else `checkoutDeliveryFeeZero` for non-remote dropoffs;
+ * else distance-based `computedFromDistanceJod`.
  *
  * @param {object | null} storeJson
  * @param {number} computedFromDistanceJod
- * @param {number} [deliveryLat] customer dropoff — used to detect remote zones when applying checkoutDeliveryFeeZero
+ * @param {number} [deliveryLat] customer dropoff
  * @param {number} [deliveryLng]
  */
 function resolveStoreOrderDeliveryFeeJod(storeJson, computedFromDistanceJod, deliveryLat, deliveryLng) {
+  const specialFar = specialFarDeliveryZoneFixedFeeJod(deliveryLat, deliveryLng);
+  if (specialFar != null) return specialFar;
+
   const base =
     computedFromDistanceJod != null && Number.isFinite(Number(computedFromDistanceJod))
       ? Number(computedFromDistanceJod)
@@ -178,8 +193,7 @@ function resolveStoreOrderDeliveryFeeJod(storeJson, computedFromDistanceJod, del
     if (Number.isFinite(v) && v >= 0) return round2(v);
   }
   const inRemoteZone = remoteDeliveryZoneFixedFeeJod(deliveryLat, deliveryLng) != null;
-  const inUncappedZone = dropoffInStoreUncappedDeliveryZone(deliveryLat, deliveryLng);
-  if (storeJson.checkoutDeliveryFeeZero === true && !inRemoteZone && !inUncappedZone) return 0;
+  if (storeJson.checkoutDeliveryFeeZero === true && !inRemoteZone) return 0;
   return round2(Math.max(0, base));
 }
 
@@ -189,6 +203,8 @@ function resolveStoreOrderDeliveryFeeJod(storeJson, computedFromDistanceJod, del
  * @param {number} [dropoffLng]
  */
 function arhebBoxDeliveryFeeFromDistanceJod(distanceKm, dropoffLat, dropoffLng) {
+  const special = specialFarDeliveryZoneFixedFeeJod(dropoffLat, dropoffLng);
+  if (special != null) return special;
   const remote = remoteDeliveryZoneFixedFeeJod(dropoffLat, dropoffLng);
   if (remote != null) return remote;
   const d = typeof distanceKm === 'number' && Number.isFinite(distanceKm) ? Math.max(0, distanceKm) : 0;
@@ -202,10 +218,12 @@ module.exports = {
   ARHEB_BOX_SERVICE_FEE_JOD,
   REMOTE_DELIVERY_ZONE_FEE_JOD,
   REMOTE_DELIVERY_ZONE_RADIUS_KM,
-  STORE_UNCAPPED_DELIVERY_RADIUS_KM,
-  STORE_UNCAPPED_DELIVERY_ZONE_CENTERS,
+  SPECIAL_FAR_DELIVERY_ZONE_FEE_JOD,
+  SPECIAL_FAR_DELIVERY_ZONE_RADIUS_KM,
+  SPECIAL_FAR_DELIVERY_ZONE_CENTERS,
   remoteDeliveryZoneFixedFeeJod,
-  dropoffInStoreUncappedDeliveryZone,
+  specialFarDeliveryZoneFixedFeeJod,
+  dropoffInSpecialFarDeliveryZone,
   storeOrderDeliveryFeeFromDistanceTiers,
   storeOrderDeliveryFeeJod,
   resolveStoreOrderServiceFeeJod,
