@@ -2,6 +2,9 @@
  * Store orders: 1 JOD for the first km + 0.1 JOD per additional km, max 3 JOD.
  * Arheb Box: 1 JOD for the first km + 0.5 JOD per additional km, no cap.
  *
+ * Uncapped tier zones (selected map pins): same 1 + 0.1/km as store tiers but **no 3 JOD maximum**.
+ * Arheb Box uses the **same** 1 + 0.1/km in these zones (not 0.5/km). Checked before remote fixed 8 JOD.
+ *
  * Special far desert zones (Wadi Rum, Al Quwayrah, etc.): fixed SPECIAL_FAR_DELIVERY_ZONE_FEE_JOD
  * (default 10) when the customer dropoff is within SPECIAL_FAR_DELIVERY_ZONE_RADIUS_KM of a pin.
  * This overrides per-store checkout delivery settings (custom fee, free delivery).
@@ -67,16 +70,19 @@ const SPECIAL_FAR_DELIVERY_ZONE_RADIUS_KM = (() => {
 
 /**
  * Far south / desert pins: fixed SPECIAL_FAR_DELIVERY_ZONE_FEE_JOD — not eligible for store checkout overrides.
- * Centers align with Maps pins shared by ops (Wadi Rum, Al Quwayrah, Al Shakriyah, Ar Rashidiyah, At-Tuweisa).
+ * Same pattern as other entries: { id, lat, lon } — align with shared Maps pins / same anchors as REMOTE where applicable.
  * Tune radius with SPECIAL_FAR_DELIVERY_ZONE_RADIUS_KM if needed (default 10 km).
  */
 const SPECIAL_FAR_DELIVERY_ZONE_CENTERS = [
   { id: 'wadi-rum', lat: 29.5743, lon: 35.421 },
   { id: 'al-quwayrah', lat: 29.7967, lon: 35.3153 },
-  { id: 'al-shakriyah', lat: 29.642, lon: 35.362 },
+  /** Al Shakriyah (maps short link MCJR+H2P / Shakaria) */
+  { id: 'al-shakriyah', lat: 29.6505, lon: 35.3525 },
   { id: 'ar-rashidiyah', lat: 29.7324, lon: 35.281 },
-  /** Same locality as maps.app short link → At-Tuweisa */
+  /** At-Tuweisa — same anchor as REMOTE `at-tuweisa` */
   { id: 'at-tuweisa', lat: 29.6523356, lon: 35.5447918 },
+  /** Ad Disah — same anchor as REMOTE `ad-disah` (maps MGQ2+PPR / Ad Disah) */
+  { id: 'ad-disah', lat: 29.652699, lon: 35.5104853 },
 ];
 
 /**
@@ -103,6 +109,36 @@ function specialFarDeliveryZoneFixedFeeJod(lat, lng) {
  */
 function dropoffInSpecialFarDeliveryZone(lat, lng) {
   return specialFarDeliveryZoneFixedFeeJod(lat, lng) != null;
+}
+
+const UNCAPPED_TIER_ZONE_RADIUS_KM = (() => {
+  const v = Number(process.env.UNCAPPED_TIER_ZONE_RADIUS_KM);
+  return Number.isFinite(v) && v > 0 ? v : 10;
+})();
+
+/**
+ * Dropoff near these pins: distance fee = 1 JOD first km + 0.1/km, **no 3 JOD cap** (store + Arheb Box uses same rate).
+ * Replace lat/lon with exact decimal coords from Google Maps → Share if a pin misses the radius.
+ * Maps: https://maps.app.goo.gl/RGUnDEro5GPWbU2C6 — https://maps.app.goo.gl/eg5p6VDfS6tWVBdJA
+ */
+const UNCAPPED_TIER_ZONE_CENTERS = [
+  { id: 'maps-RGUnDEro5GPWbU2C6', lat: 29.492, lon: 35.0065 },
+  { id: 'maps-eg5p6VDfS6tWVBdJA', lat: 29.528, lon: 35.018 },
+];
+
+/**
+ * @param {unknown} lat
+ * @param {unknown} lng
+ * @returns {boolean}
+ */
+function dropoffInUncappedTierZone(lat, lng) {
+  const la = typeof lat === 'number' ? lat : Number(lat);
+  const ln = typeof lng === 'number' ? lng : Number(lng);
+  if (!Number.isFinite(la) || !Number.isFinite(ln)) return false;
+  for (const z of UNCAPPED_TIER_ZONE_CENTERS) {
+    if (haversineKm(la, ln, z.lat, z.lon) <= UNCAPPED_TIER_ZONE_RADIUS_KM) return true;
+  }
+  return false;
 }
 
 /**
@@ -144,6 +180,10 @@ function storeOrderDeliveryFeeFromDistanceTiers(distanceKm, deliveryLat, deliver
   const d = typeof distanceKm === 'number' && Number.isFinite(distanceKm) ? Math.max(0, distanceKm) : 0;
   const beyondFirst = Math.max(0, d - 1);
   const fee = firstKm + perKm * beyondFirst;
+
+  if (dropoffInUncappedTierZone(deliveryLat, deliveryLng)) {
+    return round2(fee);
+  }
 
   const remote = remoteDeliveryZoneFixedFeeJod(deliveryLat, deliveryLng);
   if (remote != null) return remote;
@@ -190,13 +230,18 @@ function resolveStoreOrderDeliveryFeeJod(storeJson, computedFromDistanceJod, del
     computedFromDistanceJod != null && Number.isFinite(Number(computedFromDistanceJod))
       ? Number(computedFromDistanceJod)
       : 0;
+  if (dropoffInUncappedTierZone(deliveryLat, deliveryLng)) {
+    return round2(Math.max(0, base));
+  }
   if (!storeJson) return round2(Math.max(0, base));
   if (storeJson.checkoutDeliveryFeeJod != null && storeJson.checkoutDeliveryFeeJod !== '') {
     const v = Number(storeJson.checkoutDeliveryFeeJod);
     if (Number.isFinite(v) && v >= 0) return round2(v);
   }
   const inRemoteZone = remoteDeliveryZoneFixedFeeJod(deliveryLat, deliveryLng) != null;
-  if (storeJson.checkoutDeliveryFeeZero === true && !inRemoteZone) return 0;
+  if (storeJson.checkoutDeliveryFeeZero === true && !inRemoteZone && !dropoffInUncappedTierZone(deliveryLat, deliveryLng)) {
+    return 0;
+  }
   return round2(Math.max(0, base));
 }
 
@@ -208,10 +253,14 @@ function resolveStoreOrderDeliveryFeeJod(storeJson, computedFromDistanceJod, del
 function arhebBoxDeliveryFeeFromDistanceJod(distanceKm, dropoffLat, dropoffLng) {
   const special = specialFarDeliveryZoneFixedFeeJod(dropoffLat, dropoffLng);
   if (special != null) return special;
-  const remote = remoteDeliveryZoneFixedFeeJod(dropoffLat, dropoffLng);
-  if (remote != null) return remote;
   const d = typeof distanceKm === 'number' && Number.isFinite(distanceKm) ? Math.max(0, distanceKm) : 0;
   const beyondFirst = Math.max(0, d - 1);
+  const storeStylePerKm = round2(1 + 0.1 * beyondFirst);
+  if (dropoffInUncappedTierZone(dropoffLat, dropoffLng)) {
+    return storeStylePerKm;
+  }
+  const remote = remoteDeliveryZoneFixedFeeJod(dropoffLat, dropoffLng);
+  if (remote != null) return remote;
   return round2(1 + 0.5 * beyondFirst);
 }
 
@@ -224,9 +273,12 @@ module.exports = {
   SPECIAL_FAR_DELIVERY_ZONE_FEE_JOD,
   SPECIAL_FAR_DELIVERY_ZONE_RADIUS_KM,
   SPECIAL_FAR_DELIVERY_ZONE_CENTERS,
+  UNCAPPED_TIER_ZONE_RADIUS_KM,
+  UNCAPPED_TIER_ZONE_CENTERS,
   remoteDeliveryZoneFixedFeeJod,
   specialFarDeliveryZoneFixedFeeJod,
   dropoffInSpecialFarDeliveryZone,
+  dropoffInUncappedTierZone,
   storeOrderDeliveryFeeFromDistanceTiers,
   storeOrderDeliveryFeeJod,
   resolveStoreOrderServiceFeeJod,
