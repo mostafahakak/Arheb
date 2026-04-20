@@ -14,7 +14,7 @@
  * Evaluated only outside special far zones.
  *
  * Service fee: applies to store orders only (added to taxable base with delivery).
- * Arheb Box: service fee is always 0; VAT is 7% on delivery fee only.
+ * Arheb Box: platform service fee is configurable (default 0.65 JOD); VAT is 7% on delivery + service fee.
  */
 
 function round2(n) {
@@ -163,8 +163,8 @@ const STORE_MAX_JOD = 3;
 /** Platform service fee (JOD) on store checkout — not charged on Arheb Box. */
 const STORE_ORDER_SERVICE_FEE_JOD = 0.65;
 
-/** Arheb Box has no platform service fee. */
-const ARHEB_BOX_SERVICE_FEE_JOD = 0;
+/** Default Arheb Box platform service fee (JOD) when DB app info is unset. */
+const ARHEB_BOX_SERVICE_FEE_JOD = 0.65;
 
 /**
  * Distance-based store delivery using configurable tiers (defaults match legacy1 + 0.1/km, max 3).
@@ -214,7 +214,7 @@ function resolveStoreOrderServiceFeeJod(storeJson, platformDefaultServiceFeeJod)
 
 /**
  * Checkout delivery: special far desert dropoffs → fixed platform fee (ignores store overrides);
- * else optional fixed `checkoutDeliveryFeeJod`; else `checkoutDeliveryFeeZero` for non-remote dropoffs;
+ * else optional fixed `checkoutDeliveryFeeJod` from dashboard; else `checkoutDeliveryFeeZero` (with remote/uncapped exceptions);
  * else distance-based `computedFromDistanceJod`.
  *
  * @param {object | null} storeJson
@@ -230,9 +230,6 @@ function resolveStoreOrderDeliveryFeeJod(storeJson, computedFromDistanceJod, del
     computedFromDistanceJod != null && Number.isFinite(Number(computedFromDistanceJod))
       ? Number(computedFromDistanceJod)
       : 0;
-  if (dropoffInUncappedTierZone(deliveryLat, deliveryLng)) {
-    return round2(Math.max(0, base));
-  }
   if (!storeJson) return round2(Math.max(0, base));
   if (storeJson.checkoutDeliveryFeeJod != null && storeJson.checkoutDeliveryFeeJod !== '') {
     const v = Number(storeJson.checkoutDeliveryFeeJod);

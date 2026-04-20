@@ -12,6 +12,11 @@
  *   If you charge VAT on fees you must use general_sales (012/022) or special_sales (013/023), not income (011/021).
  *   Income invoices in JoFotara expect no standard VAT in UBL (see Odoo l10n_jo_edi); mixing 011 + 7% VAT causes
  *   totalSpecialTaxesAmount / TaxInclusiveAmount / PayableAmount HTTP 400 after XSD.
+ *
+ * Authorization (HTTP 400, EINV_CODE invoice-persist): "This user is not authorized to submit this type of invoice."
+ *   Your JoFotara API user is only enabled for certain invoice categories/payment means. Fix in the ISTD/JoFotara portal
+ *   (enable the correct bill type for your TIN/activity), or set JOFOTARA_INVOICE_CATEGORY to match what your account
+ *   is actually allowed to issue — do not rely on code changes alone.
  */
 
 const crypto = require('crypto');
@@ -27,6 +32,16 @@ const DEFAULT_VAT_PERCENT = 7;
  */
 const AMT_CCY = process.env.JOFOTARA_AMOUNT_CURRENCY || 'JO';
 const DOC_CCY = 'JOD';
+
+function logJofotaraAuthorizationHint() {
+  const cat = invoiceCategoryFromEnv();
+  const pc = paymentCodesForCategory(cat);
+  console.error(
+    '[jofotara] If the message says your user is "not authorized" for this invoice type: (1) In ISTD/JoFotara, confirm which invoice categories your company/API integration is allowed (income vs general sales vs special sales). (2) Set env JOFOTARA_INVOICE_CATEGORY to match (current: '
+      + `${cat} — cash ${pc.cash}, non-cash ${pc.receivable}). `
+      + '(3) Ask your accountant or ISTD to enable the correct bill type if the wrong one is selected.',
+  );
+}
 
 /** Normalize money from DB / fees (JOD fils) to avoid float dust like 0.649999. */
 function roundJod(n) {
@@ -97,7 +112,7 @@ function esc(str) {
 /**
  * Build UBL 2.1 XML for JOFOTARA (category from JOFOTARA_INVOICE_CATEGORY, default general_sales).
  * Store orders: two lines when both delivery and service are positive (per-line VAT), else one combined line.
- * Arheb Box: delivery fee only (includeServiceLine false).
+ * Arheb Box: delivery + service fee lines when both are positive (same VAT rules as store fees).
  */
 function buildInvoiceXml(order, invoiceUUID, options = {}) {
   const {
@@ -313,6 +328,9 @@ async function submitJofotaraInvoice(db, orderId) {
     console.error(`[jofotara] FAILED order ${orderId} — HTTP ${status || 'N/A'}`);
     console.error(`[jofotara] Response body:`, fullBody);
     console.error(`[jofotara] Generated XML:\n`, xml);
+    if (fullBody && /not authorized to submit this type of invoice|invoice-persist/i.test(String(fullBody))) {
+      logJofotaraAuthorizationHint();
+    }
 
     let errMsg;
     if (errData?.EINV_RESULTS?.ERRORS?.length) {
@@ -362,10 +380,12 @@ async function submitJofotaraInvoiceForArhebBox(db, requestId) {
   if (!row) return { ok: false, error: 'Request not found', uuid: '' };
 
   const invoiceUUID = crypto.randomUUID();
+  const del = Number(row.deliveryFee) || 0;
+  const svc = Number(row.serviceFee) || 0;
   const pseudoOrder = {
     id: row.id,
-    deliveryFee: Number(row.deliveryFee) || 0,
-    serviceFee: 0,
+    deliveryFee: del,
+    serviceFee: svc,
     feesTax: row.feesTax,
     paymentType: row.paymentMethod || 'cash',
     name: row.userName || 'Customer',
@@ -373,7 +393,7 @@ async function submitJofotaraInvoiceForArhebBox(db, requestId) {
   const xml = buildInvoiceXml(pseudoOrder, invoiceUUID, {
     idPrefix: 'ARHEBBOX',
     notePrefix: 'Arheb Box',
-    includeServiceLine: false,
+    includeServiceLine: true,
   });
   const base64Invoice = Buffer.from(xml, 'utf-8').toString('base64');
 
@@ -396,6 +416,9 @@ async function submitJofotaraInvoiceForArhebBox(db, requestId) {
   } catch (error) {
     const errData = error.response?.data;
     const fullBody = typeof errData === 'string' ? errData : JSON.stringify(errData, null, 2);
+    if (fullBody && /not authorized to submit this type of invoice|invoice-persist/i.test(String(fullBody))) {
+      logJofotaraAuthorizationHint();
+    }
     let errMsg;
     if (errData?.EINV_RESULTS?.ERRORS?.length) {
       errMsg = errData.EINV_RESULTS.ERRORS.map((e) => `${e.EINV_CODE || e.code || e.type || 'ERROR'}: ${e.EINV_MESSAGE || e.message || e.EINV_CATEGORY || JSON.stringify(e)}`).join('; ');

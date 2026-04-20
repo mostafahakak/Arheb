@@ -104,6 +104,40 @@ function ensureContactUsArhebBoxComingSoonColumn(db) {
   }
 }
 
+/** App info: Arheb Box platform service fee (JOD), GET/PATCH /api/admin/info. Default 0.65. */
+function ensureContactUsArhebBoxServiceFeeJodColumn(db) {
+  if (!db) return;
+  try {
+    db.exec(`ALTER TABLE contact_us ADD COLUMN arhebBoxServiceFeeJod REAL`);
+  } catch (e) {
+    /* exists */
+  }
+  try {
+    db.prepare(`UPDATE contact_us SET arhebBoxServiceFeeJod = ? WHERE arhebBoxServiceFeeJod IS NULL`).run(0.65);
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+/**
+ * @param {import('better-sqlite3').Database} db
+ * @returns {number}
+ */
+function getArhebBoxServiceFeeJod(db) {
+  if (!db) return 0.65;
+  ensureContactUsArhebBoxServiceFeeJodColumn(db);
+  try {
+    const row = db.prepare('SELECT arhebBoxServiceFeeJod FROM contact_us ORDER BY id DESC LIMIT 1').get();
+    if (row && row.arhebBoxServiceFeeJod != null && String(row.arhebBoxServiceFeeJod).trim() !== '') {
+      const v = Number(row.arhebBoxServiceFeeJod);
+      if (Number.isFinite(v) && v >= 0) return round2(v);
+    }
+  } catch (e) {
+    /* no table */
+  }
+  return 0.65;
+}
+
 /**
  * Default driver share of delivery fee (0–1) when `drivers.commissionPercent` is NULL:
  * use **App info** (`contact_us.driverDeliveryPercent`); if unset, fall back to global commission settings (percent mode) or 0.65.
@@ -347,6 +381,8 @@ module.exports = {
   ensureDriverCommissionPercentColumn,
   ensureContactUsDriverDeliveryPercentColumn,
   ensureContactUsArhebBoxComingSoonColumn,
+  ensureContactUsArhebBoxServiceFeeJodColumn,
+  getArhebBoxServiceFeeJod,
   getDriverDeliveryDefaultPercent,
   normalizeDriverCommissionPercent,
   parseDriverCommissionPercentForStorage,

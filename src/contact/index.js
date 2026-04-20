@@ -3,6 +3,7 @@ const {
   normalizeDriverCommissionPercent,
   getDriverCommissionSettings,
   ensureContactUsArhebBoxComingSoonColumn,
+  getArhebBoxServiceFeeJod,
 } = require('../utils/driverCommission');
 const { getArhebBoxPublicFlags } = require('../arhebBox/flags');
 
@@ -82,6 +83,7 @@ module.exports = function attachContactRoutes(app, db, authenticateRequest) {
             cliqNumber: contact.cliqNumber != null ? contact.cliqNumber : '',
             driverDeliveryPercent: driverDeliveryPercentAppInfo,
             driverDeliveryDefaultEffective: getDriverDeliveryDefaultPercent(db),
+            arhebBoxServiceFeeJod: getArhebBoxServiceFeeJod(db),
           },
           arhebBox: getArhebBoxPublicFlags(db),
         },

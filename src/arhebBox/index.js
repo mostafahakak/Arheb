@@ -4,12 +4,11 @@ const {
   arhebBoxDeliveryFeeFromDistanceJod,
   remoteDeliveryZoneFixedFeeJod,
   STORE_MAX_JOD,
-  ARHEB_BOX_SERVICE_FEE_JOD,
 } = require('../utils/deliveryFees');
+const { getArhebBoxServiceFeeJod } = require('../utils/driverCommission');
 const { quoteFromPickupDropoff, minAmountJod, distanceKm: haversineKm } = require('./pricing');
 const { isArhebBoxOrdersPaused } = require('./pause');
 
-const SERVICE_FEE_JOD = ARHEB_BOX_SERVICE_FEE_JOD;
 const FEES_TAX_RATE = 0.07;
 
 function round3(n) {
@@ -48,19 +47,22 @@ function calcDeliveryFeeFromDistanceAndWeight(distanceKm, _weightKg, dropoff) {
   return arhebBoxDeliveryFeeFromDistanceJod(d, lat, lng);
 }
 
-function calcFeesTaxJod(deliveryFeeJod) {
-  return round2(FEES_TAX_RATE * safeNumber(deliveryFeeJod, 0));
+function calcFeesTaxJod(deliveryFeeJod, serviceFeeJod) {
+  const base = safeNumber(deliveryFeeJod, 0) + safeNumber(serviceFeeJod, 0);
+  return round2(FEES_TAX_RATE * base);
 }
 
 function buildInvoice(deliveryFeeJod, serviceFeeJod) {
-  const taxJod = calcFeesTaxJod(deliveryFeeJod);
+  const delivery = round2(safeNumber(deliveryFeeJod, 0));
+  const service = round2(safeNumber(serviceFeeJod, 0));
+  const taxJod = calcFeesTaxJod(deliveryFeeJod, serviceFeeJod);
   return {
     currency: 'JOD',
-    deliveryFee: round2(safeNumber(deliveryFeeJod, 0)),
-    serviceFee: round2(safeNumber(serviceFeeJod, 0)),
+    deliveryFee: delivery,
+    serviceFee: service,
     feesTaxRate: FEES_TAX_RATE,
     feesTax: taxJod,
-    total: round2(safeNumber(deliveryFeeJod, 0) + safeNumber(serviceFeeJod, 0) + taxJod),
+    total: round2(delivery + service + taxJod),
   };
 }
 
@@ -93,9 +95,14 @@ function enrichRequestRow(row, db) {
       : dKm != null && Number.isFinite(dKm)
         ? calcDeliveryFeeFromDistanceAndWeight(dKm, weightKg, dropoffObj)
         : calcArhebBoxDeliveryFeeJod(weightKg);
-  /** No platform service fee on Arheb Box; VAT is 7% on delivery fee only. Ignore legacy DB values. */
-  const serviceFee = SERVICE_FEE_JOD;
-  const feesTax = row.feesTax != null ? Number(row.feesTax) : calcFeesTaxJod(deliveryFee);
+  const serviceFee =
+    row.serviceFee != null && Number.isFinite(Number(row.serviceFee))
+      ? round2(Number(row.serviceFee))
+      : getArhebBoxServiceFeeJod(db);
+  const feesTax =
+    row.feesTax != null && Number.isFinite(Number(row.feesTax))
+      ? round2(Number(row.feesTax))
+      : calcFeesTaxJod(deliveryFee, serviceFee);
   const base = {
     id: row.id,
     phoneNumber: row.phoneNumber ?? null,
@@ -253,8 +260,8 @@ function createArhebBoxRequest(db, phoneNumber, body, statusOverride, options = 
   const notesStr = notes != null ? String(notes) : '';
   const weightKgNum = Math.max(0, safeNumber(weightKg, 0));
   const computedDeliveryFee = calcDeliveryFeeFromDistanceAndWeight(quote.distanceKm, weightKgNum, dropoff);
-  const computedServiceFee = SERVICE_FEE_JOD;
-  const computedFeesTax = calcFeesTaxJod(computedDeliveryFee);
+  const computedServiceFee = getArhebBoxServiceFeeJod(db);
+  const computedFeesTax = calcFeesTaxJod(computedDeliveryFee, computedServiceFee);
 
   const insertPayload = {
     phoneNumber, userName,
@@ -340,7 +347,7 @@ function notifyDriversAboutNewArhebBox(db, io, row) {
 module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest, io) {
   ensureArhebBoxTable(db);
 
-  // Quote: distance, minimum parcel amount, delivery fee, and VAT on delivery (no auth)
+  // Quote: distance, minimum parcel amount, delivery + service + VAT 7% on both (no auth)
   app.post('/api/arheb-box/quote', (req, res) => {
     try {
       if (isArhebBoxOrdersPaused()) {
@@ -363,8 +370,8 @@ module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest, io)
       }
       const weightKgNum = Math.max(0, safeNumber(weightKg, 0));
       const deliveryFee = calcDeliveryFeeFromDistanceAndWeight(q.distanceKm, weightKgNum, dropoff);
-      const serviceFee = SERVICE_FEE_JOD;
-      const feesTax = calcFeesTaxJod(deliveryFee);
+      const serviceFee = getArhebBoxServiceFeeJod(db);
+      const feesTax = calcFeesTaxJod(deliveryFee, serviceFee);
       const invoice = buildInvoice(deliveryFee, serviceFee);
       return res.status(200).json({
         success: true,
@@ -377,7 +384,7 @@ module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest, io)
           invoice,
           currency: 'JOD',
           pricingNote:
-            'Arheb Box: delivery fee 1 JOD first km + 0.5 JOD per additional km (no cap). Service fee 0. VAT 7% applies to delivery fee only. Amount offered must be at least minAmountJod.',
+            'Arheb Box: delivery 1 JOD first km + 0.5 JOD per extra km (no cap). Platform service fee from app settings (default 0.65 JOD). VAT 7% applies to delivery + service fee. Amount must be at least minAmountJod.',
         },
         timestamp: new Date().toISOString(),
       });
@@ -476,7 +483,7 @@ module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest, io)
       return res.status(201).json({
         success: true,
         message: 'Arheb box request received successfully',
-        data: { request: enrichRequestRow(result.row, null) },
+        data: { request: enrichRequestRow(result.row, db) },
         timestamp: new Date().toISOString(),
       });
     } catch (error) {
