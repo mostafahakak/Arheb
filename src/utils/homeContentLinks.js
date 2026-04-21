@@ -1,5 +1,5 @@
 /**
- * Optional app deep link on home banners / offers: open a product or category by id.
+ * Optional app deep link on home banners / offers: product, category, or store by id (`linkTargetId`).
  * @param {object} item
  * @returns {object}
  */

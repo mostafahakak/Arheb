@@ -4237,6 +4237,45 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     return res.status(200).json({ success: true, data: { popup: updated } });
   });
 
+  // ——— Home banners / offers: link picker data (names → ids in dashboard) ———
+  app.get('/api/admin/home/link-options', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      const stores = loadStores().map((s) => ({
+        id: String(s.id),
+        name: s.name ?? '',
+        nameAr: s.nameAr ?? '',
+        nameEn: s.nameEn ?? '',
+      }));
+      const categories = loadCategories().map((c) => ({
+        id: String(c.id),
+        name: c.name ?? '',
+        nameAr: c.nameAr ?? '',
+        nameEn: c.nameEn ?? '',
+      }));
+      const products = loadProducts()
+        .filter((p) => p.id != null && String(p.id).trim() !== '')
+        .map((p) => ({
+          id: String(p.id),
+          name: p.name ?? '',
+          nameAr: p.nameAr ?? '',
+          nameEn: p.nameEn ?? '',
+          storeId: p.store?.id != null ? String(p.store.id) : '',
+        }))
+        .sort((a, b) =>
+          String(a.nameEn || a.name || '').localeCompare(String(b.nameEn || b.name || ''), undefined, {
+            sensitivity: 'base',
+          }),
+        );
+      return res.status(200).json({
+        success: true,
+        data: { stores, categories, products },
+      });
+    } catch (e) {
+      console.error(e);
+      return res.status(500).json({ success: false, message: 'Failed to load link options' });
+    }
+  });
+
   // ——— Home banners (SuperAdmin / Admin only) ———
   app.get('/api/admin/home/banners', auth, requireAdminOrSuper, (req, res) => {
     const home = loadHome();

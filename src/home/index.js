@@ -271,7 +271,10 @@ const seedHomeTables = (db, homeResponse) => {
         title: banner.title ?? null,
         link: banner.link ?? null,
         displayOrder: banner.order ?? bannerOrder,
-        linkTarget: banner.linkTarget === 'product' || banner.linkTarget === 'category' ? banner.linkTarget : null,
+        linkTarget:
+          banner.linkTarget === 'product' || banner.linkTarget === 'category' || banner.linkTarget === 'store'
+            ? banner.linkTarget
+            : null,
         linkTargetId: banner.linkTargetId != null && String(banner.linkTargetId).trim() !== '' ? String(banner.linkTargetId).trim() : null,
       });
     }
@@ -322,7 +325,10 @@ const seedHomeTables = (db, homeResponse) => {
         link: offer.link ?? null,
         validUntil: offer.validUntil ?? null,
         displayOrder: offer.order ?? offerOrder,
-        linkTarget: offer.linkTarget === 'product' || offer.linkTarget === 'category' ? offer.linkTarget : null,
+        linkTarget:
+          offer.linkTarget === 'product' || offer.linkTarget === 'category' || offer.linkTarget === 'store'
+            ? offer.linkTarget
+            : null,
         linkTargetId: offer.linkTargetId != null && String(offer.linkTargetId).trim() !== '' ? String(offer.linkTargetId).trim() : null,
       });
     }
