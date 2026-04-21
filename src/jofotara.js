@@ -2,21 +2,23 @@
  * JOFOTARA e-invoicing integration (Jordan National Electronic Invoicing System).
  *
  * Submits e-invoices to the government API when orders are delivered (category + payment code from env).
- * VAT on delivery + service uses JOFOTARA_VAT_PERCENT (default 7). JoFotara validates TaxSubtotal:
- * TaxableAmount × Percent must match TaxAmount — use per-line round9 tax (not checkout round2).
+ * Default XML: delivery and service fees **as on the order**; **no 7% added** in UBL (zero-rated lines). App checkout VAT is unchanged.
+ * Optional legacy: JOFOTARA_INVOICE_XML_VAT=true uses JOFOTARA_VAT_PERCENT (default 7) for category S lines or baked gross on income.
  *
  * Env vars (set on Render):
  *   JOFOTARA_CLIENT_ID, JOFOTARA_SECRET_KEY, JOFOTARA_INCOME_SOURCE,
- *   JOFOTARA_SELLER_TIN, JOFOTARA_SELLER_NAME, JOFOTARA_VAT_PERCENT (optional, default 7)
+ *   JOFOTARA_SELLER_TIN, JOFOTARA_SELLER_NAME, JOFOTARA_INVOICE_XML_VAT (optional, default off),
+ *   JOFOTARA_VAT_PERCENT (only when JOFOTARA_INVOICE_XML_VAT=true, default 7)
  *   JOFOTARA_INVOICE_CATEGORY: income | general_sales | special_sales (default general_sales).
- *   If you charge VAT on fees you must use general_sales (012/022) or special_sales (013/023), not income (011/021).
- *   Income invoices in JoFotara expect no standard VAT in UBL (see Odoo l10n_jo_edi); mixing 011 + 7% VAT causes
- *   totalSpecialTaxesAmount / TaxInclusiveAmount / PayableAmount HTTP 400 after XSD.
+ *   Must match the invoice type tied to your "تسلسل مصدر الدخل" / activity in the portal (e.g. ضريبة دخل → use **income**, codes 011/021).
+ *   If the portal shows **ضريبة دخل** for your serial but Render still sends 012/022, you left the default **general_sales** on
+ *   the server — set JOFOTARA_INVOICE_CATEGORY=income. Otherwise JoFotara returns invoice-persist: not authorized.
+ *   If you are registered for **مبيعات عامة** with standard VAT on the invoice, use general_sales (012/022) or special_sales (013/023).
+ *   With default XML (no JOFOTARA_INVOICE_XML_VAT), all categories use zero-rated (O) lines with fee amounts unchanged.
  *
  * Authorization (HTTP 400, EINV_CODE invoice-persist): "This user is not authorized to submit this type of invoice."
- *   Your JoFotara API user is only enabled for certain invoice categories/payment means. Fix in the ISTD/JoFotara portal
- *   (enable the correct bill type for your TIN/activity), or set JOFOTARA_INVOICE_CATEGORY to match what your account
- *   is actually allowed to issue — do not rely on code changes alone.
+ *   Almost always: category/payment code in XML does not match what that income source is allowed to issue — align
+ *   JOFOTARA_INVOICE_CATEGORY with the portal (income vs general_sales), or enable the matching bill type in ISTD.
  */
 
 const crypto = require('crypto');
@@ -37,9 +39,9 @@ function logJofotaraAuthorizationHint() {
   const cat = invoiceCategoryFromEnv();
   const pc = paymentCodesForCategory(cat);
   console.error(
-    '[jofotara] If the message says your user is "not authorized" for this invoice type: (1) In ISTD/JoFotara, confirm which invoice categories your company/API integration is allowed (income vs general sales vs special sales). (2) Set env JOFOTARA_INVOICE_CATEGORY to match (current: '
-      + `${cat} — cash ${pc.cash}, non-cash ${pc.receivable}). `
-      + '(3) Ask your accountant or ISTD to enable the correct bill type if the wrong one is selected.',
+    '[jofotara] If the message says your user is "not authorized" for this invoice type: (1) In the portal, if your activity is ضريبة دخل (income), set Render env JOFOTARA_INVOICE_CATEGORY=income (sends 011/021), not the default general_sales (012/022). '
+      + `(2) Current server setting: ${cat} — cash ${pc.cash}, non-cash ${pc.receivable}. `
+      + '(3) If your registration is actually general/special sales, ask ISTD to enable that type for this API user.',
   );
 }
 
@@ -57,6 +59,11 @@ function vatPercentFromEnv() {
   const v = Number(process.env.JOFOTARA_VAT_PERCENT);
   if (Number.isFinite(v) && v > 0 && v <= 100) return v;
   return DEFAULT_VAT_PERCENT;
+}
+
+/** When true, emit 7% VAT (category S) on fee lines in UBL. Default false: fees as-is, no VAT added in XML. */
+function includeStandardVatInJofotaraXml() {
+  return String(process.env.JOFOTARA_INVOICE_XML_VAT || '').trim().toLowerCase() === 'true';
 }
 
 /** JoFotara payment codes by taxpayer / invoice category (must match category or API rejects totals). */
@@ -111,8 +118,8 @@ function esc(str) {
 
 /**
  * Build UBL 2.1 XML for JOFOTARA (category from JOFOTARA_INVOICE_CATEGORY, default general_sales).
- * Store orders: two lines when both delivery and service are positive (per-line VAT), else one combined line.
- * Arheb Box: delivery + service fee lines when both are positive (same VAT rules as store fees).
+ * By default: delivery and service fee **amounts match the order**; UBL uses zero-rated (O) lines — **no 7% added** in XML.
+ * Legacy: set JOFOTARA_INVOICE_XML_VAT=true for separate 7% VAT lines (general_sales/special_sales) or baked gross (income).
  */
 function buildInvoiceXml(order, invoiceUUID, options = {}) {
   const {
@@ -173,7 +180,30 @@ function buildInvoiceXml(order, invoiceUUID, options = {}) {
   let totalWithTax;
   let payableAmount;
 
-  if (invoiceCategory === 'income') {
+  if (!includeStandardVatInJofotaraXml()) {
+    /** Fees exactly as on the order; UBL tax = 0 (category O). No 7% added in XML. */
+    let grossSum = 0;
+    let lineId = 1;
+    const parts = [];
+    if (includeServiceLine && deliveryFee > 0 && serviceFee > 0) {
+      parts.push(lineXmlIncomeGross(String(lineId++), 'Delivery fee', 1, round9(deliveryFee)));
+      parts.push(lineXmlIncomeGross(String(lineId++), 'Service fee', 1, round9(serviceFee)));
+      grossSum = round9(deliveryFee + serviceFee);
+    } else if (includeServiceLine) {
+      const base = taxableBase;
+      parts.push(lineXmlIncomeGross('1', 'Delivery and service fees', 1, round9(base)));
+      grossSum = round9(base);
+    } else {
+      parts.push(lineXmlIncomeGross('1', 'Delivery Fee', 1, round9(deliveryFee)));
+      grossSum = round9(deliveryFee);
+    }
+    linesXml = parts.join('');
+    taxAmount = 0;
+    taxExclusiveTotal = grossSum;
+    totalWithTax = grossSum;
+    payableAmount = grossSum;
+    documentTaxTotalXml = `<cac:TaxTotal><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(0)}</cbc:TaxAmount><cac:TaxSubtotal><cbc:TaxableAmount currencyID="${AMT_CCY}">${f9(grossSum)}</cbc:TaxableAmount><cbc:TaxAmount currencyID="${AMT_CCY}">${f9(0)}</cbc:TaxAmount>${taxCategoryZeroXml()}</cac:TaxSubtotal></cac:TaxTotal>`;
+  } else if (invoiceCategory === 'income') {
     let grossSum = 0;
     let lineId = 1;
     const parts = [];
@@ -299,7 +329,7 @@ async function submitJofotaraInvoice(db, orderId) {
     const pcLog = paymentCodesForCategory(cat);
     const payLog = isCashLog ? pcLog.cash : pcLog.receivable;
     console.log(
-      `[jofotara] Submitting order ${orderId} — UUID ${invoiceUUID}, category=${cat}, payment=${payLog}, deliveryFee=${order.deliveryFee}, serviceFee=${order.serviceFee}`,
+      `[jofotara] Submitting order ${orderId} — UUID ${invoiceUUID}, category=${cat}, payment=${payLog}, xmlVat=${includeStandardVatInJofotaraXml()}, deliveryFee=${order.deliveryFee}, serviceFee=${order.serviceFee}`,
     );
 
     const response = await axios.post(JOFOTARA_API_URL, { invoice: base64Invoice }, {

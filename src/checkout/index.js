@@ -4,7 +4,6 @@ const { enrichArhebBoxRow, calcArhebBoxDeliveryFeeJod } = require('../arhebBox')
 const { quoteFromPickupDropoff } = require('../arhebBox/pricing');
 const {
   storeOrderDeliveryFeeFromDistanceTiers,
-  STORE_MAX_JOD,
   STORE_ORDER_SERVICE_FEE_JOD,
   resolveStoreOrderServiceFeeJod,
   resolveStoreOrderDeliveryFeeJod,
@@ -779,10 +778,19 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
           feesTax: invoice.feesTax,
           feesTaxNote: '7% tax on delivery fee plus service fee (not on order subtotal).',
           invoiceTotal: invoice.total,
-          pricingNote:
-            'Store delivery fee: 1 JOD for the first km + 0.1 JOD per additional km, maximum ' +
-            STORE_MAX_JOD +
-            ' JOD. Weight does not change delivery fee.',
+          pricingNote: (() => {
+            const flat = platformTiers.flatDeliveryFeeJod;
+            if (flat != null) {
+              return (
+                `Platform fixed delivery ${flat} JOD for normal areas; special-far, uncapped, and remote zones use other rules. ` +
+                'Per-store checkoutDeliveryFeeJod overrides when set. Weight does not change delivery fee.'
+              );
+            }
+            return (
+              `Store delivery fee: first km + per-km up to max (platform tiers; currently max ${platformTiers.maxJod} JOD). ` +
+              'Weight does not change delivery fee.'
+            );
+          })(),
         },
         timestamp: new Date().toISOString(),
       });

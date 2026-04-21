@@ -2,7 +2,8 @@
  * Store orders: 1 JOD for the first km + 0.1 JOD per additional km, max 3 JOD.
  * Arheb Box: 1 JOD for the first km + 0.5 JOD per additional km, no cap.
  *
- * Uncapped tier zones (selected map pins): same 1 + 0.1/km as store tiers but **no 3 JOD maximum**.
+ * Uncapped tier zones (**only** narrow radii around the two pins in `UNCAPPED_TIER_ZONE_CENTERS`): same 1 + 0.1/km as tiers but **no maxJod**.
+ * Rest of Aqaba uses normal platform tiers (max 3 JOD by default).
  * Arheb Box uses the **same** 1 + 0.1/km in these zones (not 0.5/km). Checked before remote fixed 8 JOD.
  *
  * Special far desert zones (Wadi Rum, Al Quwayrah, etc.): fixed SPECIAL_FAR_DELIVERY_ZONE_FEE_JOD
@@ -111,19 +112,24 @@ function dropoffInSpecialFarDeliveryZone(lat, lng) {
   return specialFarDeliveryZoneFixedFeeJod(lat, lng) != null;
 }
 
+/**
+ * Only dropoffs **within this radius** of an uncapped pin get “no max” tier pricing.
+ * Default **2.5 km** — a 10 km radius made almost all of Aqaba hit uncapped (no 3 JOD cap) and broke platform tiers citywide.
+ * Widen only if needed, e.g. `UNCAPPED_TIER_ZONE_RADIUS_KM=4` on the host.
+ */
 const UNCAPPED_TIER_ZONE_RADIUS_KM = (() => {
   const v = Number(process.env.UNCAPPED_TIER_ZONE_RADIUS_KM);
-  return Number.isFinite(v) && v > 0 ? v : 10;
+  return Number.isFinite(v) && v > 0 ? v : 2.5;
 })();
 
 /**
- * Dropoff near these pins: distance fee = 1 JOD first km + 0.1/km, **no 3 JOD cap** (store + Arheb Box uses same rate).
- * Replace lat/lon with exact decimal coords from Google Maps → Share if a pin misses the radius.
- * Maps: https://maps.app.goo.gl/RGUnDEro5GPWbU2C6 — https://maps.app.goo.gl/eg5p6VDfS6tWVBdJA
+ * **Uncapped tier** (platform first km + per km, **no maxJod cap**): only these two areas — nowhere else in Aqaba.
+ * جامعة العقبة للتكنولوجيا (Aqaba University of Technology) & Tala Bay. Tune coords from Google Maps → Share.
+ * Special **10 JOD** desert/far pins use `SPECIAL_FAR_DELIVERY_ZONE_CENTERS` (separate list).
  */
 const UNCAPPED_TIER_ZONE_CENTERS = [
-  { id: 'maps-RGUnDEro5GPWbU2C6', lat: 29.492, lon: 35.0065 },
-  { id: 'maps-eg5p6VDfS6tWVBdJA', lat: 29.528, lon: 35.018 },
+  { id: 'aqaba-university-of-technology', lat: 29.5488, lon: 35.0025 },
+  { id: 'tala-bay', lat: 29.3915, lon: 34.9795 },
 ];
 
 /**
@@ -168,7 +174,8 @@ const ARHEB_BOX_SERVICE_FEE_JOD = 0.65;
 
 /**
  * Distance-based store delivery using configurable tiers (defaults match legacy1 + 0.1/km, max 3).
- * @param {{ firstKmJod?: number, perKmJod?: number, maxJod?: number }} [tiers]
+ * Optional `tiers.flatDeliveryFeeJod`: when set, that amount is used for normal dropoffs (not special/uncapped/remote).
+ * @param {{ firstKmJod?: number, perKmJod?: number, maxJod?: number, flatDeliveryFeeJod?: number | null }} [tiers]
  */
 function storeOrderDeliveryFeeFromDistanceTiers(distanceKm, deliveryLat, deliveryLng, tiers) {
   const special = specialFarDeliveryZoneFixedFeeJod(deliveryLat, deliveryLng);
@@ -187,6 +194,15 @@ function storeOrderDeliveryFeeFromDistanceTiers(distanceKm, deliveryLat, deliver
 
   const remote = remoteDeliveryZoneFixedFeeJod(deliveryLat, deliveryLng);
   if (remote != null) return remote;
+
+  const flatRaw = tiers?.flatDeliveryFeeJod;
+  if (flatRaw != null && String(flatRaw).trim() !== '') {
+    const fv = Number(flatRaw);
+    if (Number.isFinite(fv) && fv >= 0) {
+      return round2(fv);
+    }
+  }
+
   return round2(Math.min(maxJod, fee));
 }
 

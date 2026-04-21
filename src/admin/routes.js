@@ -4488,7 +4488,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           perKmJod: tiers.perKmJod,
           maxJod: tiers.maxJod,
           defaultServiceFeeJod: tiers.defaultServiceFeeJod,
-          note: 'SuperAdmin can change tiers; per-store overrides: checkoutDeliveryFeeZero, checkoutDeliveryFeeJod (fixed JOD at checkout), checkoutServiceFeeDisabled, checkoutServiceFeeJod.',
+          flatDeliveryFeeJod: tiers.flatDeliveryFeeJod,
+          note:
+            'SuperAdmin: tiers or optional flatDeliveryFeeJod (e.g. 1 = 1 JOD delivery everywhere except special-far, uncapped, remote pins). Per-store overrides: checkoutDeliveryFeeZero, checkoutDeliveryFeeJod, checkoutServiceFeeDisabled, checkoutServiceFeeJod.',
         },
       });
     } catch (e) {
@@ -4500,12 +4502,16 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   app.patch('/api/admin/settings/checkout-fees', auth, requireSuperAdmin, (req, res) => {
     try {
       const body = req.body || {};
-      const tiers = setPlatformCheckoutFeeTiers(db, {
+      const patch = {
         firstKmJod: body.firstKmJod,
         perKmJod: body.perKmJod,
         maxJod: body.maxJod,
         defaultServiceFeeJod: body.defaultServiceFeeJod,
-      });
+      };
+      if (Object.prototype.hasOwnProperty.call(body, 'flatDeliveryFeeJod')) {
+        patch.flatDeliveryFeeJod = body.flatDeliveryFeeJod;
+      }
+      const tiers = setPlatformCheckoutFeeTiers(db, patch);
       logActivity(db, req, {
         action: 'edit',
         resourceType: 'settings',
