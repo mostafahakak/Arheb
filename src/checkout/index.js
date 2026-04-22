@@ -15,6 +15,10 @@ const { promoAppliesToStore, promoMinAmountOk } = require('../utils/promoCode');
 const { validateSelectedAddOnsAgainstProduct } = require('../utils/productAddOns');
 const { sendToStore } = require('../fcm');
 const { canonicalStoreId } = require('../storeFcm');
+const {
+  isPaymentTypeAllowedForStore,
+  paymentMethodRejectedUserMessage,
+} = require('../utils/storePaymentMethods');
 
 module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   const { getJsonPath } = require('../config/jsonPaths');
@@ -531,6 +535,13 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         }
         if (storeCheck.isOpen === false) {
           return { ok: false, statusCode: 400, message: 'This store is currently closed' };
+        }
+        if (!isPaymentTypeAllowedForStore(storeCheck, lowerPaymentType)) {
+          return {
+            ok: false,
+            statusCode: 400,
+            message: paymentMethodRejectedUserMessage(lowerPaymentType),
+          };
         }
       }
     }

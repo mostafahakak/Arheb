@@ -162,6 +162,7 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
   - [Get Premium Stores](#get-premium-stores)
   - [Get Exclusive Stores](#get-exclusive-stores)
   - [Get Stores by Category](#get-stores-by-category)
+  - [Get Store Payment Methods](#get-store-payment-methods)
   - [Update Store FCM Token](#update-store-fcm-token)
   - [Get Store Products](#get-store-products)
   - [Get Store Products by Category](#get-store-products-by-category)
@@ -584,7 +585,7 @@ Retrieves all products that currently have a discount applied. This is useful fo
 
 Stores can be **paused**, **blocked**, or **hidden from browse** (`hiddenFromCustomers`, Admin/SuperAdmin): **blocked** stores never appear in public APIs; **hidden** stores are omitted from customer browse lists but are not the same as paused. **Paused** stores can still appear in `GET /api/stores` with `status: "paused"` (sorted after open stores). **Exclusive** / **premium** flags (`isExclusive` / `isPremium` — set together by admin) mark featured stores; use **`GET /api/stores/exclusive`** (or legacy **`/api/stores/premium`**) for that curated list.
 
-Public listings use **`GET /api/stores`**, **`/api/stores/top-rated`**, **`/api/stores/premium`**, **`/api/stores/exclusive`**, **`/api/stores/category/:name`**, and **store products** — all exclude **blocked** and **hidden** stores. Admin APIs return full store records; **`PATCH /api/admin/stores/:id`** supports `paused`, `blocked`, `hiddenFromCustomers`, and **`isExclusive`** (SuperAdmin/Admin only).
+Public listings use **`GET /api/stores`**, **`/api/stores/top-rated`**, **`/api/stores/premium`**, **`/api/stores/exclusive`**, **`/api/stores/category/:name`**, and **store products** — all exclude **blocked** and **hidden** stores. Each store includes **`paymentMethods`**: `{ "cod": true, "card": true, "cliq": true }` (cash on delivery, card, Cliq). If the field is omitted in storage, all three default to **`true`**. **`POST /api/checkout`** and **`POST /api/payment/initiate`** reject a **`paymentType`** the store has disabled. Admin APIs return full store records; **`PATCH /api/admin/stores/:id`** accepts **`paymentMethods`** (partial updates merge) and supports `paused`, `blocked`, `hiddenFromCustomers`, and **`isExclusive`** (SuperAdmin/Admin only).
 
 ### Get All Stores
 
@@ -618,14 +619,48 @@ Retrieves all stores that are **listed for customer browse** (not blocked, not h
         "openingTime": "09:00",
         "storeCategories": [
           { "id": "1", "nameEn": "Meals", "nameAr": "وجبات", "name": "Meals" }
-        ]
+        ],
+        "paymentMethods": {
+          "cod": true,
+          "card": true,
+          "cliq": true
+        }
       }
     ]
   }
 }
 ```
 
-Each store includes **`status`**, **`isExclusive`** / **`isPremium`** (same meaning — exclusive/premium tier), **`closingTime`** (string or `null`), **`openingTime`** (string or `null`), and **`storeCategories`** (array of `{ id, nameEn, nameAr, name }`) so the client can show store hours and product categories offered by the store.
+Each store includes **`status`**, **`isExclusive`** / **`isPremium`** (same meaning — exclusive/premium tier), **`closingTime`** (string or `null`), **`openingTime`** (string or `null`), **`storeCategories`** (array of `{ id, nameEn, nameAr, name }`), and **`paymentMethods`** (`cod` = cash on delivery; use with `paymentType` **`cash`** or **`cod`** at checkout).
+
+---
+
+### Get Store Payment Methods
+
+Returns which payment options are enabled for a single store (same flags as **`paymentMethods`** on **`GET /api/stores`**). **Blocked** or **hidden** stores return **404**.
+
+**Endpoint:** `GET /api/stores/:id/payment-methods`
+
+**Authentication:** Not required
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "message": "Store payment methods",
+  "data": {
+    "storeId": "1",
+    "paymentMethods": {
+      "cod": true,
+      "card": true,
+      "cliq": false
+    }
+  },
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+**Checkout mapping:** `paymentType` **`cash`** or **`cod`** → **`cod`**; **`card`** → **`card`**; **`cliq`** → **`cliq`** (case-insensitive).
 
 ---
 
@@ -1486,6 +1521,7 @@ Creates a new order with items, customer information, and delivery details.
 
 **Note:** 
 - Status is automatically set to "Waiting confirmation"
+- **`paymentType`** must be allowed for the order’s store: **`cash`** / **`cod`** (COD), **`card`**, or **`cliq`**, matching **`paymentMethods`** on the store (see [Get Store Payment Methods](#get-store-payment-methods)). If disabled, the API returns **400** with a clear message.
 - If `promoCode` is provided and valid, the discount will be automatically applied from the promo code value. **Store-specific** promo codes (see [Admin promo codes](#admin-promo-codes)) only apply when the order’s store (from `storeId` or inferred from cart items) matches that promo’s store; otherwise the request fails with **`promo code not available for this store`**. If the promo has **`minOrderAmount`**, the client must send **`cartAmount`** ≥ that threshold (or the request fails).
 - If `promoCode` is invalid, order creation will fail with **`invalid promoCode`**
 
@@ -3041,9 +3077,9 @@ Store state is derived from **admin flags + Jordan opening hours**:
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/admin/stores` | List stores (Store Admin sees only their store). Admin/SuperAdmin query params: `isOpen=true` (only effectively open stores), `isOpen=false` (only effectively closed stores), `paused=true` (only paused stores). |
-| POST | `/api/admin/stores` | Create store (Admin and SuperAdmin only). Body: name, nameEn, nameAr, cover, logo, phone, address, addressEn, deliveryFee, minimumOrder, etc. |
+| POST | `/api/admin/stores` | Create store (Admin and SuperAdmin only). Body: name, nameEn, nameAr, cover, logo, phone, address, addressEn, deliveryFee, minimumOrder, optional **`paymentMethods`**: `{ cod, card, cliq }` booleans (at least one must be `true`). |
 | GET | `/api/admin/stores/:id` | Get one store |
-| PATCH | `/api/admin/stores/:id` | Update store (name, nameAr, nameEn, cover, logo, deliveryTime, deliveryFee, minimumOrder, isOpen, openingHours, address, phone, category, closingTime, storeCategories, **`paused`**, **`blocked`**, **`hiddenFromCustomers`**, **`isExclusive`** / **`isPremium`**, checkout overrides: **`checkoutDeliveryFeeZero`**, **`checkoutDeliveryFeeJod`**, **`checkoutServiceFeeDisabled`**, **`checkoutServiceFeeJod`**, **`checkoutDeliveryOverCartThresholdJod`** + **`checkoutDeliveryFeeAboveJod`**, etc.). **isPremium** / **isExclusive** only by SuperAdmin/Admin. **`hiddenFromCustomers`** hides the store from customer browse lists without blocking it. **storeCategories** is an array of `{ id, nameEn, nameAr, name }`. |
+| PATCH | `/api/admin/stores/:id` | Update store (…, optional **`paymentMethods`**: partial `{ cod, card, cliq }` merges with existing; send **`paymentMethods`: `null`** to clear and fall back to defaults all `true`). At least one method must remain enabled. Same other fields as before: checkout overrides, **`paused`**, **`blocked`**, **`hiddenFromCustomers`**, **`isExclusive`** / **`isPremium`**, etc. |
 | DELETE | `/api/admin/stores/:id` | Delete store (Admin and SuperAdmin only). Removes store and its products. |
 
 ---
@@ -3907,6 +3943,7 @@ For issues or questions, please contact: `contact@arheb.app`
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
+| GET | `/api/stores/:id/payment-methods` | None | `{ storeId, paymentMethods: { cod, card, cliq } }` for checkout UI. |
 | POST | `/api/checkout/quote-fees` | User (Bearer) | Pre-checkout quote: `storeId`, `deliveryLocation`, optional `weightKg`, optional **`cartAmount`** (items subtotal for cart-threshold delivery). Returns delivery/service, **`feesTaxRate` 0**, `distanceKm`, platform cap, `pricingNote`. |
 | GET | `/api/admin/settings/checkout-fees` | Admin / SuperAdmin | Platform checkout tiers, flat delivery, cart-threshold delivery fields, default service fee. |
 | PATCH | `/api/admin/settings/checkout-fees` | **SuperAdmin** | Update platform checkout fees (see [Admin platform checkout fees](#admin-platform-checkout-fees)). |

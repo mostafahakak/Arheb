@@ -34,6 +34,10 @@ const {
   sortStoresOpenFirst,
 } = require('../utils/storeVisibility');
 const {
+  mergeStorePaymentMethodsPatch,
+  validatePaymentMethodsEnabled,
+} = require('../utils/storePaymentMethods');
+const {
   enrichStoreOpeningHours,
   normalizeOpeningHoursFromBody,
   parseFlexibleTimeTo24h,
@@ -995,6 +999,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       paused: false,
       blocked: false,
     };
+    if (body.paymentMethods !== undefined && body.paymentMethods !== null && typeof body.paymentMethods === 'object') {
+      const merged = mergeStorePaymentMethodsPatch({}, body.paymentMethods);
+      const v = validatePaymentMethodsEnabled(merged);
+      if (!v.ok) {
+        return res.status(400).json({ success: false, message: v.message });
+      }
+      newStore.paymentMethods = merged;
+    }
     stores.push(newStore);
     saveStores(stores);
     try {
@@ -1152,6 +1164,18 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           const v = Number(body.checkoutDeliveryFeeAboveJod);
           stores[idx].checkoutDeliveryFeeAboveJod = Number.isFinite(v) && v >= 0 ? v : 0;
         }
+      }
+    }
+    if (body.paymentMethods !== undefined) {
+      if (body.paymentMethods === null) {
+        delete stores[idx].paymentMethods;
+      } else if (typeof body.paymentMethods === 'object') {
+        const merged = mergeStorePaymentMethodsPatch(stores[idx], body.paymentMethods);
+        const v = validatePaymentMethodsEnabled(merged);
+        if (!v.ok) {
+          return res.status(400).json({ success: false, message: v.message });
+        }
+        stores[idx].paymentMethods = merged;
       }
     }
     const skipAllowed = new Set();

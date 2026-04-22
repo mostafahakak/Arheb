@@ -8,6 +8,7 @@ const {
   compareStoresOpenFirstThenName,
   sortStoresOpenFirst,
 } = require('../utils/storeVisibility');
+const { getStorePaymentMethods } = require('../utils/storePaymentMethods');
 const { enrichOpeningHoursObject } = require('../utils/openingHoursJordan');
 const { upsertStoreFcmToken } = require('../storeFcm');
 
@@ -188,6 +189,7 @@ function toPublicStore(store) {
     openingHours,
     storeCategories: Array.isArray(store.storeCategories) ? store.storeCategories : [],
     status: computeStoreStatus(store),
+    paymentMethods: getStorePaymentMethods(store),
   };
 }
 
@@ -210,6 +212,7 @@ function storePayloadForProductRoutes(store) {
     isOpen: customerFacingIsOpen(store),
     isExclusive: store.isExclusive === true,
     isPremium: store.isPremium === true,
+    paymentMethods: getStorePaymentMethods(store),
   };
 }
 
@@ -358,6 +361,32 @@ module.exports = function attachStoresRoutes(app, db) {
    * Register or update the FCM token for a store device (kitchen / POS app).
    * Token is stored in SQLite (store_fcm_tokens); public store listings never expose it.
    */
+  /**
+   * Which checkout payment options the store accepts (COD / card / Cliq).
+   * Omitted or missing flags default to true in `getStorePaymentMethods`.
+   */
+  app.get('/api/stores/:id/payment-methods', (req, res) => {
+    const storeId = req.params.id;
+    const storesResponse = loadStoresResponse();
+    const storesList = storesResponse?.data?.stores ?? [];
+    const store = storesList.find((s) => String(s.id) === String(storeId));
+    if (!store) {
+      return res.status(404).json({ success: false, message: 'Store not found' });
+    }
+    if (!isStoreListedForCustomerBrowse(store)) {
+      return res.status(404).json({ success: false, message: 'Store not found' });
+    }
+    return res.status(200).json({
+      success: true,
+      message: 'Store payment methods',
+      data: {
+        storeId: String(store.id),
+        paymentMethods: getStorePaymentMethods(store),
+      },
+      timestamp: new Date().toISOString(),
+    });
+  });
+
   app.post('/api/store/update-fcm', (req, res) => {
     try {
       const body = req.body || {};
