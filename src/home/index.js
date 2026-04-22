@@ -5,6 +5,7 @@ const { getJsonPath } = require('../config/jsonPaths');
 const {
   isStoreListedForCustomerBrowse,
   getAdminStoreDashboardBucket,
+  sortStoresOpenFirst,
   customerFacingIsOpen,
 } = require('../utils/storeVisibility');
 const { normalizeHomeContentLinkArray } = require('../utils/homeContentLinks');
@@ -411,15 +412,17 @@ module.exports = function attachHomeRoutes(app, db, JWT_SECRET) {
       response.data = { ...response.data, discountedProducts };
     }
     if (response.data?.mostPopularStores?.length) {
-      response.data.mostPopularStores = response.data.mostPopularStores
-        .filter((s) => s && s.id != null && listedStoreIds.has(String(s.id)))
-        .map((s) => {
-          const fullStore = storeByIdMap[String(s.id)];
-          const status = fullStore ? getAdminStoreDashboardBucket(fullStore) : 'closed';
-          const isOpen = fullStore ? customerFacingIsOpen(fullStore) : false;
-          const { isOpen: _dropOpen, ...rest } = s;
-          return { ...rest, status, isOpen };
-        });
+      response.data.mostPopularStores = sortStoresOpenFirst(
+        response.data.mostPopularStores
+          .filter((s) => s && s.id != null && listedStoreIds.has(String(s.id)))
+          .map((s) => {
+            const fullStore = storeByIdMap[String(s.id)];
+            const status = fullStore ? getAdminStoreDashboardBucket(fullStore) : 'closed';
+            const isOpen = fullStore ? customerFacingIsOpen(fullStore) : false;
+            const { isOpen: _dropOpen, ...rest } = s;
+            return { ...rest, status, isOpen };
+          }),
+      );
     }
 
     // Authenticated: active store orders + Arheb Box (non-terminal), same notion as customer orders list

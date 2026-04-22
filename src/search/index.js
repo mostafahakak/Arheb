@@ -1,7 +1,11 @@
 const fs = require('fs');
 const path = require('path');
 const { getJsonPath } = require('../config/jsonPaths');
-const { isStoreVisibleToCustomers, customerFacingIsOpen } = require('../utils/storeVisibility');
+const {
+  isStoreVisibleToCustomers,
+  customerFacingIsOpen,
+  sortStoresOpenFirst,
+} = require('../utils/storeVisibility');
 
 const storesResponsePath = getJsonPath('stores_listing_response.json');
 const productsResponsePath = getJsonPath('products_listing_response.json');
@@ -73,12 +77,14 @@ module.exports = function attachSearchRoutes(app) {
 
     const storeById = Object.fromEntries(stores.map((s) => [String(s.id), s]));
 
-    const matchedStores = stores
-      .filter((s) => storeEligibleForCustomerSearch(s) && matchesText(s, q, storeFields))
-      .map((s) => {
-        const { arhebFee, hiddenFromCustomers, isOpen: _rawOpen, ...rest } = s;
-        return { ...rest, isOpen: customerFacingIsOpen(s), status: computeStoreStatus(s) };
-      });
+    const matchedStores = sortStoresOpenFirst(
+      stores
+        .filter((s) => storeEligibleForCustomerSearch(s) && matchesText(s, q, storeFields))
+        .map((s) => {
+          const { arhebFee, hiddenFromCustomers, isOpen: _rawOpen, ...rest } = s;
+          return { ...rest, isOpen: customerFacingIsOpen(s), status: computeStoreStatus(s) };
+        }),
+    );
     const matchedProducts = products
       .filter(
         (p) =>

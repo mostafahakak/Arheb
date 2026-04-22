@@ -138,6 +138,34 @@ function getArhebBoxServiceFeeJod(db) {
   return 0.65;
 }
 
+/** App info: Pause e-invoice (JoFotara) submissions globally. Default: not paused. */
+function ensureContactUsEinvoicePausedColumn(db) {
+  if (!db) return;
+  try {
+    db.exec(`ALTER TABLE contact_us ADD COLUMN einvoicePaused INTEGER DEFAULT 0`);
+  } catch (e) {
+    /* exists */
+  }
+}
+
+/**
+ * @param {import('better-sqlite3').Database} db
+ * @returns {boolean}
+ */
+function isEinvoicePaused(db) {
+  const envRaw = String(process.env.JOFOTARA_PAUSED ?? '').trim().toLowerCase();
+  if (envRaw === '1' || envRaw === 'true' || envRaw === 'yes') return true;
+  if (!db) return false;
+  try {
+    ensureContactUsEinvoicePausedColumn(db);
+    const row = db.prepare('SELECT einvoicePaused FROM contact_us ORDER BY id DESC LIMIT 1').get();
+    if (row && (row.einvoicePaused === 1 || row.einvoicePaused === true)) return true;
+  } catch (e) {
+    /* no table */
+  }
+  return false;
+}
+
 /**
  * Default driver share of delivery fee (0–1) when `drivers.commissionPercent` is NULL:
  * use **App info** (`contact_us.driverDeliveryPercent`); if unset, fall back to global commission settings (percent mode) or 0.65.
@@ -383,6 +411,8 @@ module.exports = {
   ensureContactUsArhebBoxComingSoonColumn,
   ensureContactUsArhebBoxServiceFeeJodColumn,
   getArhebBoxServiceFeeJod,
+  ensureContactUsEinvoicePausedColumn,
+  isEinvoicePaused,
   getDriverDeliveryDefaultPercent,
   normalizeDriverCommissionPercent,
   parseDriverCommissionPercentForStorage,

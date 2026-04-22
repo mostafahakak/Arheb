@@ -229,16 +229,21 @@ function resolveStoreOrderServiceFeeJod(storeJson, platformDefaultServiceFeeJod)
 }
 
 /**
- * Checkout delivery: special far desert dropoffs → fixed platform fee (ignores store overrides);
- * else optional fixed `checkoutDeliveryFeeJod` from dashboard; else `checkoutDeliveryFeeZero` (with remote/uncapped exceptions);
- * else distance-based `computedFromDistanceJod`.
+ * Checkout delivery order of precedence (first match wins):
+ *   1. Special-far desert pins → fixed 10 JOD (never overridden).
+ *   2. Per-store cart threshold (`checkoutDeliveryOverCartThresholdJod` + `checkoutDeliveryFeeAboveJod`) — admin-set on the store.
+ *   3. Platform-wide cart threshold (`platformTiers.deliveryOverCartThresholdJod` + `deliveryFeeAboveJod`).
+ *   4. Per-store fixed fee (`checkoutDeliveryFeeJod`) from dashboard.
+ *   5. Per-store free delivery (`checkoutDeliveryFeeZero` — respected outside remote & uncapped zones).
+ *   6. Distance-based `computedFromDistanceJod` (already honors tiers / platform flatDeliveryFeeJod).
  *
  * @param {object | null} storeJson
  * @param {number} computedFromDistanceJod
  * @param {number} [deliveryLat] customer dropoff
  * @param {number} [deliveryLng]
+ * @param {{ cartAmountJod?: number | null, platformTiers?: { deliveryOverCartThresholdJod?: number | null, deliveryFeeAboveJod?: number | null } | null }} [options]
  */
-function resolveStoreOrderDeliveryFeeJod(storeJson, computedFromDistanceJod, deliveryLat, deliveryLng) {
+function resolveStoreOrderDeliveryFeeJod(storeJson, computedFromDistanceJod, deliveryLat, deliveryLng, options) {
   const specialFar = specialFarDeliveryZoneFixedFeeJod(deliveryLat, deliveryLng);
   if (specialFar != null) return specialFar;
 
@@ -246,6 +251,51 @@ function resolveStoreOrderDeliveryFeeJod(storeJson, computedFromDistanceJod, del
     computedFromDistanceJod != null && Number.isFinite(Number(computedFromDistanceJod))
       ? Number(computedFromDistanceJod)
       : 0;
+
+  const cartAmountJod =
+    options && options.cartAmountJod != null && Number.isFinite(Number(options.cartAmountJod))
+      ? Number(options.cartAmountJod)
+      : null;
+
+  if (storeJson) {
+    const storeThresholdRaw = storeJson.checkoutDeliveryOverCartThresholdJod;
+    const storeFeeAboveRaw = storeJson.checkoutDeliveryFeeAboveJod;
+    if (storeThresholdRaw != null && storeThresholdRaw !== '' && storeFeeAboveRaw != null && storeFeeAboveRaw !== '') {
+      const threshold = Number(storeThresholdRaw);
+      const feeAbove = Number(storeFeeAboveRaw);
+      if (
+        Number.isFinite(threshold) &&
+        threshold >= 0 &&
+        Number.isFinite(feeAbove) &&
+        feeAbove >= 0 &&
+        cartAmountJod != null &&
+        cartAmountJod + 1e-9 >= threshold
+      ) {
+        return round2(feeAbove);
+      }
+    }
+  }
+
+  const platformTiers = options && options.platformTiers ? options.platformTiers : null;
+  if (platformTiers) {
+    const platThresholdRaw = platformTiers.deliveryOverCartThresholdJod;
+    const platFeeAboveRaw = platformTiers.deliveryFeeAboveJod;
+    if (platThresholdRaw != null && platFeeAboveRaw != null) {
+      const threshold = Number(platThresholdRaw);
+      const feeAbove = Number(platFeeAboveRaw);
+      if (
+        Number.isFinite(threshold) &&
+        threshold >= 0 &&
+        Number.isFinite(feeAbove) &&
+        feeAbove >= 0 &&
+        cartAmountJod != null &&
+        cartAmountJod + 1e-9 >= threshold
+      ) {
+        return round2(feeAbove);
+      }
+    }
+  }
+
   if (!storeJson) return round2(Math.max(0, base));
   if (storeJson.checkoutDeliveryFeeJod != null && storeJson.checkoutDeliveryFeeJod !== '') {
     const v = Number(storeJson.checkoutDeliveryFeeJod);

@@ -9,7 +9,7 @@ const { getArhebBoxServiceFeeJod } = require('../utils/driverCommission');
 const { quoteFromPickupDropoff, minAmountJod, distanceKm: haversineKm } = require('./pricing');
 const { isArhebBoxOrdersPaused } = require('./pause');
 
-const FEES_TAX_RATE = 0.07;
+const FEES_TAX_RATE = 0;
 
 function round3(n) {
   return Math.round((Number(n) + Number.EPSILON) * 1000) / 1000;

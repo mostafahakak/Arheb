@@ -19,4 +19,22 @@ function promoAppliesToStore(promoRow, orderStoreId, extraStoreIds) {
   return restricted.includes(orderSid);
 }
 
-module.exports = { promoAppliesToStore };
+/**
+ * Optional cart amount floor on a promo (admin sets `minOrderAmount`).
+ * Cart amount = items subtotal before delivery/service fees (client sends `cartAmount`).
+ * @param {{ minOrderAmount?: number | null }} promoRow
+ * @param {number | null | undefined} cartAmount
+ * @returns {boolean} true when the promo is applicable (no minimum set, or cart meets/exceeds it).
+ */
+function promoMinAmountOk(promoRow, cartAmount) {
+  if (!promoRow) return false;
+  const min = promoRow.minOrderAmount;
+  if (min == null || String(min).trim() === '') return true;
+  const minNum = Number(min);
+  if (!Number.isFinite(minNum) || minNum <= 0) return true;
+  const cart = Number(cartAmount);
+  if (!Number.isFinite(cart)) return false;
+  return cart + 1e-9 >= minNum;
+}
+
+module.exports = { promoAppliesToStore, promoMinAmountOk };

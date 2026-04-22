@@ -47,6 +47,36 @@ function getAdminStoreDashboardBucket(store) {
   return 'closed';
 }
 
+const STORE_BUCKET_ORDER = { open: 0, paused: 1, closed: 2 };
+
+/**
+ * Sort key for listing: prefer `status` on already-mapped API rows (`open` | `paused` | `closed`),
+ * else compute from raw store JSON.
+ */
+function storeSortBucket(store) {
+  if (store && typeof store.status === 'string' && STORE_BUCKET_ORDER[store.status] !== undefined) {
+    return store.status;
+  }
+  return getAdminStoreDashboardBucket(store);
+}
+
+/** Comparator: open → paused → closed, then name (EN/name/id). */
+function compareStoresOpenFirstThenName(a, b) {
+  const ba = storeSortBucket(a);
+  const bb = storeSortBucket(b);
+  const oa = STORE_BUCKET_ORDER[ba] ?? 9;
+  const ob = STORE_BUCKET_ORDER[bb] ?? 9;
+  if (oa !== ob) return oa - ob;
+  const na = String(a.name ?? a.nameEn ?? a.id ?? '');
+  const nb = String(b.name ?? b.nameEn ?? b.id ?? '');
+  return na.localeCompare(nb, undefined, { sensitivity: 'base' });
+}
+
+/** Copy + sort stores for API responses (open first, then paused, then closed). */
+function sortStoresOpenFirst(stores) {
+  return [...(stores || [])].sort(compareStoresOpenFirstThenName);
+}
+
 /**
  * Customer API `isOpen`: false when blocked, paused, merchant closed (isOpen=false), or outside Jordan hours.
  * Aligns with {@link isStoreVisibleToCustomers} so apps can rely on a single flag.
@@ -81,4 +111,6 @@ module.exports = {
   getAdminStoreDashboardBucket,
   customerFacingIsOpen,
   loadStoresByIdMap,
+  compareStoresOpenFirstThenName,
+  sortStoresOpenFirst,
 };

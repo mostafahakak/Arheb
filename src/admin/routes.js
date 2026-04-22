@@ -31,6 +31,7 @@ const { sanitizeAddOnGroups } = require('../utils/productAddOns');
 const {
   isWithinOpeningHours,
   getAdminStoreDashboardBucket,
+  sortStoresOpenFirst,
 } = require('../utils/storeVisibility');
 const {
   enrichStoreOpeningHours,
@@ -51,6 +52,8 @@ const {
   ensureContactUsDriverDeliveryPercentColumn,
   ensureContactUsArhebBoxComingSoonColumn,
   ensureContactUsArhebBoxServiceFeeJodColumn,
+  ensureContactUsEinvoicePausedColumn,
+  isEinvoicePaused,
   getArhebBoxServiceFeeJod,
   writeArhebBoxDriverEarningsSnapshot,
   resolveArhebBoxDriverShare,
@@ -1134,6 +1137,22 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           stores[idx].checkoutDeliveryFeeJod = Number.isFinite(v) && v >= 0 ? v : 0;
         }
       }
+      if (body.checkoutDeliveryOverCartThresholdJod !== undefined) {
+        if (body.checkoutDeliveryOverCartThresholdJod === null || body.checkoutDeliveryOverCartThresholdJod === '') {
+          delete stores[idx].checkoutDeliveryOverCartThresholdJod;
+        } else {
+          const v = Number(body.checkoutDeliveryOverCartThresholdJod);
+          stores[idx].checkoutDeliveryOverCartThresholdJod = Number.isFinite(v) && v >= 0 ? v : 0;
+        }
+      }
+      if (body.checkoutDeliveryFeeAboveJod !== undefined) {
+        if (body.checkoutDeliveryFeeAboveJod === null || body.checkoutDeliveryFeeAboveJod === '') {
+          delete stores[idx].checkoutDeliveryFeeAboveJod;
+        } else {
+          const v = Number(body.checkoutDeliveryFeeAboveJod);
+          stores[idx].checkoutDeliveryFeeAboveJod = Number.isFinite(v) && v >= 0 ? v : 0;
+        }
+      }
     }
     const skipAllowed = new Set();
     if (body.openingHours !== undefined) {
@@ -1206,12 +1225,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       body.checkoutDeliveryFeeZero !== undefined ||
       body.checkoutServiceFeeDisabled !== undefined ||
       body.checkoutServiceFeeJod !== undefined ||
-      body.checkoutDeliveryFeeJod !== undefined;
+      body.checkoutDeliveryFeeJod !== undefined ||
+      body.checkoutDeliveryOverCartThresholdJod !== undefined ||
+      body.checkoutDeliveryFeeAboveJod !== undefined;
     if (!hasAny) {
       return res.status(400).json({
         success: false,
         message:
-          'No policy fields (resetCheckoutFeeOverrides or checkoutDeliveryFeeZero, checkoutDeliveryFeeJod, checkoutServiceFeeDisabled, checkoutServiceFeeJod)',
+          'No policy fields (resetCheckoutFeeOverrides or checkoutDeliveryFeeZero, checkoutDeliveryFeeJod, checkoutServiceFeeDisabled, checkoutServiceFeeJod, checkoutDeliveryOverCartThresholdJod, checkoutDeliveryFeeAboveJod)',
       });
     }
     let updatedCount = 0;
@@ -1223,6 +1244,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         stores[idx].checkoutServiceFeeDisabled = false;
         delete stores[idx].checkoutServiceFeeJod;
         delete stores[idx].checkoutDeliveryFeeJod;
+        delete stores[idx].checkoutDeliveryOverCartThresholdJod;
+        delete stores[idx].checkoutDeliveryFeeAboveJod;
       } else {
         if (body.checkoutDeliveryFeeZero !== undefined) {
           stores[idx].checkoutDeliveryFeeZero = Boolean(body.checkoutDeliveryFeeZero);
@@ -1244,6 +1267,22 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           } else {
             const v = Number(body.checkoutDeliveryFeeJod);
             stores[idx].checkoutDeliveryFeeJod = Number.isFinite(v) && v >= 0 ? v : 0;
+          }
+        }
+        if (body.checkoutDeliveryOverCartThresholdJod !== undefined) {
+          if (body.checkoutDeliveryOverCartThresholdJod === null || body.checkoutDeliveryOverCartThresholdJod === '') {
+            delete stores[idx].checkoutDeliveryOverCartThresholdJod;
+          } else {
+            const v = Number(body.checkoutDeliveryOverCartThresholdJod);
+            stores[idx].checkoutDeliveryOverCartThresholdJod = Number.isFinite(v) && v >= 0 ? v : 0;
+          }
+        }
+        if (body.checkoutDeliveryFeeAboveJod !== undefined) {
+          if (body.checkoutDeliveryFeeAboveJod === null || body.checkoutDeliveryFeeAboveJod === '') {
+            delete stores[idx].checkoutDeliveryFeeAboveJod;
+          } else {
+            const v = Number(body.checkoutDeliveryFeeAboveJod);
+            stores[idx].checkoutDeliveryFeeAboveJod = Number.isFinite(v) && v >= 0 ? v : 0;
           }
         }
       }
@@ -4240,7 +4279,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   // ——— Home banners / offers: link picker data (names → ids in dashboard) ———
   app.get('/api/admin/home/link-options', auth, requireAdminOrSuper, (req, res) => {
     try {
-      const stores = loadStores().map((s) => ({
+      const stores = sortStoresOpenFirst(loadStores()).map((s) => ({
         id: String(s.id),
         name: s.name ?? '',
         nameAr: s.nameAr ?? '',
@@ -4346,8 +4385,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       ensureContactUsDriverDeliveryPercentColumn(db);
       ensureContactUsArhebBoxComingSoonColumn(db);
       ensureContactUsArhebBoxServiceFeeJodColumn(db);
+      ensureContactUsEinvoicePausedColumn(db);
       const row = db
-        .prepare('SELECT email, phone, cliqNumber, driverDeliveryPercent, arhebBoxComingSoon, arhebBoxServiceFeeJod FROM contact_us ORDER BY id DESC LIMIT 1')
+        .prepare('SELECT email, phone, cliqNumber, driverDeliveryPercent, arhebBoxComingSoon, arhebBoxServiceFeeJod, einvoicePaused FROM contact_us ORDER BY id DESC LIMIT 1')
         .get();
       const fallbackPct = getDriverCommissionSettings(db);
       const defaultPct =
@@ -4366,6 +4406,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
               driverDeliveryDefaultEffective: effectiveDefault,
               arhebBoxComingSoon: false,
               arhebBoxServiceFeeJod: getArhebBoxServiceFeeJod(db),
+              einvoicePaused: isEinvoicePaused(db),
               arhebBox,
             },
           },
@@ -4387,13 +4428,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             driverDeliveryDefaultEffective: effectiveDefault,
             arhebBoxComingSoon: comingSoonDb,
             arhebBoxServiceFeeJod: getArhebBoxServiceFeeJod(db),
+            einvoicePaused: row.einvoicePaused === 1 || row.einvoicePaused === true || isEinvoicePaused(db),
             arhebBox,
           },
         },
       });
     } catch (e) {
       if (e.message && e.message.includes('no such table')) {
-        return res.status(200).json({ success: true, data: { info: { email: '', phone: '', cliqNumber: '', driverDeliveryPercent: null, arhebBoxServiceFeeJod: 0.65 } } });
+        return res.status(200).json({ success: true, data: { info: { email: '', phone: '', cliqNumber: '', driverDeliveryPercent: null, arhebBoxServiceFeeJod: 0.65, einvoicePaused: false } } });
       }
       console.error('Admin get info error:', e);
       return res.status(500).json({ success: false, message: 'Failed to load info' });
@@ -4420,6 +4462,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       }
       serviceFeeToStore = Math.round((v + Number.EPSILON) * 100) / 100;
     }
+    const einvoicePausedRaw = body.einvoicePaused;
+    let einvoicePausedToStore = null;
+    if (einvoicePausedRaw !== undefined) {
+      einvoicePausedToStore =
+        einvoicePausedRaw === true || einvoicePausedRaw === 1 || einvoicePausedRaw === '1' || String(einvoicePausedRaw).toLowerCase() === 'true'
+          ? 1
+          : 0;
+    }
     if (email !== undefined && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).json({ success: false, message: 'Invalid email format' });
     }
@@ -4427,6 +4477,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       ensureContactUsDriverDeliveryPercentColumn(db);
       ensureContactUsArhebBoxComingSoonColumn(db);
       ensureContactUsArhebBoxServiceFeeJodColumn(db);
+      ensureContactUsEinvoicePausedColumn(db);
       let driverPctToStore = null;
       if (driverDeliveryPercentRaw !== undefined) {
         try {
@@ -4441,7 +4492,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       const row = db.prepare('SELECT id, email, phone, cliqNumber FROM contact_us ORDER BY id DESC LIMIT 1').get();
       if (!row) {
         db.prepare(
-          'INSERT INTO contact_us (email, phone, cliqNumber, driverDeliveryPercent, arhebBoxComingSoon, arhebBoxServiceFeeJod) VALUES (?, ?, ?, ?, ?, ?)',
+          'INSERT INTO contact_us (email, phone, cliqNumber, driverDeliveryPercent, arhebBoxComingSoon, arhebBoxServiceFeeJod, einvoicePaused) VALUES (?, ?, ?, ?, ?, ?, ?)',
         ).run(
           email ?? 'contact@arheb.com',
           phone ?? '+201234567890',
@@ -4449,6 +4500,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           driverPctToStore,
           comingSoonToStore != null ? comingSoonToStore : 0,
           serviceFeeToStore !== undefined ? serviceFeeToStore : 0.65,
+          einvoicePausedToStore != null ? einvoicePausedToStore : 0,
         );
       } else {
         db.prepare(`
@@ -4459,6 +4511,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             driverDeliveryPercent = CASE WHEN ? = 1 THEN ? ELSE driverDeliveryPercent END,
             arhebBoxComingSoon = CASE WHEN ? = 1 THEN ? ELSE arhebBoxComingSoon END,
             arhebBoxServiceFeeJod = CASE WHEN ? = 1 THEN ? ELSE arhebBoxServiceFeeJod END,
+            einvoicePaused = CASE WHEN ? = 1 THEN ? ELSE einvoicePaused END,
             updatedAt = CURRENT_TIMESTAMP
           WHERE id = ?
         `).run(
@@ -4471,13 +4524,15 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           comingSoonToStore !== null ? comingSoonToStore : 0,
           serviceFeeToStore !== undefined ? 1 : 0,
           serviceFeeToStore !== undefined ? serviceFeeToStore : null,
+          einvoicePausedToStore !== null ? 1 : 0,
+          einvoicePausedToStore !== null ? einvoicePausedToStore : 0,
           row.id,
         );
       }
       const fallbackPct = getDriverCommissionSettings(db);
       const defaultPct = fallbackPct.type === 'percent' ? fallbackPct.value : 0.65;
       const updated = db
-        .prepare('SELECT email, phone, cliqNumber, driverDeliveryPercent, arhebBoxComingSoon, arhebBoxServiceFeeJod FROM contact_us ORDER BY id DESC LIMIT 1')
+        .prepare('SELECT email, phone, cliqNumber, driverDeliveryPercent, arhebBoxComingSoon, arhebBoxServiceFeeJod, einvoicePaused FROM contact_us ORDER BY id DESC LIMIT 1')
         .get();
       const driverDeliveryPercentAppInfo =
         updated.driverDeliveryPercent != null && String(updated.driverDeliveryPercent).trim() !== ''
@@ -4503,6 +4558,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             driverDeliveryDefaultEffective: getDriverDeliveryDefaultPercent(db),
             arhebBoxComingSoon: comingSoonDb,
             arhebBoxServiceFeeJod: getArhebBoxServiceFeeJod(db),
+            einvoicePaused: updated.einvoicePaused === 1 || updated.einvoicePaused === true || isEinvoicePaused(db),
             arhebBox: getArhebBoxPublicFlags(db),
           },
         },
@@ -4528,8 +4584,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           maxJod: tiers.maxJod,
           defaultServiceFeeJod: tiers.defaultServiceFeeJod,
           flatDeliveryFeeJod: tiers.flatDeliveryFeeJod,
+          deliveryOverCartThresholdJod: tiers.deliveryOverCartThresholdJod,
+          deliveryFeeAboveJod: tiers.deliveryFeeAboveJod,
           note:
-            'SuperAdmin: tiers or optional flatDeliveryFeeJod (e.g. 1 = 1 JOD delivery everywhere except special-far, uncapped, remote pins). Per-store overrides: checkoutDeliveryFeeZero, checkoutDeliveryFeeJod, checkoutServiceFeeDisabled, checkoutServiceFeeJod.',
+            'SuperAdmin: tiers, optional flatDeliveryFeeJod (e.g. 1 = 1 JOD delivery everywhere except special-far, uncapped, remote pins), and optional deliveryOverCartThresholdJod + deliveryFeeAboveJod (when cart total >= threshold, charge feeAbove). Per-store overrides: checkoutDeliveryFeeZero, checkoutDeliveryFeeJod, checkoutServiceFeeDisabled, checkoutServiceFeeJod, checkoutDeliveryOverCartThresholdJod, checkoutDeliveryFeeAboveJod.',
         },
       });
     } catch (e) {
@@ -4549,6 +4607,12 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       };
       if (Object.prototype.hasOwnProperty.call(body, 'flatDeliveryFeeJod')) {
         patch.flatDeliveryFeeJod = body.flatDeliveryFeeJod;
+      }
+      if (Object.prototype.hasOwnProperty.call(body, 'deliveryOverCartThresholdJod')) {
+        patch.deliveryOverCartThresholdJod = body.deliveryOverCartThresholdJod;
+      }
+      if (Object.prototype.hasOwnProperty.call(body, 'deliveryFeeAboveJod')) {
+        patch.deliveryFeeAboveJod = body.deliveryFeeAboveJod;
       }
       const tiers = setPlatformCheckoutFeeTiers(db, patch);
       logActivity(db, req, {
@@ -4579,6 +4643,11 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   `);
   try {
     db.exec(`ALTER TABLE promo_codes ADD COLUMN storeId TEXT`);
+  } catch (e) {
+    /* exists */
+  }
+  try {
+    db.exec(`ALTER TABLE promo_codes ADD COLUMN minOrderAmount REAL`);
   } catch (e) {
     /* exists */
   }
@@ -4627,13 +4696,21 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   app.post('/api/admin/promo-codes', auth, requireAdminOrSuper, (req, res) => {
-    const { name, value, storeId, storeIds } = req.body || {};
+    const { name, value, storeId, storeIds, minOrderAmount } = req.body || {};
     if (!name || typeof name !== 'string' || !name.trim()) {
       return res.status(400).json({ success: false, message: 'name is required' });
     }
     const numValue = typeof value === 'number' ? value : parseFloat(value);
     if (isNaN(numValue) || numValue < 0) {
       return res.status(400).json({ success: false, message: 'value must be a non-negative number' });
+    }
+    let minOrderAmountVal = null;
+    if (minOrderAmount !== undefined && minOrderAmount !== null && String(minOrderAmount).trim() !== '') {
+      const n = Number(minOrderAmount);
+      if (!Number.isFinite(n) || n < 0) {
+        return res.status(400).json({ success: false, message: 'minOrderAmount must be a non-negative number' });
+      }
+      minOrderAmountVal = n;
     }
     let storeIdVal = null;
     const multiIds = Array.isArray(storeIds) ? storeIds.map((x) => String(x).trim()).filter(Boolean) : [];
@@ -4643,10 +4720,11 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       storeIdVal = String(storeId).trim();
     }
     try {
-      db.prepare('INSERT INTO promo_codes (name, value, storeId) VALUES (?, ?, ?)').run(
+      db.prepare('INSERT INTO promo_codes (name, value, storeId, minOrderAmount) VALUES (?, ?, ?, ?)').run(
         name.trim(),
         numValue,
         storeIdVal,
+        minOrderAmountVal,
       );
       const created = findPromoCodeByName.get(name.trim());
       if (multiIds.length > 0) {
@@ -4669,6 +4747,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           value: refreshed.value,
           storeId: refreshed.storeId != null ? refreshed.storeId : null,
           storeIds: readPromoStoreIds(refreshed.id),
+          minOrderAmount: refreshed.minOrderAmount != null ? Number(refreshed.minOrderAmount) : null,
           createdAt: refreshed.createdAt,
         },
       });
@@ -4685,7 +4764,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
     const target = findPromoCodeById.get(id);
     if (!target) return res.status(404).json({ success: false, message: 'Promo code not found' });
-    const { name, value, storeId, storeIds } = req.body || {};
+    const { name, value, storeId, storeIds, minOrderAmount } = req.body || {};
     const updates = [];
     const values = [];
     if (name !== undefined) {
@@ -4702,6 +4781,19 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       }
       updates.push('value = ?');
       values.push(numValue);
+    }
+    if (minOrderAmount !== undefined) {
+      if (minOrderAmount === null || String(minOrderAmount).trim() === '') {
+        updates.push('minOrderAmount = ?');
+        values.push(null);
+      } else {
+        const n = Number(minOrderAmount);
+        if (!Number.isFinite(n) || n < 0) {
+          return res.status(400).json({ success: false, message: 'minOrderAmount must be a non-negative number or null' });
+        }
+        updates.push('minOrderAmount = ?');
+        values.push(n);
+      }
     }
     if (updates.length > 0) {
       values.push(id);
@@ -4746,6 +4838,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         value: updated.value,
         storeId: updated.storeId != null ? updated.storeId : null,
         storeIds: readPromoStoreIds(updated.id),
+        minOrderAmount: updated.minOrderAmount != null ? Number(updated.minOrderAmount) : null,
         createdAt: updated.createdAt,
       },
     });

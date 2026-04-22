@@ -5,6 +5,8 @@ const {
   isStoreVisibleToCustomers,
   isStoreListedForCustomerBrowse,
   customerFacingIsOpen,
+  compareStoresOpenFirstThenName,
+  sortStoresOpenFirst,
 } = require('../utils/storeVisibility');
 const { enrichOpeningHoursObject } = require('../utils/openingHoursJordan');
 const { upsertStoreFcmToken } = require('../storeFcm');
@@ -219,18 +221,6 @@ function filterStoresForCustomerBrowse(stores) {
   return (stores || []).filter((s) => isStoreListedForCustomerBrowse(s));
 }
 
-function sortPublicStoresByStatus(stores) {
-  const rank = { open: 0, paused: 1, closed: 2 };
-  return [...stores].sort((a, b) => {
-    const ra = rank[a.status] ?? 9;
-    const rb = rank[b.status] ?? 9;
-    if (ra !== rb) return ra - rb;
-    const na = String(a.name ?? a.nameEn ?? a.id ?? '');
-    const nb = String(b.name ?? b.nameEn ?? b.id ?? '');
-    return na.localeCompare(nb, undefined, { sensitivity: 'base' });
-  });
-}
-
 module.exports = function attachStoresRoutes(app, db) {
   seedStoresTable(db, storesListForSeed);
   if (storesListForSeed.length === 0) {
@@ -241,7 +231,7 @@ module.exports = function attachStoresRoutes(app, db) {
     const storesResponse = loadStoresResponse();
     // When file is missing (e.g. deploy), return empty list so test client / app do not get 500
     const raw = storesResponse?.data?.stores ?? [];
-    const stores = sortPublicStoresByStatus(filterStoresForCustomerBrowse(raw).map(toPublicStore));
+    const stores = sortStoresOpenFirst(filterStoresForCustomerBrowse(raw).map(toPublicStore));
     return res.status(200).json({
       success: true,
       message: 'Stores listing retrieved successfully',
@@ -252,11 +242,15 @@ module.exports = function attachStoresRoutes(app, db) {
 
   app.get('/api/stores/top-rated', (req, res) => {
     const storesResponse = loadStoresResponse();
-    const storesList = filterStoresForCustomerBrowse(storesResponse?.data?.stores ?? []).map(toPublicStore);
+    const storesList = sortStoresOpenFirst(
+      filterStoresForCustomerBrowse(storesResponse?.data?.stores ?? []).map(toPublicStore),
+    );
     const limit = req.query.limit ? parseInt(req.query.limit) : null;
     const topRatedStores = storesList
       .filter(store => store.rate != null && typeof store.rate === 'number')
       .sort((a, b) => {
+        const byStatus = compareStoresOpenFirstThenName(a, b);
+        if (byStatus !== 0) return byStatus;
         if (b.rate !== a.rate) return b.rate - a.rate;
         return (b.numberOfReviews || 0) - (a.numberOfReviews || 0);
       })
@@ -274,14 +268,18 @@ module.exports = function attachStoresRoutes(app, db) {
   });
 
   function exclusiveStoresPayload(storesResponse, limit) {
-    const storesList = filterStoresForCustomerBrowse(storesResponse?.data?.stores ?? []).map(toPublicStore);
+    const storesList = sortStoresOpenFirst(
+      filterStoresForCustomerBrowse(storesResponse?.data?.stores ?? []).map(toPublicStore),
+    );
     const exclusive = storesList.filter((store) => store.isExclusive === true);
     const result = limit ? exclusive.slice(0, limit) : exclusive;
     return { stores: result, count: result.length, limit: limit || 'all' };
   }
 
   function premiumStoresPayload(storesResponse, limit) {
-    const storesList = filterStoresForCustomerBrowse(storesResponse?.data?.stores ?? []).map(toPublicStore);
+    const storesList = sortStoresOpenFirst(
+      filterStoresForCustomerBrowse(storesResponse?.data?.stores ?? []).map(toPublicStore),
+    );
     const premium = storesList.filter((store) => store.isPremium === true);
     const result = limit ? premium.slice(0, limit) : premium;
     return { stores: result, count: result.length, limit: limit || 'all' };
@@ -319,7 +317,9 @@ module.exports = function attachStoresRoutes(app, db) {
       return res.status(400).json({ success: false, message: 'Category name is required' });
     }
     const storesResponse = loadStoresResponse();
-    const storesList = filterStoresForCustomerBrowse(storesResponse?.data?.stores ?? []).map(toPublicStore);
+    const storesList = sortStoresOpenFirst(
+      filterStoresForCustomerBrowse(storesResponse?.data?.stores ?? []).map(toPublicStore),
+    );
     const categoryNameLower = categoryName.toLowerCase().trim();
     const matches = (val) => {
       if (val == null) return false;

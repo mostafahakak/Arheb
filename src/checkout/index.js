@@ -11,7 +11,7 @@ const {
 const { getPlatformCheckoutFeeTiers, ensurePlatformCheckoutFeesTable } = require('../utils/platformCheckoutFees');
 const { mapOrderItemsRows } = require('../utils/orderItemApi');
 const { enrichWithJordanTime, nowOrderCreatedAtForDb } = require('../utils/jordanTime');
-const { promoAppliesToStore } = require('../utils/promoCode');
+const { promoAppliesToStore, promoMinAmountOk } = require('../utils/promoCode');
 const { validateSelectedAddOnsAgainstProduct } = require('../utils/productAddOns');
 const { sendToStore } = require('../fcm');
 const { canonicalStoreId } = require('../storeFcm');
@@ -20,7 +20,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   const { getJsonPath } = require('../config/jsonPaths');
   ensurePlatformCheckoutFeesTable(db);
   const SERVICE_FEE_JOD = STORE_ORDER_SERVICE_FEE_JOD;
-  const FEES_TAX_RATE = 0.07;
+  const FEES_TAX_RATE = 0;
 
   function round3(n) {
     return Math.round((Number(n) + Number.EPSILON) * 1000) / 1000;
@@ -128,6 +128,11 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   `);
   try {
     db.exec(`ALTER TABLE promo_codes ADD COLUMN storeId TEXT`);
+  } catch (e) {
+    /* exists */
+  }
+  try {
+    db.exec(`ALTER TABLE promo_codes ADD COLUMN minOrderAmount REAL`);
   } catch (e) {
     /* exists */
   }
@@ -401,6 +406,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       paymentVerificationImage,
       fcmToken,
       weightKg,
+      cartAmount,
     } = body || {};
 
     if (!items || !Array.isArray(items) || items.length === 0) {
@@ -475,6 +481,15 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
     let finalDiscount = discount || 0;
     let finalPromoCode = null;
 
+    /** Prefer explicit cartAmount from client (items subtotal); else fall back to totalAmount for legacy clients. */
+    const effectiveCartAmountForPromo = (() => {
+      const c = Number(cartAmount);
+      if (Number.isFinite(c) && c >= 0) return c;
+      const t = Number(totalAmount);
+      if (Number.isFinite(t) && t >= 0) return t;
+      return null;
+    })();
+
     if (promoCode) {
       const promoCodeRecord = findPromoCodeByName.get(promoCode.trim());
       if (!promoCodeRecord) {
@@ -482,6 +497,13 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       }
       if (!promoAppliesToStore(promoCodeRecord, finalStoreId, promoExtraStoreIdsForRow(promoCodeRecord))) {
         return { ok: false, statusCode: 400, message: 'promo code not available for this store' };
+      }
+      if (!promoMinAmountOk(promoCodeRecord, effectiveCartAmountForPromo)) {
+        return {
+          ok: false,
+          statusCode: 400,
+          message: `promo code requires cart amount >= ${promoCodeRecord.minOrderAmount} JOD`,
+        };
       }
       finalDiscount = promoCodeRecord.value;
       finalPromoCode = promoCodeRecord.name;
@@ -580,6 +602,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       computedDeliveryFee,
       addressLat,
       addressLong,
+      { cartAmountJod: effectiveCartAmountForPromo, platformTiers },
     );
     const computedServiceFee = resolveStoreOrderServiceFeeJod(storeJsonForFees, platformTiers.defaultServiceFeeJod);
     const computedFeesTax = calcFeesTaxJod(computedDeliveryFee, computedServiceFee);
@@ -715,7 +738,11 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
    */
   app.post('/api/checkout/quote-fees', authenticateRequest, (req, res) => {
     try {
-      const { storeId, deliveryLocation, weightKg } = req.body || {};
+      const { storeId, deliveryLocation, weightKg, cartAmount } = req.body || {};
+      const cartAmountNum = (() => {
+        const c = Number(cartAmount);
+        return Number.isFinite(c) && c >= 0 ? c : null;
+      })();
       if (storeId === undefined || storeId === null || String(storeId).trim() === '') {
         return res.status(400).json({ success: false, message: 'storeId is required' });
       }
@@ -759,6 +786,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         distanceFee,
         deliveryLocation.latitude,
         deliveryLocation.longitude,
+        { cartAmountJod: cartAmountNum, platformTiers },
       );
       const serviceFee = resolveStoreOrderServiceFeeJod(store, platformTiers.defaultServiceFeeJod);
       const invoice = buildInvoice(deliveryFee, serviceFee);
@@ -776,20 +804,41 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
           serviceFee: invoice.serviceFee,
           feesTaxRate: FEES_TAX_RATE,
           feesTax: invoice.feesTax,
-          feesTaxNote: '7% tax on delivery fee plus service fee (not on order subtotal).',
+          feesTaxNote: FEES_TAX_RATE > 0
+            ? `${Math.round(FEES_TAX_RATE * 100)}% tax on delivery fee plus service fee (not on order subtotal).`
+            : 'Tax on delivery/service fees is currently disabled.',
           invoiceTotal: invoice.total,
           pricingNote: (() => {
+            const parts = [];
             const flat = platformTiers.flatDeliveryFeeJod;
             if (flat != null) {
-              return (
-                `Platform fixed delivery ${flat} JOD for normal areas; special-far, uncapped, and remote zones use other rules. ` +
-                'Per-store checkoutDeliveryFeeJod overrides when set. Weight does not change delivery fee.'
+              parts.push(
+                `Platform fixed delivery ${flat} JOD for normal areas; special-far, uncapped, and remote zones use other rules.`,
+              );
+            } else {
+              parts.push(
+                `Store delivery fee: first km + per-km up to max (platform tiers; currently max ${platformTiers.maxJod} JOD).`,
               );
             }
-            return (
-              `Store delivery fee: first km + per-km up to max (platform tiers; currently max ${platformTiers.maxJod} JOD). ` +
-              'Weight does not change delivery fee.'
-            );
+            if (
+              platformTiers.deliveryOverCartThresholdJod != null &&
+              platformTiers.deliveryFeeAboveJod != null
+            ) {
+              parts.push(
+                `When cart >= ${platformTiers.deliveryOverCartThresholdJod} JOD, delivery is ${platformTiers.deliveryFeeAboveJod} JOD (all stores).`,
+              );
+            }
+            if (
+              store &&
+              store.checkoutDeliveryOverCartThresholdJod != null &&
+              store.checkoutDeliveryFeeAboveJod != null
+            ) {
+              parts.push(
+                `Store override: cart >= ${store.checkoutDeliveryOverCartThresholdJod} JOD → ${store.checkoutDeliveryFeeAboveJod} JOD delivery.`,
+              );
+            }
+            parts.push('Per-store checkoutDeliveryFeeJod overrides when set. Weight does not change delivery fee.');
+            return parts.join(' ');
           })(),
         },
         timestamp: new Date().toISOString(),
@@ -1136,7 +1185,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
     }
   });
 
-  // Validate/Check promo code (optional query: storeId — must match when code is store-specific)
+  // Validate/Check promo code (optional query: storeId — must match when code is store-specific; cartAmount — enforced if promo has minOrderAmount)
   app.get('/api/promo-codes/:code', (req, res) => {
     try {
       const code = req.params.code;
@@ -1144,6 +1193,11 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         req.query.storeId != null && String(req.query.storeId).trim() !== ''
           ? String(req.query.storeId).trim()
           : null;
+      const cartAmountRaw =
+        req.query.cartAmount != null && String(req.query.cartAmount).trim() !== ''
+          ? Number(req.query.cartAmount)
+          : null;
+      const cartAmountQ = Number.isFinite(cartAmountRaw) ? cartAmountRaw : null;
 
       if (!code || code.trim() === '') {
         return res.status(400).json({
@@ -1168,6 +1222,13 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
           message: 'promo code not available for this store'
         });
       }
+      if (promoCodeRecord.minOrderAmount != null && !promoMinAmountOk(promoCodeRecord, cartAmountQ)) {
+        return res.status(400).json({
+          success: false,
+          message: `promo code requires cart amount >= ${promoCodeRecord.minOrderAmount} JOD`,
+          data: { minOrderAmount: Number(promoCodeRecord.minOrderAmount) },
+        });
+      }
 
       const restrictedList =
         promoStoreIds && promoStoreIds.length
@@ -1179,6 +1240,10 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         value: promoCodeRecord.value,
         name: promoCodeRecord.name,
         appliesToAllStores: restrictedList.length === 0,
+        minOrderAmount:
+          promoCodeRecord.minOrderAmount != null && String(promoCodeRecord.minOrderAmount).trim() !== ''
+            ? Number(promoCodeRecord.minOrderAmount)
+            : null,
       };
       if (restrictedList.length === 1) {
         data.storeId = restrictedList[0];

@@ -24,6 +24,7 @@
 const crypto = require('crypto');
 const axios = require('axios');
 const { JORDAN_IANA_TIMEZONE } = require('./utils/jordanTime');
+const { isEinvoicePaused } = require('./utils/driverCommission');
 
 const JOFOTARA_API_URL = 'https://backend.jofotara.gov.jo/core/invoices/';
 const DEFAULT_VAT_PERCENT = 7;
@@ -290,6 +291,14 @@ function buildInvoiceXml(order, invoiceUUID, options = {}) {
  * @returns {{ ok: boolean, qr?: string, error?: string, uuid: string }}
  */
 async function submitJofotaraInvoice(db, orderId) {
+  if (isEinvoicePaused(db)) {
+    const msg = 'E-invoice submissions are paused';
+    console.warn(`[jofotara] ${msg} — skipping order ${orderId}`);
+    try {
+      db.prepare(`UPDATE orders SET einvoiceStatus = 'paused', einvoiceError = ? WHERE id = ?`).run(msg, orderId);
+    } catch (e) { /* ignore */ }
+    return { ok: false, error: msg, uuid: '' };
+  }
   const CLIENT_ID = process.env.JOFOTARA_CLIENT_ID || '';
   const SECRET_KEY = process.env.JOFOTARA_SECRET_KEY || '';
 
@@ -386,6 +395,14 @@ async function submitJofotaraInvoice(db, orderId) {
  * Submit e-invoice for delivered Arheb Box request.
  */
 async function submitJofotaraInvoiceForArhebBox(db, requestId) {
+  if (isEinvoicePaused(db)) {
+    const msg = 'E-invoice submissions are paused';
+    console.warn(`[jofotara] ${msg} — skipping Arheb Box request ${requestId}`);
+    try {
+      db.prepare(`UPDATE arheb_box_requests SET einvoiceStatus = 'paused', einvoiceError = ? WHERE id = ?`).run(msg, requestId);
+    } catch (e) { /* ignore */ }
+    return { ok: false, error: msg, uuid: '' };
+  }
   const CLIENT_ID = process.env.JOFOTARA_CLIENT_ID || '';
   const SECRET_KEY = process.env.JOFOTARA_SECRET_KEY || '';
 
