@@ -4516,6 +4516,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     const arhebBoxFeeRaw = body.arhebBoxServiceFeeJod;
     let serviceFeeToStore = undefined;
     if (arhebBoxFeeRaw !== undefined) {
+      if (req.admin.role !== ROLES.SUPERADMIN) {
+        return res.status(403).json({ success: false, message: 'Only SuperAdmin can update Arheb Box service fee' });
+      }
       const v = Number(arhebBoxFeeRaw);
       if (!Number.isFinite(v) || v < 0) {
         return res.status(400).json({ success: false, message: 'arhebBoxServiceFeeJod must be a non-negative number' });

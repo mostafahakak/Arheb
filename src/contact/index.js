@@ -7,6 +7,7 @@ const {
   getContactAppVersions,
 } = require('../utils/driverCommission');
 const { getArhebBoxPublicFlags } = require('../arhebBox/flags');
+const { getPlatformCheckoutFeeTiers } = require('../utils/platformCheckoutFees');
 
 module.exports = function attachContactRoutes(app, db, authenticateRequest) {
   // Create contact_us table
@@ -88,6 +89,7 @@ module.exports = function attachContactRoutes(app, db, authenticateRequest) {
           ? normalizeDriverCommissionPercent(Number(contact.driverDeliveryPercent), defaultPct)
           : null;
 
+      const platformTiers = getPlatformCheckoutFeeTiers(db);
       return res.status(200).json({
         success: true,
         message: 'Contact information retrieved successfully',
@@ -101,6 +103,10 @@ module.exports = function attachContactRoutes(app, db, authenticateRequest) {
             arhebBoxServiceFeeJod: getArhebBoxServiceFeeJod(db),
           },
           arhebBox: getArhebBoxPublicFlags(db),
+          platformServiceFees: {
+            storeOrderDefaultServiceFeeJod: platformTiers.defaultServiceFeeJod,
+            arhebBoxServiceFeeJod: getArhebBoxServiceFeeJod(db),
+          },
         },
         timestamp: new Date().toISOString()
       });

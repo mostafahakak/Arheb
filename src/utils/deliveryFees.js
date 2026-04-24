@@ -14,8 +14,8 @@
  * when dropoff is within REMOTE_DELIVERY_ZONE_RADIUS_KM of those centers.
  * Evaluated only outside special far zones.
  *
- * Service fee: applies to store orders only (added to taxable base with delivery).
- * Arheb Box: no platform service fee at customer checkout; delivery fee formula only for minAmount / quotes.
+ * Service fee: store orders use platform default (and per-store overrides) via `resolveStoreOrderServiceFeeJod`.
+ * Arheb Box: platform service fee from App info (`arhebBoxServiceFeeJod`, latest `contact_us` row); delivery fee formula separate.
  */
 
 function round2(n) {

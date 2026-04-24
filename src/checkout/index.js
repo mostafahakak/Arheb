@@ -23,8 +23,15 @@ const {
 module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   const { getJsonPath } = require('../config/jsonPaths');
   ensurePlatformCheckoutFeesTable(db);
-  const SERVICE_FEE_JOD = STORE_ORDER_SERVICE_FEE_JOD;
   const FEES_TAX_RATE = 0;
+
+  function fallbackStoreOrderServiceFeeJod() {
+    try {
+      return getPlatformCheckoutFeeTiers(db).defaultServiceFeeJod;
+    } catch (e) {
+      return STORE_ORDER_SERVICE_FEE_JOD;
+    }
+  }
 
   function round3(n) {
     return Math.round((Number(n) + Number.EPSILON) * 1000) / 1000;
@@ -327,7 +334,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       addressLat: orderData.addressLat || null,
       discount: orderData.discount || 0,
       deliveryFee: orderData.deliveryFee || 0,
-      serviceFee: orderData.serviceFee != null ? orderData.serviceFee : SERVICE_FEE_JOD,
+      serviceFee: orderData.serviceFee != null ? orderData.serviceFee : fallbackStoreOrderServiceFeeJod(),
       feesTax: orderData.feesTax || 0,
       weightKg: orderData.weightKg || 0,
       totalAmount: orderData.totalAmount,
@@ -708,15 +715,19 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
           addressLat: order.addressLat,
           discount: order.discount,
           deliveryFee: order.deliveryFee,
-          serviceFee: order.serviceFee != null ? order.serviceFee : SERVICE_FEE_JOD,
+          serviceFee: order.serviceFee != null ? order.serviceFee : fallbackStoreOrderServiceFeeJod(),
           feesTax:
             order.feesTax != null
               ? order.feesTax
-              : calcFeesTaxJod(order.deliveryFee, order.serviceFee ?? SERVICE_FEE_JOD),
+              : calcFeesTaxJod(order.deliveryFee, order.serviceFee ?? fallbackStoreOrderServiceFeeJod()),
           weightKg: order.weightKg != null ? order.weightKg : round3(weightKgNum),
           totalAmount: order.totalAmount,
-          orderSummary: buildOrderSummary(order.totalAmount, order.deliveryFee, order.serviceFee ?? SERVICE_FEE_JOD),
-          invoice: buildInvoice(order.deliveryFee, order.serviceFee ?? SERVICE_FEE_JOD),
+          orderSummary: buildOrderSummary(
+            order.totalAmount,
+            order.deliveryFee,
+            order.serviceFee ?? fallbackStoreOrderServiceFeeJod(),
+          ),
+          invoice: buildInvoice(order.deliveryFee, order.serviceFee ?? fallbackStoreOrderServiceFeeJod()),
           status: order.status,
           paymentType: order.paymentType,
           promoCode: order.promoCode || null,
@@ -901,7 +912,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       // All orders for this user, including every status (Waiting confirmation, Preparing, On the way, Delivered, Cancelled, etc.)
       const ordersWithItems = orders.map(order => {
         const items = findOrderItems.all(order.id);
-        const serviceFee = order.serviceFee != null ? Number(order.serviceFee) : SERVICE_FEE_JOD;
+        const serviceFee = order.serviceFee != null ? Number(order.serviceFee) : fallbackStoreOrderServiceFeeJod();
         const feesTax =
           order.feesTax != null ? Number(order.feesTax) : calcFeesTaxJod(order.deliveryFee, serviceFee);
         return enrichWithJordanTime(
@@ -1019,7 +1030,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       // Fetch order items
       const findOrderItems = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
       const items = findOrderItems.all(orderId);
-      const serviceFee = order.serviceFee != null ? Number(order.serviceFee) : SERVICE_FEE_JOD;
+      const serviceFee = order.serviceFee != null ? Number(order.serviceFee) : fallbackStoreOrderServiceFeeJod();
       const feesTax =
         order.feesTax != null
           ? Number(order.feesTax)
@@ -1149,7 +1160,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       // Fetch order items
       const findOrderItems = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
       const items = findOrderItems.all(orderId);
-      const serviceFee = updatedOrder.serviceFee != null ? Number(updatedOrder.serviceFee) : SERVICE_FEE_JOD;
+      const serviceFee = updatedOrder.serviceFee != null ? Number(updatedOrder.serviceFee) : fallbackStoreOrderServiceFeeJod();
       const feesTax =
         updatedOrder.feesTax != null
           ? Number(updatedOrder.feesTax)

@@ -104,7 +104,7 @@ function ensureContactUsArhebBoxComingSoonColumn(db) {
   }
 }
 
-/** App info: legacy column `arhebBoxServiceFeeJod` (GET/PATCH /api/admin/info). Pricing uses {@link getArhebBoxServiceFeeJod} which is always 0. */
+/** App info: platform Arheb Box service fee (JOD); {@link getArhebBoxServiceFeeJod} reads latest App info row. */
 function ensureContactUsArhebBoxServiceFeeJodColumn(db) {
   if (!db) return;
   try {
@@ -117,15 +117,6 @@ function ensureContactUsArhebBoxServiceFeeJodColumn(db) {
   } catch (e) {
     /* ignore */
   }
-}
-
-/**
- * Arheb Box parcel checkout: no platform service fee (aligned with store order checkout policy).
- * @param {import('better-sqlite3').Database} [_db]
- * @returns {number}
- */
-function getArhebBoxServiceFeeJod(_db) {
-  return 0;
 }
 
 /** App info: Pause e-invoice (JoFotara) submissions globally. Default: not paused. */
@@ -164,6 +155,27 @@ function selectContactUsLatestRow(db) {
       .get();
   } catch (e) {
     return undefined;
+  }
+}
+
+/**
+ * Arheb Box parcel checkout: service fee (JOD) from App info (`contact_us.arhebBoxServiceFeeJod`, latest row).
+ * @param {import('better-sqlite3').Database} db
+ * @returns {number}
+ */
+function getArhebBoxServiceFeeJod(db) {
+  if (!db) return 0;
+  try {
+    ensureContactUsArhebBoxServiceFeeJodColumn(db);
+    const row = selectContactUsLatestRow(db);
+    if (!row) return 0;
+    const raw = row.arhebBoxServiceFeeJod;
+    if (raw == null || String(raw).trim() === '') return 0;
+    const v = Number(raw);
+    if (!Number.isFinite(v) || v < 0) return 0;
+    return round2(v);
+  } catch (e) {
+    return 0;
   }
 }
 
