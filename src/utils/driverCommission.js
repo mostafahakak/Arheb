@@ -104,7 +104,7 @@ function ensureContactUsArhebBoxComingSoonColumn(db) {
   }
 }
 
-/** App info: Arheb Box platform service fee (JOD), GET/PATCH /api/admin/info. Default 0.65. */
+/** App info: legacy column `arhebBoxServiceFeeJod` (GET/PATCH /api/admin/info). Pricing uses {@link getArhebBoxServiceFeeJod} which is always 0. */
 function ensureContactUsArhebBoxServiceFeeJodColumn(db) {
   if (!db) return;
   try {
@@ -113,29 +113,19 @@ function ensureContactUsArhebBoxServiceFeeJodColumn(db) {
     /* exists */
   }
   try {
-    db.prepare(`UPDATE contact_us SET arhebBoxServiceFeeJod = ? WHERE arhebBoxServiceFeeJod IS NULL`).run(0.65);
+    db.prepare(`UPDATE contact_us SET arhebBoxServiceFeeJod = ? WHERE arhebBoxServiceFeeJod IS NULL`).run(0);
   } catch (e) {
     /* ignore */
   }
 }
 
 /**
- * @param {import('better-sqlite3').Database} db
+ * Arheb Box parcel checkout: no platform service fee (aligned with store order checkout policy).
+ * @param {import('better-sqlite3').Database} [_db]
  * @returns {number}
  */
-function getArhebBoxServiceFeeJod(db) {
-  if (!db) return 0.65;
-  ensureContactUsArhebBoxServiceFeeJodColumn(db);
-  try {
-    const row = db.prepare('SELECT arhebBoxServiceFeeJod FROM contact_us ORDER BY id DESC LIMIT 1').get();
-    if (row && row.arhebBoxServiceFeeJod != null && String(row.arhebBoxServiceFeeJod).trim() !== '') {
-      const v = Number(row.arhebBoxServiceFeeJod);
-      if (Number.isFinite(v) && v >= 0) return round2(v);
-    }
-  } catch (e) {
-    /* no table */
-  }
-  return 0.65;
+function getArhebBoxServiceFeeJod(_db) {
+  return 0;
 }
 
 /** App info: Pause e-invoice (JoFotara) submissions globally. Default: not paused. */
@@ -145,6 +135,45 @@ function ensureContactUsEinvoicePausedColumn(db) {
     db.exec(`ALTER TABLE contact_us ADD COLUMN einvoicePaused INTEGER DEFAULT 0`);
   } catch (e) {
     /* exists */
+  }
+}
+
+/** Minimum app versions for user apps (GET /api/app_version; set via PATCH /api/admin/info). */
+function ensureContactUsAppVersionColumns(db) {
+  if (!db) return;
+  try {
+    db.exec(`ALTER TABLE contact_us ADD COLUMN appVersionAndroid TEXT`);
+  } catch (e) {
+    /* exists */
+  }
+  try {
+    db.exec(`ALTER TABLE contact_us ADD COLUMN appVersionIos TEXT`);
+  } catch (e) {
+    /* exists */
+  }
+}
+
+/**
+ * @param {import('better-sqlite3').Database} db
+ * @returns {{ android: string, ios: string }}
+ */
+function getContactAppVersions(db) {
+  ensureContactUsAppVersionColumns(db);
+  try {
+    const row = db
+      .prepare('SELECT appVersionAndroid, appVersionIos FROM contact_us ORDER BY id DESC LIMIT 1')
+      .get();
+    const android =
+      row && row.appVersionAndroid != null && String(row.appVersionAndroid).trim() !== ''
+        ? String(row.appVersionAndroid).trim()
+        : '';
+    const ios =
+      row && row.appVersionIos != null && String(row.appVersionIos).trim() !== ''
+        ? String(row.appVersionIos).trim()
+        : '';
+    return { android, ios };
+  } catch (e) {
+    return { android: '', ios: '' };
   }
 }
 
@@ -412,6 +441,8 @@ module.exports = {
   ensureContactUsArhebBoxServiceFeeJodColumn,
   getArhebBoxServiceFeeJod,
   ensureContactUsEinvoicePausedColumn,
+  ensureContactUsAppVersionColumns,
+  getContactAppVersions,
   isEinvoicePaused,
   getDriverDeliveryDefaultPercent,
   normalizeDriverCommissionPercent,

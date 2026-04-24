@@ -347,7 +347,7 @@ function notifyDriversAboutNewArhebBox(db, io, row) {
 module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest, io) {
   ensureArhebBoxTable(db);
 
-  // Quote: distance, minimum parcel amount, delivery + service + VAT 7% on both (no auth)
+  // Quote: distance, minimum parcel amount, delivery fee + zero service fee + zero fees tax (no auth)
   app.post('/api/arheb-box/quote', (req, res) => {
     try {
       if (isArhebBoxOrdersPaused()) {
@@ -384,7 +384,7 @@ module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest, io)
           invoice,
           currency: 'JOD',
           pricingNote:
-            'Arheb Box: delivery 1 JOD first km + 0.5 JOD per extra km (no cap). Platform service fee from app settings (default 0.65 JOD). VAT 7% applies to delivery + service fee. Amount must be at least minAmountJod.',
+            'Arheb Box: delivery 1 JOD first km + 0.5 JOD per extra km (no cap). No platform service fee. No checkout VAT on fees. Parcel amount must be at least minAmountJod.',
         },
         timestamp: new Date().toISOString(),
       });

@@ -57,6 +57,8 @@ const {
   ensureContactUsArhebBoxComingSoonColumn,
   ensureContactUsArhebBoxServiceFeeJodColumn,
   ensureContactUsEinvoicePausedColumn,
+  ensureContactUsAppVersionColumns,
+  getContactAppVersions,
   isEinvoicePaused,
   getArhebBoxServiceFeeJod,
   writeArhebBoxDriverEarningsSnapshot,
@@ -234,6 +236,22 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   ensureActivityLogTable(db);
   ensureOrderAssignmentColumns(db);
   ensurePlatformCheckoutFeesTable(db);
+
+  function normalizeAdminAppVersionInput(v) {
+    if (v === undefined) return undefined;
+    const s = String(v ?? '').trim();
+    if (s.length > 64) {
+      const err = new Error('App version must be at most 64 characters');
+      err.code = 'VALIDATION';
+      throw err;
+    }
+    if (/[\r\n<>]/.test(s)) {
+      const err = new Error('App version contains invalid characters');
+      err.code = 'VALIDATION';
+      throw err;
+    }
+    return s;
+  }
 
   const offerCtx = {
     loadStores,
@@ -4410,6 +4428,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       ensureContactUsArhebBoxComingSoonColumn(db);
       ensureContactUsArhebBoxServiceFeeJodColumn(db);
       ensureContactUsEinvoicePausedColumn(db);
+      ensureContactUsAppVersionColumns(db);
+      const appVersion = getContactAppVersions(db);
       const row = db
         .prepare('SELECT email, phone, cliqNumber, driverDeliveryPercent, arhebBoxComingSoon, arhebBoxServiceFeeJod, einvoicePaused FROM contact_us ORDER BY id DESC LIMIT 1')
         .get();
@@ -4431,6 +4451,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
               arhebBoxComingSoon: false,
               arhebBoxServiceFeeJod: getArhebBoxServiceFeeJod(db),
               einvoicePaused: isEinvoicePaused(db),
+              appVersion,
               arhebBox,
             },
           },
@@ -4453,13 +4474,27 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             arhebBoxComingSoon: comingSoonDb,
             arhebBoxServiceFeeJod: getArhebBoxServiceFeeJod(db),
             einvoicePaused: row.einvoicePaused === 1 || row.einvoicePaused === true || isEinvoicePaused(db),
+            appVersion,
             arhebBox,
           },
         },
       });
     } catch (e) {
       if (e.message && e.message.includes('no such table')) {
-        return res.status(200).json({ success: true, data: { info: { email: '', phone: '', cliqNumber: '', driverDeliveryPercent: null, arhebBoxServiceFeeJod: 0.65, einvoicePaused: false } } });
+        return res.status(200).json({
+          success: true,
+          data: {
+            info: {
+              email: '',
+              phone: '',
+              cliqNumber: '',
+              driverDeliveryPercent: null,
+              arhebBoxServiceFeeJod: 0,
+              einvoicePaused: false,
+              appVersion: { android: '', ios: '' },
+            },
+          },
+        });
       }
       console.error('Admin get info error:', e);
       return res.status(500).json({ success: false, message: 'Failed to load info' });
@@ -4494,6 +4529,26 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           ? 1
           : 0;
     }
+    let androidAppVerPatch = undefined;
+    let iosAppVerPatch = undefined;
+    try {
+      const avBody = body.appVersion;
+      if (avBody && typeof avBody === 'object' && !Array.isArray(avBody)) {
+        if (avBody.android !== undefined) androidAppVerPatch = normalizeAdminAppVersionInput(avBody.android);
+        if (avBody.ios !== undefined) iosAppVerPatch = normalizeAdminAppVersionInput(avBody.ios);
+      }
+      if (body.appVersionAndroid !== undefined) {
+        androidAppVerPatch = normalizeAdminAppVersionInput(body.appVersionAndroid);
+      }
+      if (body.appVersionIos !== undefined) {
+        iosAppVerPatch = normalizeAdminAppVersionInput(body.appVersionIos);
+      }
+    } catch (err) {
+      if (err.code === 'VALIDATION') {
+        return res.status(400).json({ success: false, message: err.message });
+      }
+      throw err;
+    }
     if (email !== undefined && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).json({ success: false, message: 'Invalid email format' });
     }
@@ -4502,6 +4557,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       ensureContactUsArhebBoxComingSoonColumn(db);
       ensureContactUsArhebBoxServiceFeeJodColumn(db);
       ensureContactUsEinvoicePausedColumn(db);
+      ensureContactUsAppVersionColumns(db);
       let driverPctToStore = null;
       if (driverDeliveryPercentRaw !== undefined) {
         try {
@@ -4516,15 +4572,17 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       const row = db.prepare('SELECT id, email, phone, cliqNumber FROM contact_us ORDER BY id DESC LIMIT 1').get();
       if (!row) {
         db.prepare(
-          'INSERT INTO contact_us (email, phone, cliqNumber, driverDeliveryPercent, arhebBoxComingSoon, arhebBoxServiceFeeJod, einvoicePaused) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          'INSERT INTO contact_us (email, phone, cliqNumber, driverDeliveryPercent, arhebBoxComingSoon, arhebBoxServiceFeeJod, einvoicePaused, appVersionAndroid, appVersionIos) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
         ).run(
           email ?? 'contact@arheb.com',
           phone ?? '+201234567890',
           cliqNumber ?? '',
           driverPctToStore,
           comingSoonToStore != null ? comingSoonToStore : 0,
-          serviceFeeToStore !== undefined ? serviceFeeToStore : 0.65,
+          serviceFeeToStore !== undefined ? serviceFeeToStore : 0,
           einvoicePausedToStore != null ? einvoicePausedToStore : 0,
+          androidAppVerPatch !== undefined ? androidAppVerPatch : '',
+          iosAppVerPatch !== undefined ? iosAppVerPatch : '',
         );
       } else {
         db.prepare(`
@@ -4536,6 +4594,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             arhebBoxComingSoon = CASE WHEN ? = 1 THEN ? ELSE arhebBoxComingSoon END,
             arhebBoxServiceFeeJod = CASE WHEN ? = 1 THEN ? ELSE arhebBoxServiceFeeJod END,
             einvoicePaused = CASE WHEN ? = 1 THEN ? ELSE einvoicePaused END,
+            appVersionAndroid = CASE WHEN ? = 1 THEN ? ELSE appVersionAndroid END,
+            appVersionIos = CASE WHEN ? = 1 THEN ? ELSE appVersionIos END,
             updatedAt = CURRENT_TIMESTAMP
           WHERE id = ?
         `).run(
@@ -4550,6 +4610,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           serviceFeeToStore !== undefined ? serviceFeeToStore : null,
           einvoicePausedToStore !== null ? 1 : 0,
           einvoicePausedToStore !== null ? einvoicePausedToStore : 0,
+          androidAppVerPatch !== undefined ? 1 : 0,
+          androidAppVerPatch !== undefined ? androidAppVerPatch : null,
+          iosAppVerPatch !== undefined ? 1 : 0,
+          iosAppVerPatch !== undefined ? iosAppVerPatch : null,
           row.id,
         );
       }
@@ -4571,6 +4635,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         details: { keys: Object.keys(body) },
       });
       const comingSoonDb = updated.arhebBoxComingSoon === 1 || updated.arhebBoxComingSoon === true;
+      const appVersion = getContactAppVersions(db);
       return res.status(200).json({
         success: true,
         data: {
@@ -4583,6 +4648,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             arhebBoxComingSoon: comingSoonDb,
             arhebBoxServiceFeeJod: getArhebBoxServiceFeeJod(db),
             einvoicePaused: updated.einvoicePaused === 1 || updated.einvoicePaused === true || isEinvoicePaused(db),
+            appVersion,
             arhebBox: getArhebBoxPublicFlags(db),
           },
         },

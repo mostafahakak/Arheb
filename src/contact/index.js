@@ -4,6 +4,7 @@ const {
   getDriverCommissionSettings,
   ensureContactUsArhebBoxComingSoonColumn,
   getArhebBoxServiceFeeJod,
+  getContactAppVersions,
 } = require('../utils/driverCommission');
 const { getArhebBoxPublicFlags } = require('../arhebBox/flags');
 
@@ -50,6 +51,20 @@ module.exports = function attachContactRoutes(app, db, authenticateRequest) {
     
     next();
   };
+
+  /** Public minimum app versions (user apps compare against these). */
+  const sendAppVersion = (req, res) => {
+    try {
+      const { android, ios } = getContactAppVersions(db);
+      res.setHeader('Cache-Control', 'public, max-age=60');
+      return res.status(200).json({ android, ios });
+    } catch (e) {
+      console.error('Get app_version error:', e);
+      return res.status(200).json({ android: '', ios: '' });
+    }
+  };
+  app.get('/api/app_version', sendAppVersion);
+  app.get('/app_version', sendAppVersion);
 
   // Get contact us data (includes cliqNumber for app/users)
   app.get('/api/contact', (req, res) => {

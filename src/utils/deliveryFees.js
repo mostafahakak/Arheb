@@ -15,7 +15,7 @@
  * Evaluated only outside special far zones.
  *
  * Service fee: applies to store orders only (added to taxable base with delivery).
- * Arheb Box: platform service fee is configurable (default 0.65 JOD); VAT is 7% on delivery + service fee.
+ * Arheb Box: no platform service fee at customer checkout; delivery fee formula only for minAmount / quotes.
  */
 
 function round2(n) {
@@ -170,7 +170,7 @@ const STORE_MAX_JOD = 3;
 const STORE_ORDER_SERVICE_FEE_JOD = 0.65;
 
 /** Default Arheb Box platform service fee (JOD) when DB app info is unset. */
-const ARHEB_BOX_SERVICE_FEE_JOD = 0.65;
+const ARHEB_BOX_SERVICE_FEE_JOD = 0;
 
 /**
  * Distance-based store delivery using configurable tiers (defaults match legacy1 + 0.1/km, max 3).
