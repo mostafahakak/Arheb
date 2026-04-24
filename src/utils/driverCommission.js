@@ -138,6 +138,35 @@ function ensureContactUsEinvoicePausedColumn(db) {
   }
 }
 
+/** SQLite / API may surface flags as 1, '1', true, or bigint; normalize. */
+function contactUsEinvoicePausedIsTruthy(raw) {
+  if (raw === true || raw === 1) return true;
+  if (typeof raw === 'bigint' && raw === 1n) return true;
+  const s = String(raw == null ? '' : raw).trim().toLowerCase();
+  return s === '1' || s === 'true' || s === 'yes';
+}
+
+/**
+ * Latest App info row (by updatedAt, then id). Avoids reading an old duplicate contact_us row.
+ * @param {import('better-sqlite3').Database} db
+ * @returns {Record<string, unknown>|undefined}
+ */
+function selectContactUsLatestRow(db) {
+  if (!db) return undefined;
+  ensureContactUsEinvoicePausedColumn(db);
+  try {
+    return db
+      .prepare(
+        `SELECT * FROM contact_us
+         ORDER BY COALESCE(NULLIF(TRIM(updatedAt), ''), '') DESC, id DESC
+         LIMIT 1`,
+      )
+      .get();
+  } catch (e) {
+    return undefined;
+  }
+}
+
 /** Minimum app versions for user apps (GET /api/app_version; set via PATCH /api/admin/info). */
 function ensureContactUsAppVersionColumns(db) {
   if (!db) return;
@@ -160,9 +189,7 @@ function ensureContactUsAppVersionColumns(db) {
 function getContactAppVersions(db) {
   ensureContactUsAppVersionColumns(db);
   try {
-    const row = db
-      .prepare('SELECT appVersionAndroid, appVersionIos FROM contact_us ORDER BY id DESC LIMIT 1')
-      .get();
+    const row = selectContactUsLatestRow(db);
     const android =
       row && row.appVersionAndroid != null && String(row.appVersionAndroid).trim() !== ''
         ? String(row.appVersionAndroid).trim()
@@ -182,13 +209,16 @@ function getContactAppVersions(db) {
  * @returns {boolean}
  */
 function isEinvoicePaused(db) {
-  const envRaw = String(process.env.JOFOTARA_PAUSED ?? '').trim().toLowerCase();
+  const envRaw = String(
+    process.env.JOFOTARA_PAUSED ?? process.env.EINVOICE_PAUSED ?? '',
+  )
+    .trim()
+    .toLowerCase();
   if (envRaw === '1' || envRaw === 'true' || envRaw === 'yes') return true;
   if (!db) return false;
   try {
-    ensureContactUsEinvoicePausedColumn(db);
-    const row = db.prepare('SELECT einvoicePaused FROM contact_us ORDER BY id DESC LIMIT 1').get();
-    if (row && (row.einvoicePaused === 1 || row.einvoicePaused === true)) return true;
+    const row = selectContactUsLatestRow(db);
+    if (row && contactUsEinvoicePausedIsTruthy(row.einvoicePaused)) return true;
   } catch (e) {
     /* no table */
   }
@@ -443,6 +473,8 @@ module.exports = {
   ensureContactUsEinvoicePausedColumn,
   ensureContactUsAppVersionColumns,
   getContactAppVersions,
+  selectContactUsLatestRow,
+  contactUsEinvoicePausedIsTruthy,
   isEinvoicePaused,
   getDriverDeliveryDefaultPercent,
   normalizeDriverCommissionPercent,

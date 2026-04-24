@@ -1024,6 +1024,111 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     });
   });
 
+  function normalizeStoreOrderStatusKey(status) {
+    return String(status || '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ');
+  }
+
+  /** Allowed steps before the driver may set status to On the way (matches store-admin flow). */
+  function driverCanStartEnRouteFromStatus(statusKey) {
+    return statusKey === 'preparing' || statusKey === 'being prepared';
+  }
+
+  function markStoreOrderOnTheWayAsDriver(req, orderId, driverId, res) {
+    if (isNaN(orderId)) {
+      return res.status(400).json({ success: false, message: 'orderId is required' });
+    }
+    if (driverId !== req.driver.id) {
+      return res.status(403).json({ success: false, message: 'You can only update your own assigned orders' });
+    }
+    const order = findOrderById.get(orderId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (order.driverId == null || Number(order.driverId) !== Number(driverId)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Order is not assigned to you. Check orderId and driver token.',
+      });
+    }
+    const stKey = normalizeStoreOrderStatusKey(order.status);
+    if (stKey === 'on the way') {
+      const items = findOrderItems.all(orderId);
+      const driverRow = findDriverById.get(driverId);
+      const storesList = loadStores();
+      const store = order.storeId ? storesList.find((s) => s.id === order.storeId) : null;
+      return res.status(200).json({
+        success: true,
+        message: 'Order is already on the way',
+        data: { order: orderToDriverApi(order, items, driverRow, store, db) },
+      });
+    }
+    if (stKey === 'delivered' || stKey === 'cancelled') {
+      return res.status(400).json({
+        success: false,
+        message: `Order cannot be set to On the way from status: ${order.status}`,
+      });
+    }
+    if (!driverCanStartEnRouteFromStatus(stKey)) {
+      return res.status(400).json({
+        success: false,
+        message:
+          'Order must be Preparing (or Being prepared) before you can start delivery. Ask the store to advance the order if needed.',
+      });
+    }
+    const nextStatus = 'On the way';
+    db.prepare('UPDATE orders SET status = ?, nearArrivalNotified = 0 WHERE id = ?').run(nextStatus, orderId);
+    emitOrderStatus(orderId, nextStatus);
+    try {
+      const { broadcastDriverOrdersUpdated } = require('../driverPresence');
+      broadcastDriverOrdersUpdated(io, { type: 'status_change', orderId, status: nextStatus });
+    } catch (e) {
+      /* ignore */
+    }
+    fcm
+      .sendToUserByPhone(
+        db,
+        order.phoneNumber,
+        'On the way',
+        `Order #${orderId} is on the way.`,
+        null,
+        {
+          orderId: String(orderId),
+          status: nextStatus,
+          type: 'order_tracking',
+          screen: 'order_details',
+          deepLink: `arheb://orders/${orderId}`,
+          click_action: 'FLUTTER_NOTIFICATION_CLICK',
+        },
+      )
+      .catch(() => {});
+    const updated = findOrderById.get(orderId);
+    const items = findOrderItems.all(orderId);
+    const driverRow = findDriverById.get(driverId);
+    const storesList = loadStores();
+    const store = updated.storeId ? storesList.find((s) => s.id === updated.storeId) : null;
+    return res.status(200).json({
+      success: true,
+      message: 'Order marked as on the way',
+      data: { order: orderToDriverApi(updated, items, driverRow, store, db) },
+    });
+  }
+
+  /** Bearer token + orderId: only the assigned driver may set Preparing → On the way. */
+  app.post('/api/driver/orders/:orderId/on-the-way', driverAuth, (req, res) => {
+    const orderId = parseInt(req.params.orderId, 10);
+    return markStoreOrderOnTheWayAsDriver(req, orderId, req.driver.id, res);
+  });
+
+  /** Same as POST .../on-the-way; body: { orderId } (optional duplicate of URL id). */
+  app.post('/api/driver/orders/on-the-way', driverAuth, (req, res) => {
+    const body = req.body || {};
+    const fromBody = parseInt(body.orderId ?? body.order_id, 10);
+    const fromParam = req.query.orderId != null ? parseInt(String(req.query.orderId), 10) : NaN;
+    const orderId = Number.isFinite(fromBody) ? fromBody : fromParam;
+    return markStoreOrderOnTheWayAsDriver(req, orderId, req.driver.id, res);
+  });
+
   // POST /api/driver/orders/:orderId/reject-request — driver rejects a pending delivery request
   app.post('/api/driver/orders/:orderId/reject-request', driverAuth, (req, res) => {
     const orderId = parseInt(req.params.orderId, 10);

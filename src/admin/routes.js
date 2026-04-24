@@ -59,6 +59,8 @@ const {
   ensureContactUsEinvoicePausedColumn,
   ensureContactUsAppVersionColumns,
   getContactAppVersions,
+  selectContactUsLatestRow,
+  contactUsEinvoicePausedIsTruthy,
   isEinvoicePaused,
   getArhebBoxServiceFeeJod,
   writeArhebBoxDriverEarningsSnapshot,
@@ -4430,9 +4432,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       ensureContactUsEinvoicePausedColumn(db);
       ensureContactUsAppVersionColumns(db);
       const appVersion = getContactAppVersions(db);
-      const row = db
-        .prepare('SELECT email, phone, cliqNumber, driverDeliveryPercent, arhebBoxComingSoon, arhebBoxServiceFeeJod, einvoicePaused FROM contact_us ORDER BY id DESC LIMIT 1')
-        .get();
+      const row = selectContactUsLatestRow(db);
       const fallbackPct = getDriverCommissionSettings(db);
       const defaultPct =
         fallbackPct.type === 'percent' ? fallbackPct.value : 0.65;
@@ -4473,7 +4473,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             driverDeliveryDefaultEffective: effectiveDefault,
             arhebBoxComingSoon: comingSoonDb,
             arhebBoxServiceFeeJod: getArhebBoxServiceFeeJod(db),
-            einvoicePaused: row.einvoicePaused === 1 || row.einvoicePaused === true || isEinvoicePaused(db),
+            einvoicePaused:
+              contactUsEinvoicePausedIsTruthy(row.einvoicePaused) || isEinvoicePaused(db),
             appVersion,
             arhebBox,
           },
@@ -4569,7 +4570,16 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           throw err;
         }
       }
-      const row = db.prepare('SELECT id, email, phone, cliqNumber FROM contact_us ORDER BY id DESC LIMIT 1').get();
+      const latestContact = selectContactUsLatestRow(db);
+      const row =
+        latestContact && latestContact.id != null
+          ? {
+              id: latestContact.id,
+              email: latestContact.email,
+              phone: latestContact.phone,
+              cliqNumber: latestContact.cliqNumber,
+            }
+          : null;
       if (!row) {
         db.prepare(
           'INSERT INTO contact_us (email, phone, cliqNumber, driverDeliveryPercent, arhebBoxComingSoon, arhebBoxServiceFeeJod, einvoicePaused, appVersionAndroid, appVersionIos) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -4619,9 +4629,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       }
       const fallbackPct = getDriverCommissionSettings(db);
       const defaultPct = fallbackPct.type === 'percent' ? fallbackPct.value : 0.65;
-      const updated = db
-        .prepare('SELECT email, phone, cliqNumber, driverDeliveryPercent, arhebBoxComingSoon, arhebBoxServiceFeeJod, einvoicePaused FROM contact_us ORDER BY id DESC LIMIT 1')
-        .get();
+      const updated = selectContactUsLatestRow(db);
       const driverDeliveryPercentAppInfo =
         updated.driverDeliveryPercent != null && String(updated.driverDeliveryPercent).trim() !== ''
           ? normalizeDriverCommissionPercent(Number(updated.driverDeliveryPercent), defaultPct)
@@ -4647,7 +4655,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             driverDeliveryDefaultEffective: getDriverDeliveryDefaultPercent(db),
             arhebBoxComingSoon: comingSoonDb,
             arhebBoxServiceFeeJod: getArhebBoxServiceFeeJod(db),
-            einvoicePaused: updated.einvoicePaused === 1 || updated.einvoicePaused === true || isEinvoicePaused(db),
+            einvoicePaused:
+              contactUsEinvoicePausedIsTruthy(updated.einvoicePaused) || isEinvoicePaused(db),
             appVersion,
             arhebBox: getArhebBoxPublicFlags(db),
           },

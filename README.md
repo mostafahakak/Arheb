@@ -48,6 +48,8 @@ JOFOTARA_SELLER_TIN=your-tax-id-number
 JOFOTARA_SELLER_NAME=your-company-name
 # Pause JoFotara submissions (same effect as dashboard “Pause e-invoice”). Values: 1 | true | yes (case-insensitive).
 # JOFOTARA_PAUSED=true
+# Alias for the same pause flag (optional):
+# EINVOICE_PAUSED=true
 
 # Pause new Arheb Box orders (quote, POST /api/arheb-box, card initiate). Values: true | 1 | yes (case-insensitive). Omit or set false to allow orders.
 # ARHEB_BOX_PAUSED=true
@@ -207,6 +209,7 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
   - [Submit Arheb Box Request](#submit-arheb-box-request)
 - [Contact](#contact)
   - [Get Contact Information](#get-contact-information)
+  - [App version (public)](#app-version-public)
   - [Update Contact Information (Admin)](#update-contact-information-admin)
 - [Admin API](#admin-api)
   - [Admin Login](#admin-login)
@@ -233,6 +236,7 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
   - [Driver Orders List](#driver-orders-list)
   - [Driver Order Detail](#driver-order-detail)
   - [Driver Accept Order](#driver-accept-order)
+  - [Driver Mark Order On the Way](#driver-mark-order-on-the-way)
   - [Driver Complete Order](#driver-complete-order)
   - [Driver Complete Arheb Box](#driver-complete-arheb-box-delivery)
   - [Driver Assigned Orders](#driver-assigned-orders)
@@ -2749,7 +2753,7 @@ console.log(data.data.popup);
 
 Requests are stored in `arheb_box_requests` with **sender/receiver** contacts, pickup & dropoff (lat/lng + address + `mapsUrl`), **payment** (`paymentMethod`, `whoPays`: `sender` | `receiver`), **trip amount** (`amount` in JOD), **distance** and **minimum price** (`distanceKm`, `minAmountJod`). **Arheb Box pricing is separate from store orders:** minimum parcel amount / delivery fee basis is **1 JOD for the first km + 0.5 JOD per additional km** (no cap). **`minAmountJod`** from **`POST /api/arheb-box/quote`** matches that formula. The client must call **quote** first, then send an `amount` ≥ `minAmountJod`. After a driver is assigned, **customer** `GET /api/arheb-box/:id` and list/detail responses include **`driverPhone`**. Order objects and Arheb Box rows may include **`createdAtJordan`** (human-readable **Asia/Amman** time) alongside UTC `createdAt`.
 
-**Store vs Arheb Box (backend rules):** **Delivery fee** — store orders use configurable platform tiers (and overrides) in `src/utils/deliveryFees.js`. Arheb Box uses **1 JOD first km + 0.5 JOD per extra km, no cap** (`arhebBoxDeliveryFeeFromDistanceJod`). **Service fee** — store checkout uses the platform default or per-store override; Arheb Box service fee is configurable via **[App info](#admin-app-info-driver-delivery-default)** **`arhebBoxServiceFeeJod`**. **Checkout fees VAT** — store order **`feesTaxRate`** is **0** in current builds (no extra tax line on delivery + service at checkout). Constants and JoFotara XML tax behavior are separate (see `src/jofotara.js`). Admin unified **`GET /api/admin/orders`** uses **`totalAmount`** = cart subtotal for stores and **parcel `amount`** for Arheb Box rows; **`deliveryFee` / `serviceFee` / `feesTax` / `invoice`** on each row reflect the stored order.
+**Store vs Arheb Box (backend rules):** **Delivery fee** — store orders use configurable platform tiers (and overrides) in `src/utils/deliveryFees.js`. Arheb Box uses **1 JOD first km + 0.5 JOD per extra km, no cap** (`arhebBoxDeliveryFeeFromDistanceJod`). **Service fee** — store checkout uses the platform default or per-store override; **Arheb Box uses `serviceFee` 0** at quote and checkout (no 0.65 platform line). The **`arhebBoxServiceFeeJod`** field on App info is legacy and does not change Arheb Box pricing. **Checkout fees VAT** — store order and Arheb Box quote/checkout use **`feesTaxRate` 0** on fees. JoFotara XML tax behavior is separate (see `src/jofotara.js`). Admin unified **`GET /api/admin/orders`** uses **`totalAmount`** = cart subtotal for stores and **parcel `amount`** for Arheb Box rows; **`deliveryFee` / `serviceFee` / `feesTax` / `invoice`** on each row reflect the stored row.
 
 ### Arheb Box quote (distance, minimum amount, delivery fee & tax)
 
@@ -2758,7 +2762,7 @@ Requests are stored in `arheb_box_requests` with **sender/receiver** contacts, p
 
 **Body:** same `pickup` / `dropoff` shape as submit (each with `latitude`, `longitude`). Optional **`weightKg`** (number, ≥ 0) for parity with submit; delivery fee is currently **distance-only** (same as create).
 
-**Response:** `distanceKm`, `minAmountJod`, **`deliveryFee`**, **`feesTax`** (7% VAT on delivery fee only), **`serviceFee`** (always `0` for Arheb Box), **`invoice`** (`deliveryFee`, `serviceFee`, `feesTax`, `feesTaxRate`, `total`), `currency: "JOD"`, `pricingNote`. `minAmountJod` is the minimum **parcel amount** (JOD) for the route, matching the delivery-fee formula **1 + 0.5×(km−1)** (no maximum).
+**Response:** `distanceKm`, `minAmountJod`, **`deliveryFee`**, **`feesTax`** (0 with current **`feesTaxRate`**), **`serviceFee`** (always **0**), **`invoice`** (`deliveryFee`, `serviceFee`, `feesTax`, `feesTaxRate`, `total`), `currency: "JOD"`, `pricingNote`. `minAmountJod` is the minimum **parcel amount** (JOD) for the route, matching the delivery-fee formula **1 + 0.5×(km−1)** (no maximum).
 
 ### Get Arheb Box request by ID (customer)
 
@@ -2838,6 +2842,23 @@ Retrieves contact information (email and phone).
 
 ---
 
+### App version (public)
+
+Minimum app versions for **force-update** or compatibility checks. Values are edited in the **admin dashboard → App info** (`GET/PATCH /api/admin/info` → **`appVersion`**: `{ "android", "ios" }`). Stored on the same **`contact_us`** row as contact info; the public endpoints read the **latest** row by **`updatedAt`** (then **`id`**).
+
+**Endpoints (no authentication):**
+
+| Method | Path | Response body |
+|--------|------|----------------|
+| GET | `/api/app_version` | `{ "android": "1.8.0", "ios": "3.2" }` — semver-style strings; empty string if unset |
+| GET | `/app_version` | Same JSON (alias path) |
+
+Short **`Cache-Control: public, max-age=60`** is set on these responses.
+
+**Admin:** **`PATCH /api/admin/info`** may include **`appVersionAndroid`** and **`appVersionIos`** (or nested **`appVersion`: `{ "android"?, "ios"? }`**) to update the strings returned above.
+
+---
+
 ### Update Contact Information (Admin)
 
 Updates contact information. Requires admin authentication.
@@ -2890,11 +2911,20 @@ Arheb integrates with Jordan's **JOFOTARA** system to automatically submit **Inc
 
 ### How it works
 
-1. When an order status changes to **`Delivered`** (via admin dashboard or store admin), the backend **automatically** submits an e-invoice to JOFOTARA.
+1. When an order status changes to **`Delivered`** (via admin dashboard or store admin), the backend **automatically** submits an e-invoice to JOFOTARA (unless submissions are **paused** — see below).
 2. The invoice covers **delivery fee + service fee** at **7% tax** (same calculation used in checkout).
 3. The submission is **asynchronous** — order status updates are never blocked by JOFOTARA API issues.
 4. On success, JOFOTARA returns a **QR code** (`EINV_QR`) that is saved on the order.
 5. On failure, the error is saved and the admin can **retry** via the dashboard or API.
+
+### Pausing submissions
+
+Submissions are **skipped** (order **`einvoiceStatus`** → **`paused`**, no HTTP call to JoFotara) when any of the following is true:
+
+- **Environment:** **`JOFOTARA_PAUSED`** or **`EINVOICE_PAUSED`** set to **`1`**, **`true`**, or **`yes`** (case-insensitive).
+- **Database:** **`einvoicePaused`** on the **latest App info** row in **`contact_us`** (row with newest **`updatedAt`**, then highest **`id`**) — toggled from the admin dashboard **App info** screen (**`PATCH /api/admin/info`**, body **`einvoicePaused`**: boolean).
+
+This avoids mistakenly reading an older duplicate **`contact_us`** row when multiple rows exist.
 
 ### Invoice details
 
@@ -2920,6 +2950,8 @@ Arheb integrates with Jordan's **JOFOTARA** system to automatically submit **Inc
 | `JOFOTARA_INCOME_SOURCE` | Income source sequence number (تسلسل مصدر الدخل) |
 | `JOFOTARA_SELLER_TIN` | Seller Tax ID Number (الرقم الضريبي) |
 | `JOFOTARA_SELLER_NAME` | Seller company name (اسم الشركة) |
+| `JOFOTARA_PAUSED` | When `1` / `true` / `yes`, pauses all JoFotara submissions (same as dashboard “Pause e-invoice”). |
+| `EINVOICE_PAUSED` | Optional alias for the same pause behavior as **`JOFOTARA_PAUSED`**. |
 
 If credentials are not configured, submissions are **skipped** (status `skipped`) and logged.
 
@@ -3253,8 +3285,8 @@ Same backing row as public contact info, plus **default driver delivery percent*
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/admin/info` | Returns `{ email, phone, cliqNumber, driverDeliveryPercent, driverDeliveryDefaultEffective, arhebBoxComingSoon, arhebBoxServiceFeeJod, einvoicePaused, arhebBox }`. **`einvoicePaused`** is `true` if JoFotara submissions are paused (**`JOFOTARA_PAUSED`** env or DB flag). |
-| PATCH | `/api/admin/info` | Body: any of `email`, `phone`, `cliqNumber`, **`driverDeliveryPercent`**, **`arhebBoxComingSoon`** (boolean), **`arhebBoxServiceFeeJod`** (non-negative), **`einvoicePaused`** (boolean — pause/resume e-invoice without redeploy). Missing fields unchanged. |
+| GET | `/api/admin/info` | Returns `{ email, phone, cliqNumber, driverDeliveryPercent, driverDeliveryDefaultEffective, arhebBoxComingSoon, arhebBoxServiceFeeJod, einvoicePaused, appVersion, arhebBox }`. **`appVersion`**: `{ android, ios }` strings for **`GET /api/app_version`**. **`einvoicePaused`** reflects the latest **`contact_us`** row and env (**`JOFOTARA_PAUSED`** / **`EINVOICE_PAUSED`**). |
+| PATCH | `/api/admin/info` | Body: any of `email`, `phone`, `cliqNumber`, **`driverDeliveryPercent`**, **`arhebBoxComingSoon`** (boolean), **`arhebBoxServiceFeeJod`** (non-negative), **`einvoicePaused`** (boolean), **`appVersionAndroid`** / **`appVersionIos`** (or **`appVersion`**: `{ "android"?, "ios"? }`). Missing fields unchanged. |
 
 ### Admin platform checkout fees
 
@@ -3631,7 +3663,7 @@ Every driver order object includes **store**, **customer**, **delivery fee**, **
 
 ### Driver Accept Order
 
-Assigns an order to the authenticated driver and sets its status to "On the way". Persists **commission snapshot** fields on the order (`driverCommissionType`, `driverCommissionValue`, `driverEarnings`) using the effective driver rate: **per-driver `commissionPercent`** → [App info](#admin-app-info-driver-delivery-default) **`driverDeliveryPercent`** → [legacy global](#admin-driver-commission) settings.
+Assigns an order to the authenticated driver and **keeps the current order status** (typically **Preparing** after the store has confirmed). Persists **commission snapshot** fields on the order (`driverCommissionType`, `driverCommissionValue`, `driverEarnings`) using the effective driver rate: **per-driver `commissionPercent`** → [App info](#admin-app-info-driver-delivery-default) **`driverDeliveryPercent`** → [legacy global](#admin-driver-commission) settings. To move to **On the way**, use [Driver Mark Order On the Way](#driver-mark-order-on-the-way) once the store has set **Preparing** / **Being prepared**.
 
 **Endpoint:** `POST /api/driver/orders/accept`
 
@@ -3651,7 +3683,7 @@ Assigns an order to the authenticated driver and sets its status to "On the way"
 
 **When `driverId` is not on the order (responses):** In **GET** checkout orders, **GET** `/api/orders/:orderId`, **GET** `/api/admin/orders`, and driver order payloads, **`driverId`** and **`driverName`** are **`null`** (or absent) until a driver has **accepted** the order. While status is **Preparing** and no driver has accepted yet—**including** when drivers are only being invited via auto-assign / `driver_requests`—there is **no** assigned driver on the order, so **`driverId`** remains unset.
 
-**Effect:** The order's `status` is set to **"On the way"**, and **`driverId`** and **`driverName`** are set on the order so Admin can track which driver is assigned (see Admin Orders).
+**Effect:** **`driverId`** and **`driverName`** are set on the order; **`status`** stays as it was (usually **Preparing**) until the driver or admin advances it to **On the way**.
 
 **Success Response (200):**
 ```json
@@ -3673,6 +3705,26 @@ Assigns an order to the authenticated driver and sets its status to "On the way"
 ```
 
 **Error Responses:** `400` – Order already assigned, `403` – Can only accept for yourself, `404` – Order not found
+
+---
+
+### Driver Mark Order On the Way
+
+Sets a **store** order’s status to **`On the way`** when the **Bearer** driver is the one **assigned** to that order (**`order.driverId`** matches the token). Allowed only from **`Preparing`** or **`Being prepared`** (same progression as store admin). Resets **`nearArrivalNotified`**, emits tracking/socket updates, and sends the customer an **“On the way”** FCM (same idea as admin status change).
+
+**Authentication:** Required — **`Authorization: Bearer <driver JWT>`** (same as other driver endpoints). The **order id** is not secret; the token must match the assigned driver.
+
+**Endpoints (choose one):**
+
+| Method | Path | Notes |
+|--------|------|--------|
+| POST | `/api/driver/orders/:orderId/on-the-way` | Order id in the URL |
+| POST | `/api/driver/orders/on-the-way` | Body: `{ "orderId": 123 }` (also accepts **`order_id`**) or query **`?orderId=123`** |
+
+**Success (200):** `{ "success": true, "message": "Order marked as on the way", "data": { "order": { ... } } }`  
+If the order is **already** **On the way**, **`200`** with message **`Order is already on the way`**.
+
+**Error responses:** **`403`** — order not assigned to this driver; **`400`** — wrong prior status (e.g. still waiting confirmation) or terminal status (**Delivered** / **Cancelled**); **`404`** — order not found.
 
 ---
 
@@ -3810,7 +3862,9 @@ Both `dateFrom` and `dateTo` are optional (inclusive on `date(createdAt)`).
 | GET | `/api/driver/earnings/today` | Yes | Today delivered: profit + delivery fee totals |
 | GET | `/api/driver/earnings/summary` | Yes | Delivered in date range: profit + delivery fee totals |
 | GET | `/api/driver/orders/:orderId` | Yes | Order detail |
-| POST | `/api/driver/orders/accept` | Yes | Accept order (assign to driver) |
+| POST | `/api/driver/orders/accept` | Yes | Accept order (assign to driver; status usually stays Preparing) |
+| POST | `/api/driver/orders/:orderId/on-the-way` | Yes | Set status On the way (assigned driver only; from Preparing / Being prepared) |
+| POST | `/api/driver/orders/on-the-way` | Yes | Same; body `{ "orderId" }` or query `orderId` |
 | POST | `/api/driver/orders/:orderId/complete` | Yes | Mark store order delivered (Bearer verifies driver) |
 | POST | `/api/driver/orders/complete` | Yes | Same; body `{ orderId }` |
 | POST | `/api/driver/arheb-box/:id/complete` | Yes | Mark Arheb Box delivered (after accept) |
@@ -3927,7 +3981,7 @@ For issues or questions, please contact: `contact@arheb.app`
 
 ## API Changelog
 
-**Last updated: 2026-04-03**
+**Last updated: 2026-04-23**
 
 ### 2026-04 — Store browse, exclusive route, delivery fees, driver %, Jordan time
 
@@ -3963,8 +4017,12 @@ For issues or questions, please contact: `contact@arheb.app`
 | GET | `/api/admin/orders/:orderId/driver-map` | Admin (Store Admin: own store orders only) | **Track** payload: `deliveryLocation`, `storeLocation`, `storeName`, assigned **`driver`** (id, name, mobile, vehicle, photo, **`liveLocation`**), `tracking`, **`mapPreviewUrl`**, `driverAssignmentStatus`, `driverSearchStartedAt`. |
 | GET | `/api/admin/orders/:orderId/tracking` | Admin (Store Admin: own store orders only) | **Store:** path id = `orders.id`. **Arheb Box:** same path param but add **`?type=arheb_box`** and use the box request id; response includes `requestId`, `orderType: 'arheb_box'`, `lastLocation`, etc. Used with Socket.IO (`auth`: `orderId` + `trackingType: 'arheb_box'` or `requestId`). |
 | GET | `/api/driver/requests` | Driver | Returns pending delivery requests for the authenticated driver. Each request includes full order payload (store name/address/mapsUrl, client address, total, delivery fee, item count, etc.). Driver accepts via existing `POST /api/driver/orders/accept`. |
-| GET | `/api/admin/info` | Admin / SuperAdmin | Contact info, **`arhebBoxServiceFeeJod`**, **`einvoicePaused`**, **`arhebBox`** flags, driver default percent fields. |
-| PATCH | `/api/admin/info` | Admin / SuperAdmin | Body: any subset of `{ email, phone, cliqNumber, driverDeliveryPercent, arhebBoxComingSoon, arhebBoxServiceFeeJod, einvoicePaused }`. |
+| GET | `/api/admin/info` | Admin / SuperAdmin | Contact info, **`appVersion`**, **`arhebBoxServiceFeeJod`**, **`einvoicePaused`**, **`arhebBox`** flags, driver default percent fields. |
+| PATCH | `/api/admin/info` | Admin / SuperAdmin | Body: any subset of `{ email, phone, cliqNumber, driverDeliveryPercent, arhebBoxComingSoon, arhebBoxServiceFeeJod, einvoicePaused, appVersionAndroid, appVersionIos, appVersion }`. |
+| GET | `/api/app_version` | None | `{ "android", "ios" }` — minimum app versions from App info (`Cache-Control: public, max-age=60`). |
+| GET | `/app_version` | None | Same JSON (alias path). |
+| POST | `/api/driver/orders/:orderId/on-the-way` | Driver | **Preparing** / **Being prepared** → **On the way**; assigned driver only (`Bearer` must match **`order.driverId`**). |
+| POST | `/api/driver/orders/on-the-way` | Driver | Same; JSON `{ "orderId" }` or query **`?orderId=`**. |
 | POST | `/api/admin/stores/:storeId/products/import` | Admin / SuperAdmin / Store Admin (per-store) | Imports products for a store from an Excel file. Expects `multipart/form-data` with field `file` (`.xlsx`/`.xls`). Store Admin rows go to the pending products queue; Admin/SuperAdmin rows are imported directly. Rows with an `id` column that already exists for the store are **skipped** (no duplicate). Export includes `id` column. |
 | GET | `/api/admin/stores/:storeId/products/export` | Admin / SuperAdmin / Store Admin (per-store) | Exports all products for the given store as an Excel file. Columns include `id`, `nameEn`, `nameAr`, `price`, `discount`, `unit`, `category`, `description`, `stock`, `isAvailable`. |
 | POST | `/api/admin/orders/:orderId/reject` | Admin / SuperAdmin / Store Admin (own store) | **Store Admin:** cancel only while **`Pending payment`**, **`Waiting cliq confirmation`**, or **`Waiting confirmation`**. **Admin/SuperAdmin:** same pre-confirmation rule as before (pending / waiting / cliq). Sets status to `Cancelled`. |
@@ -4012,13 +4070,14 @@ For issues or questions, please contact: `contact@arheb.app`
 - **Order tracking (WebSocket)**  
   - **Admin** role: Store Admin may connect only for orders where `order.storeId` is their store or `null`; otherwise connection is rejected.  
   - **Driver** role: Driver may connect only for orders assigned to them (`order.driverId === driver.id`); otherwise connection is rejected.  
-  - New event **`status_update`**: Emitted to the order room when driver accepts (status `"On the way"`) or completes (status `"Delivered"`). Payload: `{ orderId, status }`.  
-  - Customer and admin observers receive **`location_update`** (unchanged) and **`status_update`** for live tracking from driver accept until delivery.
+  - New event **`status_update`**: Emitted to the order room when order status changes (e.g. **On the way**, **Delivered**). Payload: `{ orderId, status }`.  
+  - Customer and admin observers receive **`location_update`** (unchanged) and **`status_update`** for live tracking while the order is active.
 
 - **Contact / App Info**  
   - **GET** `/api/contact`: Response `data.contact` includes **`cliqNumber`**, **`driverDeliveryPercent`**, **`driverDeliveryDefaultEffective`** (see [Get Contact Information](#get-contact-information)).  
+  - **GET** `/api/app_version` and **GET** `/app_version`: Public **`{ android, ios }`** strings from App info (see [App version (public)](#app-version-public)).  
   - **PUT** `/api/contact`: Body may include optional `cliqNumber` (string). If provided, it updates the stored Cliq number along with email/phone.  
-  - **GET** `/api/admin/info` / **PATCH** `/api/admin/info` (see New APIs) — same row as contact plus **default driver delivery %** for drivers without **`commissionPercent`**.
+  - **GET** `/api/admin/info` / **PATCH** `/api/admin/info` (see New APIs) — same row as contact plus **default driver delivery %**, **e-invoice pause**, **app version** fields, etc.
 
 - **Checkout & Orders (Cliq payments)**  
   - **POST** `/api/checkout`:  
