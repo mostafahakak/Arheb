@@ -109,7 +109,7 @@ A separate **Admin Dashboard** (React + Next.js) is in the `dashboard/` folder. 
   - **Super Admin**: Full access; manage all stores, orders, categories, admins (including other SuperAdmins), and **Arheb Box** requests.
   - **Admin**: Same as Super Admin but **cannot** add or remove SuperAdmins.
   - **Store Admin**: Sees only their assigned store; can edit store details, add/edit/delete products, and view orders for that store.
-- **Arheb Box**: Admins can list requests, open **detail** (**GET /api/admin/arheb-box/:id**), update status, assign drivers, and track pricing fields. **SuperAdmin** can **permanently delete** a request (**DELETE /api/admin/arheb-box/:id**), same idea as deleting a store order. Requests are submitted by users with Bearer token and stored in the database.
+- **Arheb Box**: Admins can list requests, open **detail** (**GET /api/admin/arheb-box/:id**), update status, **assign** (**POST /api/admin/arheb-box/:id/assign-driver**) or **reassign** (**POST /api/admin/arheb-box/:id/reassign-driver**, Admin/SuperAdmin — same idea as **POST /api/admin/orders/:orderId/reassign-driver**), and track pricing fields. **SuperAdmin** can **permanently delete** a request (**DELETE /api/admin/arheb-box/:id**), same idea as deleting a store order. Requests are submitted by users with Bearer token and stored in the database.
 - **English and Arabic** (language switcher in the UI).
 - **Driver earnings:** Each driver can have a **per-driver commission percent** (`commissionPercent` on the driver row). If unset, the effective rate comes from **App info** — **`driverDeliveryPercent`** on **GET/PATCH /api/admin/info** (same screen as email/phone/Cliq). If that is also unset, the legacy **global driver commission** setting (**GET/PATCH /api/admin/settings/driver-commission**) is used. The **Drivers** list links to a **driver profile** page (`/dashboard/drivers/profile/?id=`) with filters (status, date range), delivered-order profit totals, and full customer **driver ratings** (stars + notes). Drivers only see their **average rating** in the driver app, not individual reviews.
 
@@ -140,7 +140,7 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
 ## Push notifications (FCM) and driver presence
 
 - **Firebase Cloud Messaging (FCM)** is used to send push notifications to drivers (e.g. new order assigned) and to app users (order status updates, broadcast messages). Set **`FIREBASE_SERVICE_ACCOUNT_JSON`** in `.env` to a **stringified JSON** of your Firebase service account key (Project settings → Service accounts → Generate new private key). If unset, the backend uses `GOOGLE_APPLICATION_CREDENTIALS` (path to key file). Without valid credentials, FCM send is skipped (no crash).
-- **Driver auto-assignment (Preparing):** When an order moves to **Preparing** (e.g. **PATCH** `/api/admin/orders/:orderId/status`), the backend runs **automatic assignment** for that store: unassigned **Preparing** orders are sorted by `id`, grouped into **clusters** where consecutive deliveries are within **1 km** (haversine on `addressLat` / `addressLong`). Each cluster is assigned to an **online** driver (Socket.IO `/driver-presence` + location); the server prefers **joining** an existing driver when every delivery in the cluster is within **1 km** of at least one of that driver’s **already-assigned** Preparing orders for the same store. There is **no cap** on how many active orders a driver may carry. Assignment sets **`driverId`** / **`driverName`** while status stays **Preparing**; drivers **cannot reject** (**POST** `/api/driver/orders/:orderId/reject-request` returns **403**). Optional columns **`driverAssignmentStatus`** (`searching` \| `no_driver_online` \| cleared) and **`driverSearchStartedAt`** support dashboard “searching” UI. **Admin / SuperAdmin** can still use **POST** `/api/admin/orders/:orderId/request-driver` (manual invite + accept flow). **GET** `/api/admin/orders/:orderId/driver-map` returns store, delivery, live driver location, tracking, and **`mapPreviewUrl`** (Google Maps dir link) for a **Track** button.
+- **Driver auto-assignment (Preparing):** When an order moves to **Preparing** (e.g. **PATCH** `/api/admin/orders/:orderId/status`), the backend runs **automatic assignment** for that store: unassigned **Preparing** orders are sorted by `id`, grouped into **clusters** where consecutive deliveries are within **1 km** (haversine on `addressLat` / `addressLong`). Each cluster is assigned to an **online** driver (Socket.IO `/driver-presence` + location); the server prefers **joining** an existing driver when every delivery in the cluster is within **1 km** of at least one of that driver’s **already-assigned** Preparing orders for the same store. There is **no cap** on how many active orders a driver may carry. Assignment sets **`driverId`** / **`driverName`** and order status to **`Driver to pick`** (driver then uses **on-the-way** and **complete** as in [Driver workflow](#driver-workflow-store--arheb-box)). Drivers **cannot reject** auto-assigned store orders (**POST** `/api/driver/orders/:orderId/reject-request` returns **403**). Optional columns **`driverAssignmentStatus`** (`searching` \| `no_driver_online` \| cleared) and **`driverSearchStartedAt`** support dashboard “searching” UI. **Admin / SuperAdmin** can still use **POST** `/api/admin/orders/:orderId/request-driver` (manual invite + accept flow). **GET** `/api/admin/orders/:orderId/driver-map` returns store, delivery, live driver location, tracking, and **`mapPreviewUrl`** (Google Maps dir link) for a **Track** button.
 - **User FCM**: Users can set `fcmToken` via **PUT /api/profile** or send it with **POST /api/checkout**. Order status changes (and broadcast notifications) are sent to the user’s token. **GET /api/profile/notifications** lists notification history for that user only (Bearer user JWT).
 - **Store FCM**: Store devices (kitchen / POS) register a token with **POST /api/store/update-fcm** (`storeId`, `fcmToken`). Tokens are stored in the database and returned on **GET / PATCH** admin store details as `fcmToken`. When a customer order is created (**POST /api/checkout** or payment flow that creates an order), the backend sends a push to that store’s token if configured (`type: store_new_order` in the data payload).
 - **Broadcast**: Admin/SuperAdmin can send a notification to all registered users via **POST /api/admin/notifications/broadcast** (`title`, `body`, optional `imageUrl`).
@@ -229,6 +229,7 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
   - [Admin Home Banners & Offers](#admin-home-banners--offers)
   - [Admin Driver Profile (detail)](#admin-driver-profile-detail)
 - [Driver API](#driver-api)
+  - [Driver workflow (store & Arheb Box)](#driver-workflow-store--arheb-box)
   - [Driver Send OTP](#driver-send-otp)
   - [Driver Login](#driver-login)
   - [Driver Home](#driver-home)
@@ -238,6 +239,7 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
   - [Driver Accept Order](#driver-accept-order)
   - [Driver Mark Order On the Way](#driver-mark-order-on-the-way)
   - [Driver Complete Order](#driver-complete-order)
+  - [Driver Mark Arheb Box On the Way](#driver-mark-arheb-box-on-the-way)
   - [Driver Complete Arheb Box](#driver-complete-arheb-box-delivery)
   - [Driver Assigned Orders](#driver-assigned-orders)
   - [Driver Earnings (Today & Summary)](#driver-earnings-today--summary)
@@ -259,7 +261,7 @@ Arheb Backend is a comprehensive REST API for an e-commerce platform built with 
 - 👤 User Profile Management
 - 📞 Contact Management
 - 🚚 Real-time Order Tracking (WebSocket)
-- 🚗 Driver API (login, orders, accept, complete)
+- 🚗 Driver API (login, home, accept → **Driver to pick**, on-the-way, delivered; Arheb Box same idea)
 
 ### Key Features
 
@@ -270,7 +272,7 @@ Arheb Backend is a comprehensive REST API for an e-commerce platform built with 
 - **Admin Controls**: Admin-only endpoints for contact management
 - **Promo Codes**: Promo code validation and automatic discount application
 - **Real-time Tracking**: WebSocket-based order tracking with driver location updates every 3 seconds
-- **Driver App**: Drivers can register/login with OTP, view home (stats, current/available/in-progress orders), list orders, accept and complete orders
+- **Driver App**: Drivers can register/login with OTP, view home (stats, **available** vs **Driver to pick** vs **on-the-way** orders; Arheb **arhebBoxAvailable** vs **arhebBoxMyActive**), list orders, **on-the-way** then **delivered** (store and Arheb Box)
 
 ---
 
@@ -2293,7 +2295,7 @@ socket.on('connected', (data) => {
 }
 ```
 
-Drivers still emit **`driver_location`** with `{ longitude, latitude }` (or `lat` / `lng` aliases). Live forwarding from **`/driver-presence`** applies while the box is **`in_progress`** (see server: driver presence → box rooms).
+Drivers still emit **`driver_location`** with `{ longitude, latitude }` (or `lat` / `lng` aliases). Live forwarding from **`/driver-presence`** applies while the box is in **`driver_to_pick`**, **`on_the_way`**, legacy **`in_progress`**, or **`assigned`** (see server: driver presence → box rooms).
 
 **REST (poll, customer app):** `GET /api/arheb-box/:id/tracking` — Bearer token; **`id`** = box request id; user must own the request (`phoneNumber` match).
 
@@ -2797,7 +2799,7 @@ Returns full request including **`driverPhone`** when a driver is assigned.
 
 **Success response** includes `paymentMethod`, `whoPays`, `amount`, `distanceKm`, `minAmountJod`, pickup/dropoff with `mapsUrl`, sender/receiver phones and names.
 
-**Admin (dashboard):** `GET /api/admin/arheb-box`, **`GET /api/admin/arheb-box/:id`** (single request, same enriched shape as list), `PATCH /api/admin/arheb-box/:id`, `POST /api/admin/arheb-box/:id/assign-driver`. **SuperAdmin:** **`DELETE /api/admin/arheb-box/:id`** removes the request (and related `driver_requests` / `payment_transactions` rows). Admin/driver responses include pricing fields and **`driverPhone`** when applicable.
+**Admin (dashboard):** `GET /api/admin/arheb-box`, **`GET /api/admin/arheb-box/:id`** (single request, same enriched shape as list), `PATCH /api/admin/arheb-box/:id`, `POST /api/admin/arheb-box/:id/assign-driver`, `POST /api/admin/arheb-box/:id/reassign-driver` (Admin/SuperAdmin). **SuperAdmin:** **`DELETE /api/admin/arheb-box/:id`** removes the request (and related `driver_requests` / `payment_transactions` rows). Admin/driver responses include pricing fields and **`driverPhone`** when applicable.
 
 **Driver:** `GET /api/driver/arheb-box` includes **`amount`**, **`paymentMethod`**, **`whoPays`**, **`distanceKm`**, **`minAmountJod`**, sender/receiver phones, and maps links.
 
@@ -3230,8 +3232,9 @@ Order list and order detail responses include **`driverId`** and **`driverName`*
 | GET | `/api/admin/arheb-box` | List all Arheb box requests (id, phoneNumber, userName, pickup, dropoff, notes, status, createdAt). Sorted by `createdAt DESC, id DESC`. |
 | GET | `/api/admin/arheb-box/:id` | Single request by id; **`data.request`** uses the same enrichment as list/detail (pricing, **`createdAtJordan`**, driver fields, etc.). |
 | DELETE | `/api/admin/arheb-box/:id` | **SuperAdmin only.** Permanently deletes the request; cleans **`driver_requests`** where `orderId` equals this id (box driver-offer rows) and **`payment_transactions`** with **`arhebBoxRequestId`** = id. |
-| PATCH | `/api/admin/arheb-box/:id` | Update request status. Body: `{ "status": "confirmed" }` (e.g. pending, confirmed, in_progress, delivered, cancelled). |
-| POST | `/api/admin/arheb-box/:id/assign-driver` | Body `{ "driverId" }` — assigns driver, notifies via FCM. |
+| PATCH | `/api/admin/arheb-box/:id` | Update request status. Body: `{ "status": "confirmed" }` (or `delivered`, `cancelled`, etc.). When status is **`delivered`**: if **e-invoice is paused** ([App info](#admin-app-info-driver-delivery-default) **`einvoicePaused`** or env **`JOFOTARA_PAUSED` / `EINVOICE_PAUSED`**), the backend does **not** call JoFotara; the row is marked with `einvoiceStatus: paused`. Otherwise JoFotara is submitted async (same as store order **PATCH** to **Delivered**). |
+| POST | `/api/admin/arheb-box/:id/assign-driver` | Body `{ "driverId" }` — assigns driver, sets status **`assigned`**, notifies via FCM. |
+| POST | `/api/admin/arheb-box/:id/reassign-driver` | **Admin / SuperAdmin.** Body `{ "driverId" }` — change driver on an in-flight request; **keeps** current `status` (not delivered / cancelled). FCM to old and new driver + customer. |
 
 ---
 
@@ -3286,7 +3289,7 @@ Same backing row as public contact info, plus **default driver delivery percent*
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/admin/info` | Returns `{ email, phone, cliqNumber, driverDeliveryPercent, driverDeliveryDefaultEffective, arhebBoxComingSoon, arhebBoxServiceFeeJod, einvoicePaused, appVersion, arhebBox }`. **`appVersion`**: `{ android, ios }` strings for **`GET /api/app_version`**. **`einvoicePaused`** reflects the latest **`contact_us`** row and env (**`JOFOTARA_PAUSED`** / **`EINVOICE_PAUSED`**). |
-| PATCH | `/api/admin/info` | Body: any of `email`, `phone`, `cliqNumber`, **`driverDeliveryPercent`**, **`arhebBoxComingSoon`** (boolean), **`arhebBoxServiceFeeJod`** (non-negative), **`einvoicePaused`** (boolean), **`appVersionAndroid`** / **`appVersionIos`** (or **`appVersion`**: `{ "android"?, "ios"? }`). Missing fields unchanged. |
+| PATCH | `/api/admin/info` | Body: any of `email`, `phone`, `cliqNumber`, **`driverDeliveryPercent`**, **`arhebBoxComingSoon`** (boolean), **`arhebBoxServiceFeeJod`** (non-negative), **`einvoicePaused`** (boolean), **`appVersionAndroid`** / **`appVersionIos`** (or **`appVersion`**: `{ "android"?, "ios"? }`). Missing fields unchanged. When **`einvoicePaused`** is true (or env **`JOFOTARA_PAUSED` / `EINVOICE_PAUSED`**), **PATCH** store order or Arheb box to **Delivered** does **not** call JoFotara; the row is marked `einvoiceStatus: paused` instead. |
 
 ### Admin platform checkout fees
 
@@ -3358,6 +3361,28 @@ Drivers are **added, removed, and blocked only by SuperAdmin and Admin** (see [A
 When a driver **accepts** an order, the backend stores a **commission snapshot** on the order and exposes it on driver-facing order payloads as **`driverShare`** (see [Driver order object (fields)](#driver-order-object-fields)). **Profit** stats use the driver’s share (**`driverEarnings`**), not the full delivery fee.
 
 **Base path:** `/api/driver`
+
+### Driver workflow (store & Arheb Box)
+
+**Store orders**
+
+1. **Pool:** `GET /api/driver/home` → **`availableOrders`**: unassigned orders in **`Preparing`**.
+2. **Accept:** `POST /api/driver/orders/accept` — sets **`driverId`**, order status **`Driver to pick`**, commission snapshot. Shown in **`driverToPickOrders`** on home (no longer in **`availableOrders`**).
+3. **On the way:** `POST /api/driver/orders/:orderId/on-the-way` (or `POST /api/driver/orders/on-the-way`) — status **`On the way`**. Allowed from **`Preparing`**, **`Being prepared`**, or **`Driver to pick`**.
+4. **Delivered:** `POST /api/driver/orders/:orderId/complete` or **`POST /api/driver/orders/:orderId/delivered`** (or body `orderId` on `.../orders/complete` / **`.../orders/delivered`**) — status **`Delivered`** (must already be **`On the way`**).
+
+**Admin** store order: **`POST /api/admin/orders/:orderId/assign-driver`** also sets status **`Driver to pick`**. **Reassign** allows **Preparing**, **Driver to pick**, or **On the way** ([Admin Orders](#admin-orders)).
+
+**Arheb Box**
+
+1. **Open jobs:** `GET /api/driver/home` → **`arhebBoxAvailable`**: only requests with **`driverId` null** (not claimed yet).
+2. **Your jobs:** same response → **`arhebBoxMyActive`**: this driver’s requests in **`assigned`**, **`driver_to_pick`**, **`on_the_way`**, or legacy **`in_progress`**.  
+   `GET /api/driver/orders?filter=available` also returns **`arhebBoxMyActive`** alongside **`arhebBoxAvailable`**.
+3. **Accept:** `POST /api/driver/arheb-box/:id/accept` — status **`driver_to_pick`** (customer: “driver assigned”, not en route yet).
+4. **On the way:** `POST /api/driver/arheb-box/:id/on-the-way` — status **`on_the_way`** (customer FCM; live map).
+5. **Delivered:** `POST /api/driver/arheb-box/:id/complete` or **`POST /api/driver/arheb-box/:id/delivered`** — status **`delivered`** (requires **`on_the_way`**, or legacy **`in_progress`** for older data).
+
+**Admin Arheb Box reassign:** `POST /api/admin/arheb-box/:id/reassign-driver` — see [Admin Arheb Box](#admin-arheb-box).
 
 ### Driver Send OTP
 
@@ -3436,7 +3461,7 @@ Authenticates a driver by mobile and OTP code. Returns driver profile and JWT fo
 
 ### Driver Home
 
-Returns the driver's home dashboard: profile, stats (**today/total profit** = driver share of delivery fees, plus delivery-fee totals), current order (one actively delivering), **available store orders** (unassigned `Preparing`), **Arheb Box jobs awaiting pickup** (`arhebBoxAvailable`: assigned to this driver, status `assigned` — accept then complete via Arheb Box APIs), and in-progress store orders.
+Returns the driver's home dashboard: profile, stats (**today/total profit** = driver share of delivery fees, plus delivery-fee totals), **current order** (one order mapped as actively **On the way**), **`availableOrders`** (unassigned **Preparing** store orders), **`driverToPickOrders`** (store orders you accepted — status **Driver to pick** — before you tap **on-the-way**), **`inProgressOrders`** (other **On the way** store orders if any), **`arhebBoxAvailable`** (unclaimed Arheb Box jobs only: **`driverId` is null**), and **`arhebBoxMyActive`** (Arheb Box jobs assigned to you: **`assigned`**, **`driver_to_pick`**, **`on_the_way`**, or legacy **`in_progress`**). See [Driver workflow (store & Arheb Box)](#driver-workflow-store--arheb-box).
 
 **Endpoint:** `GET /api/driver/home`
 
@@ -3493,13 +3518,19 @@ Returns the driver's home dashboard: profile, stats (**today/total profit** = dr
         "driver_longitude": null
       }
     ],
+    "driverToPickOrders": [],
     "arhebBoxAvailable": [],
+    "arhebBoxMyActive": [],
     "inProgressOrders": []
   }
 }
 ```
 
-`arhebBoxAvailable` is an array of enriched Arheb Box requests (same shape as driver Arheb Box list) for deliveries admin-assigned to this driver that still need **accept** → **complete**.
+- **`driverToPickOrders`**: store orders in status **Driver to pick** (after **accept**, before **on-the-way**). Mapped **`status`**: **`picking`**.
+
+- **`arhebBoxAvailable`:** unclaimed open Arheb Box requests (**`driverId` null**).
+
+- **`arhebBoxMyActive`:** your Arheb Box runs (admin-assigned, accepted, or on the way); use **`POST /api/driver/arheb-box/:id/on-the-way`** then **complete** / **delivered** per [workflow](#driver-workflow-store--arheb-box).
 
 - **`todayProfit` / `totalProfit`**: sum of **`driverEarnings`** (or computed share) on **Delivered** orders (today vs all time).
 - **`todayDeliveryFees` / `totalDeliveryFees`**: sum of **`deliveryFee`** on those same sets (informational).
@@ -3546,7 +3577,7 @@ Returns earnings and order stats for the driver (optionally filtered by period).
 
 ### Driver Orders List
 
-Returns a paginated list of orders for the driver. Filter: **`all`** (everything assigned to this driver — see below), **`available`** (unassigned **store** orders in `Preparing`), or **`mine`** / **`in_progress`** (assigned store orders not yet delivered/cancelled). When **`filter=available`**, the response also includes **`arhebBoxAvailable`** and **`arhebBoxAvailableCount`**: box rows already assigned to this driver (**`assigned`** / **`in_progress`**) plus **`confirmed`** rows with no driver yet (same idea as driver home).
+Returns a paginated list of orders for the driver. Filter: **`all`** (everything assigned to this driver — see below), **`available`** (unassigned **store** orders in `Preparing`), or **`mine`** / **`in_progress`** (assigned store orders not yet delivered/cancelled). When **`filter=available`**, the response also includes **`arhebBoxAvailable`**, **`arhebBoxAvailableCount`**, and **`arhebBoxMyActive`**: [same split as home](#driver-home) — unclaimed box jobs vs your active box runs.
 
 For **`filter=all`**, **`orders`** is a **merged** list of **store** orders and **Arheb Box** requests that have this **`driverId`**, sorted by **`createdAt`** descending (newest first). Each element includes **`orderType`**: **`"store"`** (same fields as [Driver order object](#driver-order-object-fields)) or **`"arheb_box"`** with a **`request`** object (enriched box payload, same shape as elsewhere in the driver API).
 
@@ -3602,7 +3633,7 @@ For **`filter=all`**, **`orders`** is a **merged** list of **store** orders and 
 }
 ```
 
-Store rows include **`orderType": "store"`** plus the usual fields. **`driverShare`** is present when commission is resolved. **`filter=available`** and **`filter=in_progress`** lists are **store orders only** (no **`orderType`** on those items). See [Driver order object (fields)](#driver-order-object-fields).
+Store rows include **`orderType": "store"`** plus the usual fields. **`driverShare`** is present when commission is resolved. **`filter=available`** and **`filter=in_progress`** list items are **store orders** (no **`orderType`** on those items), except **`filter=available`** also returns **`arhebBoxAvailable`** and **`arhebBoxMyActive`**. See [Driver order object (fields)](#driver-order-object-fields).
 
 ---
 
@@ -3663,7 +3694,7 @@ Every driver order object includes **store**, **customer**, **delivery fee**, **
 
 ### Driver Accept Order
 
-Assigns an order to the authenticated driver and **keeps the current order status** (typically **Preparing** after the store has confirmed). Persists **commission snapshot** fields on the order (`driverCommissionType`, `driverCommissionValue`, `driverEarnings`) using the effective driver rate: **per-driver `commissionPercent`** → [App info](#admin-app-info-driver-delivery-default) **`driverDeliveryPercent`** → [legacy global](#admin-driver-commission) settings. To move to **On the way**, use [Driver Mark Order On the Way](#driver-mark-order-on-the-way) once the store has set **Preparing** / **Being prepared**.
+Assigns a **store** order to the authenticated driver and sets order status to **`Driver to pick`**. Persists **commission snapshot** fields on the order (`driverCommissionType`, `driverCommissionValue`, `driverEarnings`) using the effective driver rate: **per-driver `commissionPercent`** → [App info](#admin-app-info-driver-delivery-default) **`driverDeliveryPercent`** → [legacy global](#admin-driver-commission) settings. To move to **On the way**, use [Driver Mark Order On the Way](#driver-mark-order-on-the-way) (allowed from **Driver to pick** or **Preparing** / **Being prepared**).
 
 **Endpoint:** `POST /api/driver/orders/accept`
 
@@ -3683,7 +3714,7 @@ Assigns an order to the authenticated driver and **keeps the current order statu
 
 **When `driverId` is not on the order (responses):** In **GET** checkout orders, **GET** `/api/orders/:orderId`, **GET** `/api/admin/orders`, and driver order payloads, **`driverId`** and **`driverName`** are **`null`** (or absent) until a driver has **accepted** the order. While status is **Preparing** and no driver has accepted yet—**including** when drivers are only being invited via auto-assign / `driver_requests`—there is **no** assigned driver on the order, so **`driverId`** remains unset.
 
-**Effect:** **`driverId`** and **`driverName`** are set on the order; **`status`** stays as it was (usually **Preparing**) until the driver or admin advances it to **On the way**.
+**Effect:** **`driverId`** and **`driverName`** are set; **`status`** becomes **`Driver to pick`**. The order is listed under **`driverToPickOrders`** on [Driver Home](#driver-home) until you call **on-the-way**.
 
 **Success Response (200):**
 ```json
@@ -3710,7 +3741,7 @@ Assigns an order to the authenticated driver and **keeps the current order statu
 
 ### Driver Mark Order On the Way
 
-Sets a **store** order’s status to **`On the way`** when the **Bearer** driver is the one **assigned** to that order (**`order.driverId`** matches the token). Allowed only from **`Preparing`** or **`Being prepared`** (same progression as store admin). Resets **`nearArrivalNotified`**, emits tracking/socket updates, and sends the customer an **“On the way”** FCM (same idea as admin status change).
+Sets a **store** order’s status to **`On the way`** when the **Bearer** driver is the one **assigned** to that order (**`order.driverId`** matches the token). Allowed from **`Preparing`**, **`Being prepared`**, or **`Driver to pick`**. Resets **`nearArrivalNotified`**, emits tracking/socket updates, and sends the customer an **“On the way”** FCM (same idea as admin status change).
 
 **Authentication:** Required — **`Authorization: Bearer <driver JWT>`** (same as other driver endpoints). The **order id** is not secret; the token must match the assigned driver.
 
@@ -3737,7 +3768,9 @@ Marks a **store order** as **Delivered**. The **Bearer token** identifies the dr
 | Method | Path | Body |
 |--------|------|------|
 | POST | `/api/driver/orders/:orderId/complete` | Optional: `{ "deliveryProofImage": "https://..." }` |
+| POST | `/api/driver/orders/:orderId/delivered` | Same as **`complete`** (alias). |
 | POST | `/api/driver/orders/complete` | `{ "orderId": 20, "deliveryProofImage": "https://..." }` |
+| POST | `/api/driver/orders/delivered` | Same as **`/complete`** with body **`orderId`** (alias). |
 
 **Authentication:** Required (**Driver** `Authorization: Bearer <token>`)
 
@@ -3764,11 +3797,31 @@ Optional `deliveryProofImage` (string URL) is saved on the order and returned in
 
 ---
 
+### Driver Mark Arheb Box On the Way
+
+Moves an **Arheb Box** request to **`on_the_way`** after you have accepted it (**`driver_to_pick`**, **`assigned`**, or legacy **`in_progress`**). Sends the customer an **on the way** FCM and enables the usual live-tracking behavior. See [Driver workflow](#driver-workflow-store--arheb-box).
+
+**Endpoint:** `POST /api/driver/arheb-box/:id/on-the-way`
+
+**Authentication:** Required (Driver Bearer token)
+
+**Success (200):** `{ "success": true, "message": "Arheb Box marked as on the way", "data": { "request": { ... } } }`  
+If already **`on_the_way`**, **`200`** with **`Already on the way`**.
+
+**Errors:** `400` – wrong status; `403` – not your request; `404` – not found.
+
+---
+
 ### Driver Complete Arheb Box (delivery)
 
-Marks an **Arheb Box** request **delivered** from the driver app. **Bearer** must be the driver **assigned** to the request; status must be **`in_progress`** (after **POST** `/api/driver/arheb-box/:id/accept`). Sends FCM to the customer.
+Marks an **Arheb Box** request **delivered**. **Bearer** must be the assigned driver. Status must be **`on_the_way`** (or legacy **`in_progress`**). Triggers JoFotara async when e-invoice is not paused (same rules as admin **PATCH**). Sends FCM to the customer.
 
-**Endpoint:** `POST /api/driver/arheb-box/:id/complete`
+**Endpoints (aliases):**
+
+| Method | Path |
+|--------|------|
+| POST | `/api/driver/arheb-box/:id/complete` |
+| POST | `/api/driver/arheb-box/:id/delivered` |
 
 **Authentication:** Required (Driver Bearer token)
 
@@ -3781,7 +3834,7 @@ Marks an **Arheb Box** request **delivered** from the driver app. **Bearer** mus
 }
 ```
 
-**Error Responses:** `400` – Not in `in_progress`; `403` – Request not assigned to this driver; `404` – Request not found. Already **delivered** → `200` with message that it was already complete.
+**Error Responses:** `400` – Not **`on_the_way`** / legacy **`in_progress`** yet; `403` – Request not assigned to this driver; `404` – Request not found. Already **delivered** → `200` with message that it was already complete.
 
 ---
 
@@ -4021,8 +4074,13 @@ For issues or questions, please contact: `contact@arheb.app`
 | PATCH | `/api/admin/info` | Admin / SuperAdmin | Body: any subset of `{ email, phone, cliqNumber, driverDeliveryPercent, arhebBoxComingSoon, arhebBoxServiceFeeJod, einvoicePaused, appVersionAndroid, appVersionIos, appVersion }`. |
 | GET | `/api/app_version` | None | `{ "android", "ios" }` — minimum app versions from App info (`Cache-Control: public, max-age=60`). |
 | GET | `/app_version` | None | Same JSON (alias path). |
-| POST | `/api/driver/orders/:orderId/on-the-way` | Driver | **Preparing** / **Being prepared** → **On the way**; assigned driver only (`Bearer` must match **`order.driverId`**). |
+| POST | `/api/driver/orders/:orderId/on-the-way` | Driver | **Preparing** / **Being prepared** / **Driver to pick** → **On the way**; assigned driver only (`Bearer` must match **`order.driverId`**). |
 | POST | `/api/driver/orders/on-the-way` | Driver | Same; JSON `{ "orderId" }` or query **`?orderId=`**. |
+| POST | `/api/admin/orders/:orderId/assign-driver` | Admin / SuperAdmin | Body `{ "driverId" }`. Sets **Driver to pick** (when order is **Preparing**). |
+| POST | `/api/admin/orders/:orderId/reassign-driver` | Admin / SuperAdmin | Body `{ "driverId" }`. Reassign when status is **Preparing**, **Driver to pick**, or **On the way**. |
+| POST | `/api/driver/orders/:orderId/delivered` | Driver | Alias of **complete** (mark store order **Delivered**). |
+| POST | `/api/driver/arheb-box/:id/on-the-way` | Driver | Arheb Box → **`on_the_way`** (after accept). |
+| POST | `/api/driver/arheb-box/:id/delivered` | Driver | Alias of **`/complete`** (mark box **delivered**). |
 | POST | `/api/admin/stores/:storeId/products/import` | Admin / SuperAdmin / Store Admin (per-store) | Imports products for a store from an Excel file. Expects `multipart/form-data` with field `file` (`.xlsx`/`.xls`). Store Admin rows go to the pending products queue; Admin/SuperAdmin rows are imported directly. Rows with an `id` column that already exists for the store are **skipped** (no duplicate). Export includes `id` column. |
 | GET | `/api/admin/stores/:storeId/products/export` | Admin / SuperAdmin / Store Admin (per-store) | Exports all products for the given store as an Excel file. Columns include `id`, `nameEn`, `nameAr`, `price`, `discount`, `unit`, `category`, `description`, `stock`, `isAvailable`. |
 | POST | `/api/admin/orders/:orderId/reject` | Admin / SuperAdmin / Store Admin (own store) | **Store Admin:** cancel only while **`Pending payment`**, **`Waiting cliq confirmation`**, or **`Waiting confirmation`**. **Admin/SuperAdmin:** same pre-confirmation rule as before (pending / waiting / cliq). Sets status to `Cancelled`. |
@@ -4152,14 +4210,16 @@ For issues or questions, please contact: `contact@arheb.app`
 
 - **Arheb Box: FCM & drivers**  
   - **POST** `/api/arheb-box` accepts optional **`fcmToken`**; stored on the request and used for status notifications, and **requires `receiverPhone` + `receiverName`** so drivers can contact the receiver.  
-  - **PATCH** `/api/admin/arheb-box/:id` (status) – sends FCM to the user on status change.  
+  - **PATCH** `/api/admin/arheb-box/:id` (status) – sends FCM to the user on status change. When status is **delivered**, JoFotara is skipped if [e-invoice is paused](#admin-app-info-driver-delivery-default).  
   - **POST** `/api/admin/arheb-box/:id/assign-driver` – body `{ driverId }`; sets request to **assigned** and sends FCM to the driver.  
+  - **POST** `/api/admin/arheb-box/:id/reassign-driver` – **Admin / SuperAdmin**; body `{ driverId }` — change driver, keep current status (in-flight; not delivered/cancelled).  
   - **POST** `/api/admin/arheb-box/:id/request-driver` – body `{ driverIds: [...] }` or `{ all: true }`. Broadcasts FCM + socket notifications to specified drivers (or all online drivers). Updates status to **confirmed**. Same accept/reject flow as store orders.  
   - **GET** `/api/driver/arheb-box` – list Arheb Box requests assigned to the driver, including **sender/receiver names & phones** and pickup/dropoff with `mapsUrl`.  
-  - **POST** `/api/driver/arheb-box/:id/accept` – driver accepts; sets `driverId`/`driverName`, status → **in_progress**, FCM sent to user. Now accepts from **assigned**, **confirmed** (broadcast), or **pending** status.  
+  - **POST** `/api/driver/arheb-box/:id/accept` – driver accepts; sets `driverId`/`driverName`, status → **`driver_to_pick`**, FCM to user (“driver assigned”). Accepts from **assigned**, **confirmed**, or **pending** (see [Driver workflow](#driver-workflow-store--arheb-box)).  
+  - **POST** `/api/driver/arheb-box/:id/on-the-way` – status → **`on_the_way`**; customer “on the way” FCM.  
   - **POST** `/api/driver/arheb-box/:id/reject-request` – driver rejects a broadcast request; status stays **confirmed** (available for other drivers).  
-  - **POST** `/api/driver/arheb-box/:id/complete` – Bearer + request id; only assigned driver; **in_progress** → **delivered**, FCM to sender.  
-  - **POST** `/api/driver/orders/:orderId/complete` or **POST** `/api/driver/orders/complete` with `{ orderId }` – store order **On the way** → **Delivered** (Bearer verifies driver).
+  - **POST** `/api/driver/arheb-box/:id/complete` or **`/delivered`** – only assigned driver; requires **`on_the_way`** (or legacy **`in_progress`**) → **delivered**, FCM to customer.  
+  - **POST** `/api/driver/orders/:orderId/complete`, **`/delivered`**, or **POST** `/api/driver/orders/complete` / **`/delivered`** with `{ orderId }` – store order **On the way** → **Delivered** (Bearer verifies driver). Accept sets store order to **Driver to pick** first.
 
 - **Arheb Box: Card Payment**  
   - **POST** `/api/payment/arheb-box/initiate` (authenticated) – body: `{ arhebBox: { pickup, dropoff, receiverPhone, receiverName, paymentMethod, whoPays, amount, weightKg, notes, fcmToken }, currency?, customerName?, customerEmail?, customerPhone? }`. Creates an Arheb Box request with status **pending_payment**, initiates a PayTabs session (cart_id `ARHEBBOX-{id}-{timestamp}`). On callback/return success, status updates to **pending**.  
