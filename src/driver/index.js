@@ -516,10 +516,9 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
       .prepare("SELECT * FROM orders WHERE driverId IS NULL AND status = 'Preparing' ORDER BY id DESC LIMIT 50")
       .all();
 
-    let arhebBoxAvailable = [];
+    let arhebBoxUnassigned = [];
     let arhebBoxMyActive = [];
     try {
-      // Pool: unclaimed Arheb Box jobs only (once accepted, they move to arhebBoxMyActive)
       const boxUnassignedOpen = db
         .prepare(
           `SELECT * FROM arheb_box_requests WHERE driverId IS NULL
@@ -527,8 +526,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
            ORDER BY createdAt DESC LIMIT 20`,
         )
         .all();
-      arhebBoxAvailable = boxUnassignedOpen.map((r) => enrichArhebBoxRow(r, db));
-      // Assigned to this driver: pick up or en route to customer (not in the "available" pool)
+      arhebBoxUnassigned = boxUnassignedOpen.map((r) => enrichArhebBoxRow(r, db));
       arhebBoxMyActive = db
         .prepare(
           `SELECT * FROM arheb_box_requests WHERE driverId = ?
@@ -541,6 +539,8 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     } catch (e) {
       if (!e.message || !e.message.includes('no such table')) throw e;
     }
+    // `arhebBoxAvailable` = assigned to me + open pool (same shape as pre–split API for older driver apps)
+    const arhebBoxAvailable = [...arhebBoxMyActive, ...arhebBoxUnassigned];
 
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
@@ -622,7 +622,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
         /** Store orders: driver accepted but not yet "On the way" */
         driverToPickOrders: driverToPickOrders.map(buildOrder),
         arhebBoxAvailable,
-        /** Arheb Box: assigned to you (incl. driver_to_pick, on_the_way) — not in arhebBoxAvailable */
+        /** Subset: only this driver's active Arheb Box jobs (also included first in arhebBoxAvailable). */
         arhebBoxMyActive,
         inProgressOrders: inProgressOrders.map(buildOrder),
       },
@@ -800,8 +800,9 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
       list = built.orders;
     }
 
-    let arhebBoxAvailable = [];
+    let arhebBoxUnassigned = [];
     let arhebBoxMyActive = [];
+    let arhebBoxAvailable = [];
     if (filter === 'available') {
       try {
         const boxUnassignedOpen = db
@@ -811,7 +812,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
              ORDER BY createdAt DESC LIMIT 50`,
           )
           .all();
-        arhebBoxAvailable = boxUnassignedOpen.map((r) => enrichArhebBoxRow(r, db));
+        arhebBoxUnassigned = boxUnassignedOpen.map((r) => enrichArhebBoxRow(r, db));
         arhebBoxMyActive = db
           .prepare(
             `SELECT * FROM arheb_box_requests WHERE driverId = ?
@@ -821,6 +822,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
           )
           .all(driverId, ARHEB_STATUS_DRIVER_TO_PICK, ARHEB_STATUS_ON_THE_WAY)
           .map((r) => enrichArhebBoxRow(r, db));
+        arhebBoxAvailable = [...arhebBoxMyActive, ...arhebBoxUnassigned];
       } catch (e) {
         if (!e.message || !e.message.includes('no such table')) throw e;
       }
