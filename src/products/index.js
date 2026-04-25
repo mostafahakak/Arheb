@@ -7,6 +7,7 @@ const {
   customerFacingIsOpen,
   loadStoresByIdMap,
 } = require('../utils/storeVisibility');
+const { applyCatalogListPriceAndOriginal } = require('../utils/productCatalogPrice');
 
 const loadProductsFromPath = (filePath) => {
   try {
@@ -44,14 +45,16 @@ function hasDiscount(p) {
   return !Number.isNaN(n) && n > 0;
 }
 
-// Ensure client always receives discount and originalPrice; strip cart-only selectedAddOns from catalog payloads
+// Ensure client always receives correct sale vs original for discounted items; strip cart-only selectedAddOns
 function toClientProduct(p, storeStatusMap, storeById) {
   if (!p) return p;
+  const { price, originalPrice } = applyCatalogListPriceAndOriginal(p);
   const { selectedAddOns: _omitSelected, ...rest } = p;
   const result = {
     ...rest,
+    price,
+    originalPrice,
     discount: p.discount ?? null,
-    originalPrice: p.originalPrice ?? p.price ?? null,
     addOnGroups: Array.isArray(p.addOnGroups) ? p.addOnGroups : [],
   };
   if (result.store && storeStatusMap) {

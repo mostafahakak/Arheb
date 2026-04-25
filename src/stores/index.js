@@ -8,6 +8,7 @@ const {
   compareStoresOpenFirstThenName,
   sortStoresOpenFirst,
 } = require('../utils/storeVisibility');
+const { applyCatalogListPriceAndOriginal } = require('../utils/productCatalogPrice');
 const { getStorePaymentMethods } = require('../utils/storePaymentMethods');
 const { enrichOpeningHoursObject } = require('../utils/openingHoursJordan');
 const { upsertStoreFcmToken } = require('../storeFcm');
@@ -451,12 +452,16 @@ module.exports = function attachStoresRoutes(app, db) {
 
     const products = productsResponse?.data?.products ?? [];
     const storeProducts = products.filter((p) => String(p.store?.id) === String(storeId) && p.isAvailable !== false);
-    const toClientProduct = (p) => ({
-      ...p,
-      discount: p.discount ?? null,
-      originalPrice: p.originalPrice ?? p.price ?? null,
-      store: p.store ? { ...p.store, isOpen: customerFacingIsOpen(store) } : p.store,
-    });
+    const toClientProduct = (p) => {
+      const { price, originalPrice } = applyCatalogListPriceAndOriginal(p);
+      return {
+        ...p,
+        price,
+        originalPrice,
+        discount: p.discount ?? null,
+        store: p.store ? { ...p.store, isOpen: customerFacingIsOpen(store) } : p.store,
+      };
+    };
 
     return res.status(200).json({
       success: true,
@@ -636,12 +641,16 @@ module.exports = function attachStoresRoutes(app, db) {
       .filter((p) => String(p.store?.id) === String(storeId) && p.isAvailable !== false)
       .sort(compareProductIdStable);
 
-    const toClientProduct = (p) => ({
-      ...p,
-      discount: p.discount ?? null,
-      originalPrice: p.originalPrice ?? p.price ?? null,
-      store: p.store ? { ...p.store, isOpen: customerFacingIsOpen(store) } : p.store,
-    });
+    const toClientProduct = (p) => {
+      const { price, originalPrice } = applyCatalogListPriceAndOriginal(p);
+      return {
+        ...p,
+        price,
+        originalPrice,
+        discount: p.discount ?? null,
+        store: p.store ? { ...p.store, isOpen: customerFacingIsOpen(store) } : p.store,
+      };
+    };
 
     const { categoriesForPaging, buckets } = buildStoreCategoryBuckets(store, storeProducts);
     const { pagePick, finished, totalProducts, totalPages } = pickFlatPageSlice(buckets, page, perPage);
@@ -714,12 +723,16 @@ module.exports = function attachStoresRoutes(app, db) {
       .filter((p) => String(p.store?.id) === String(storeId) && p.isAvailable !== false)
       .sort(compareProductIdStable);
 
-    const toClientProduct = (p) => ({
-      ...p,
-      discount: p.discount ?? null,
-      originalPrice: p.originalPrice ?? p.price ?? null,
-      store: p.store ? { ...p.store, isOpen: customerFacingIsOpen(store) } : p.store,
-    });
+    const toClientProduct = (p) => {
+      const { price, originalPrice } = applyCatalogListPriceAndOriginal(p);
+      return {
+        ...p,
+        price,
+        originalPrice,
+        discount: p.discount ?? null,
+        store: p.store ? { ...p.store, isOpen: customerFacingIsOpen(store) } : p.store,
+      };
+    };
 
     const { categoriesForPaging, buckets } = buildStoreCategoryBuckets(store, storeProducts);
     const { pagePick, finished, totalProducts, totalPages } = pickFlatPageSlice(buckets, page, perPage);
@@ -841,12 +854,16 @@ module.exports = function attachStoresRoutes(app, db) {
         return sub.some(s => s === subCategoryQuery || s.includes(subCategoryQuery) || subCategoryQuery.includes(s));
       });
     }
-    const toClientProduct = (p) => ({
-      ...p,
-      discount: p.discount ?? null,
-      originalPrice: p.originalPrice ?? p.price ?? null,
-      store: p.store ? { ...p.store, isOpen: customerFacingIsOpen(store) } : p.store,
-    });
+    const toClientProduct = (p) => {
+      const { price, originalPrice } = applyCatalogListPriceAndOriginal(p);
+      return {
+        ...p,
+        price,
+        originalPrice,
+        discount: p.discount ?? null,
+        store: p.store ? { ...p.store, isOpen: customerFacingIsOpen(store) } : p.store,
+      };
+    };
 
     return res.status(200).json({
       success: true,

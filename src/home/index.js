@@ -9,6 +9,7 @@ const {
   customerFacingIsOpen,
 } = require('../utils/storeVisibility');
 const { normalizeHomeContentLinkArray } = require('../utils/homeContentLinks');
+const { applyCatalogListPriceAndOriginal } = require('../utils/productCatalogPrice');
 
 function loadStoresListForVisibility() {
   try {
@@ -401,11 +402,13 @@ module.exports = function attachHomeRoutes(app, db, JWT_SECRET) {
           p.store && full
             ? { ...p.store, isOpen: customerFacingIsOpen(full) }
             : p.store;
+        const { price, originalPrice } = applyCatalogListPriceAndOriginal(p);
         return {
           ...p,
+          price,
+          originalPrice,
           store: storeOut,
           discount: p.discount ?? null,
-          originalPrice: p.originalPrice ?? p.price ?? null,
         };
       });
     if (response.data) {

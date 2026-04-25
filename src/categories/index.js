@@ -7,6 +7,7 @@ const {
   customerFacingIsOpen,
   loadStoresByIdMap,
 } = require('../utils/storeVisibility');
+const { applyCatalogListPriceAndOriginal } = require('../utils/productCatalogPrice');
 
 const categoriesResponsePath = getJsonPath('categories_response.json');
 
@@ -39,10 +40,13 @@ function loadStoreStatusMap() {
 }
 
 function enrichProductWithStoreStatus(product, statusMap, storeById) {
-  if (!product || !product.store || !statusMap) return product;
+  if (!product || !statusMap) return product;
+  const { price, originalPrice } = applyCatalogListPriceAndOriginal(product);
+  const base = { ...product, price, originalPrice };
+  if (!product.store) return base;
   const full = storeById?.[String(product.store.id)];
   return {
-    ...product,
+    ...base,
     store: {
       ...product.store,
       status: statusMap[product.store.id] ?? 'closed',

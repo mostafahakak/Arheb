@@ -6,6 +6,7 @@ const {
   customerFacingIsOpen,
   sortStoresOpenFirst,
 } = require('../utils/storeVisibility');
+const { applyCatalogListPriceAndOriginal } = require('../utils/productCatalogPrice');
 
 const storesResponsePath = getJsonPath('stores_listing_response.json');
 const productsResponsePath = getJsonPath('products_listing_response.json');
@@ -94,10 +95,13 @@ module.exports = function attachSearchRoutes(app) {
           storeEligibleForCustomerSearch(storeById[String(p.store.id)]),
       )
       .map((p) => {
+        const { price, originalPrice } = applyCatalogListPriceAndOriginal(p);
         const full = storeById[String(p.store.id)];
-        if (!full) return p;
+        if (!full) return { ...p, price, originalPrice };
         return {
           ...p,
+          price,
+          originalPrice,
           store: {
             ...p.store,
             isOpen: customerFacingIsOpen(full),
