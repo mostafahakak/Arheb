@@ -22,7 +22,14 @@ const {
 } = require('../utils/driverCommission');
 const { getActiveFromListWithDistance } = require('../driverPresence');
 const { offerNextSequentialDriver, offerNextSequentialArhebBoxDriver, parseLatLongFromGoogleMapsUrl } = require('../utils/sequentialDriverOffer');
-const { notifyArhebBoxCustomerDriverEnRoute } = require('../utils/arhebBoxFcm');
+const { notifyArhebBoxCustomerDriverToPick, notifyArhebBoxCustomerDriverEnRoute } = require('../utils/arhebBoxFcm');
+
+/** After a driver accepts (or is assigned) a store order — before "On the way". */
+const STORE_STATUS_DRIVER_TO_PICK = 'Driver to pick';
+/** Arheb Box: driver accepted, has not started trip to customer yet. */
+const ARHEB_STATUS_DRIVER_TO_PICK = 'driver_to_pick';
+/** Arheb Box: driver is heading to customer. */
+const ARHEB_STATUS_ON_THE_WAY = 'on_the_way';
 
 function parseMapsUrl(url) {
   if (!url || typeof url !== 'string') return null;
@@ -216,6 +223,7 @@ function mapOrderStatus(s) {
   if (!s) return 'pending';
   const lower = s.toLowerCase();
   if (lower.includes('waiting') || lower.includes('confirmation')) return 'pending';
+  if (lower === 'driver to pick' || (lower.includes('driver') && lower.includes('pick'))) return 'picking';
   if (lower.includes('prepared') || lower.includes('preparing')) return 'ready';
   if (lower.includes('way') || lower.includes('delivering')) return 'delivering';
   if (lower.includes('delivered')) return 'delivered';
@@ -500,14 +508,18 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     const driverOrders = db.prepare('SELECT * FROM orders WHERE driverId = ? ORDER BY id DESC').all(driverId);
     const currentOrder = driverOrders.find((o) => mapOrderStatus(o.status) === 'delivering');
     const inProgressOrders = driverOrders.filter((o) => mapOrderStatus(o.status) === 'delivering' && o.id !== (currentOrder && currentOrder.id));
+    const driverToPickOrders = driverOrders
+      .filter((o) => mapOrderStatus(o.status) === 'picking')
+      .slice(0, 20);
     // Available orders for drivers: only unassigned Preparing orders
     const availableOrders = db
       .prepare("SELECT * FROM orders WHERE driverId IS NULL AND status = 'Preparing' ORDER BY id DESC LIMIT 50")
       .all();
 
     let arhebBoxAvailable = [];
+    let arhebBoxMyActive = [];
     try {
-      const boxAssigned = db.prepare("SELECT * FROM arheb_box_requests WHERE driverId = ? AND LOWER(status) IN ('assigned', 'in_progress') ORDER BY createdAt DESC LIMIT 20").all(driverId);
+      // Pool: unclaimed Arheb Box jobs only (once accepted, they move to arhebBoxMyActive)
       const boxUnassignedOpen = db
         .prepare(
           `SELECT * FROM arheb_box_requests WHERE driverId IS NULL
@@ -515,7 +527,17 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
            ORDER BY createdAt DESC LIMIT 20`,
         )
         .all();
-      arhebBoxAvailable = [...boxAssigned, ...boxUnassignedOpen].map((r) => enrichArhebBoxRow(r, db));
+      arhebBoxAvailable = boxUnassignedOpen.map((r) => enrichArhebBoxRow(r, db));
+      // Assigned to this driver: pick up or en route to customer (not in the "available" pool)
+      arhebBoxMyActive = db
+        .prepare(
+          `SELECT * FROM arheb_box_requests WHERE driverId = ?
+           AND LOWER(TRIM(status)) IN ('assigned', ?, ?, 'in_progress')
+           AND LOWER(TRIM(status)) NOT IN ('delivered', 'cancelled')
+           ORDER BY createdAt DESC LIMIT 30`,
+        )
+        .all(driverId, ARHEB_STATUS_DRIVER_TO_PICK, ARHEB_STATUS_ON_THE_WAY)
+        .map((r) => enrichArhebBoxRow(r, db));
     } catch (e) {
       if (!e.message || !e.message.includes('no such table')) throw e;
     }
@@ -597,7 +619,11 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
         stats,
         currentOrder: currentOrder ? buildOrder(currentOrder) : null,
         availableOrders: availableOrders.slice(0, 20).map(buildOrder),
+        /** Store orders: driver accepted but not yet "On the way" */
+        driverToPickOrders: driverToPickOrders.map(buildOrder),
         arhebBoxAvailable,
+        /** Arheb Box: assigned to you (incl. driver_to_pick, on_the_way) — not in arhebBoxAvailable */
+        arhebBoxMyActive,
         inProgressOrders: inProgressOrders.map(buildOrder),
       },
     });
@@ -775,9 +801,9 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     }
 
     let arhebBoxAvailable = [];
+    let arhebBoxMyActive = [];
     if (filter === 'available') {
       try {
-        const boxAssigned = db.prepare("SELECT * FROM arheb_box_requests WHERE driverId = ? AND LOWER(status) IN ('assigned', 'in_progress') ORDER BY createdAt DESC LIMIT 50").all(driverId);
         const boxUnassignedOpen = db
           .prepare(
             `SELECT * FROM arheb_box_requests WHERE driverId IS NULL
@@ -785,7 +811,16 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
              ORDER BY createdAt DESC LIMIT 50`,
           )
           .all();
-        arhebBoxAvailable = [...boxAssigned, ...boxUnassignedOpen].map((r) => enrichArhebBoxRow(r, db));
+        arhebBoxAvailable = boxUnassignedOpen.map((r) => enrichArhebBoxRow(r, db));
+        arhebBoxMyActive = db
+          .prepare(
+            `SELECT * FROM arheb_box_requests WHERE driverId = ?
+             AND LOWER(TRIM(status)) IN ('assigned', ?, ?, 'in_progress')
+             AND LOWER(TRIM(status)) NOT IN ('delivered', 'cancelled')
+             ORDER BY createdAt DESC LIMIT 50`,
+          )
+          .all(driverId, ARHEB_STATUS_DRIVER_TO_PICK, ARHEB_STATUS_ON_THE_WAY)
+          .map((r) => enrichArhebBoxRow(r, db));
       } catch (e) {
         if (!e.message || !e.message.includes('no such table')) throw e;
       }
@@ -804,7 +839,9 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
         perPage,
         total,
         orders: list,
-        ...(filter === 'available' ? { arhebBoxAvailable, arhebBoxAvailableCount: arhebBoxAvailable.length } : {}),
+        ...(filter === 'available'
+          ? { arhebBoxAvailable, arhebBoxAvailableCount: arhebBoxAvailable.length, arhebBoxMyActive }
+          : {}),
       },
     });
   });
@@ -984,14 +1021,14 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     }
     const driverRowForAccept = findDriverById.get(driverId);
     const driverName = driverRowForAccept ? driverRowForAccept.name : null;
-    const currentStatus = order.status || 'Preparing';
     try {
       const { clearStoreOrderOfferTimeout } = require('../utils/sequentialDriverOffer');
       clearStoreOrderOfferTimeout(orderId);
     } catch (e) {
       /* ignore */
     }
-    assignDriverToOrder(db, orderId, driverId, driverName, currentStatus);
+    assignDriverToOrder(db, orderId, driverId, driverName, STORE_STATUS_DRIVER_TO_PICK);
+    const currentStatus = STORE_STATUS_DRIVER_TO_PICK;
     emitOrderStatus(orderId, currentStatus);
     try {
       const { broadcastDriverOrdersUpdated } = require('../driverPresence');
@@ -1033,7 +1070,11 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
 
   /** Allowed steps before the driver may set status to On the way (matches store-admin flow). */
   function driverCanStartEnRouteFromStatus(statusKey) {
-    return statusKey === 'preparing' || statusKey === 'being prepared';
+    return (
+      statusKey === 'preparing' ||
+      statusKey === 'being prepared' ||
+      statusKey === 'driver to pick'
+    );
   }
 
   function markStoreOrderOnTheWayAsDriver(req, orderId, driverId, res) {
@@ -1242,8 +1283,20 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     return completeStoreOrderAsDriver(req, orderId, req.driver.id, res);
   });
 
+  app.post('/api/driver/orders/:orderId/delivered', driverAuth, (req, res) => {
+    const orderId = parseInt(req.params.orderId, 10);
+    return completeStoreOrderAsDriver(req, orderId, req.driver.id, res);
+  });
+
   // POST /api/driver/orders/complete — body: { orderId } + Bearer
   app.post('/api/driver/orders/complete', driverAuth, (req, res) => {
+    const { orderId: bodyOrderId, driverId: bodyDriverId } = req.body || {};
+    const orderId = parseInt(bodyOrderId || req.body?.orderId, 10);
+    const driverId = bodyDriverId != null ? parseInt(bodyDriverId, 10) : req.driver.id;
+    return completeStoreOrderAsDriver(req, orderId, driverId, res);
+  });
+
+  app.post('/api/driver/orders/delivered', driverAuth, (req, res) => {
     const { orderId: bodyOrderId, driverId: bodyDriverId } = req.body || {};
     const orderId = parseInt(bodyOrderId || req.body?.orderId, 10);
     const driverId = bodyDriverId != null ? parseInt(bodyDriverId, 10) : req.driver.id;
@@ -1291,13 +1344,18 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
 
     const driverRow = findDriverById.get(driverId);
     const driverName = driverRow ? driverRow.name : null;
-    db.prepare('UPDATE arheb_box_requests SET driverId = ?, driverName = ?, status = ? WHERE id = ?').run(driverId, driverName, 'in_progress', requestId);
+    db.prepare('UPDATE arheb_box_requests SET driverId = ?, driverName = ?, status = ? WHERE id = ?').run(
+      driverId,
+      driverName,
+      ARHEB_STATUS_DRIVER_TO_PICK,
+      requestId,
+    );
     try {
       writeArhebBoxDriverEarningsSnapshot(db, requestId, driverId);
     } catch (e) {
       /* ignore */
     }
-    emitBoxStatus(requestId, 'in_progress');
+    emitBoxStatus(requestId, ARHEB_STATUS_DRIVER_TO_PICK);
 
     const pseudoOrderId = -requestId;
     try {
@@ -1315,13 +1373,62 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
       clearArhebBoxOfferExpansion(requestId);
     } catch (e) { /* ignore */ }
 
-    notifyArhebBoxCustomerDriverEnRoute(db, row, requestId);
+    const rowAfter = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
+    notifyArhebBoxCustomerDriverToPick(db, rowAfter || row, requestId);
     const updated = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
     return res.status(200).json({
       success: true,
       message: 'Arheb Box request accepted',
       data: { request: enrichArhebBoxRow(updated, db) },
     });
+  });
+
+  function markArhebBoxOnTheWayAsDriver(req, res, requestId, driverId) {
+    if (isNaN(requestId)) return res.status(400).json({ success: false, message: 'Invalid request id' });
+    let row;
+    try {
+      row = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
+    } catch (e) {
+      if (e.message && e.message.includes('no such table')) return res.status(404).json({ success: false, message: 'Request not found' });
+      throw e;
+    }
+    if (!row) return res.status(404).json({ success: false, message: 'Request not found' });
+    if (row.driverId == null || Number(row.driverId) !== Number(driverId)) {
+      return res.status(403).json({ success: false, message: 'This request is not assigned to you' });
+    }
+    const st = String(row.status || '').trim().toLowerCase();
+    if (st === 'on_the_way') {
+      const u = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
+      return res.status(200).json({ success: true, message: 'Already on the way', data: { request: enrichArhebBoxRow(u, db) } });
+    }
+    if (st === 'delivered' || st === 'cancelled') {
+      return res.status(400).json({ success: false, message: 'Request cannot be set on the way in its current state' });
+    }
+    if (st !== 'driver_to_pick' && st !== 'assigned' && st !== 'in_progress') {
+      return res.status(400).json({
+        success: false,
+        message: 'Accept the Arheb Box first, then you can mark it on the way',
+      });
+    }
+    db.prepare('UPDATE arheb_box_requests SET status = ? WHERE id = ?').run(ARHEB_STATUS_ON_THE_WAY, requestId);
+    emitBoxStatus(requestId, ARHEB_STATUS_ON_THE_WAY);
+    try {
+      const { broadcastDriverOrdersUpdated } = require('../driverPresence');
+      broadcastDriverOrdersUpdated(io, { type: 'arheb_box_on_the_way', requestId, driverId });
+    } catch (e) { /* ignore */ }
+    const afterRow = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
+    notifyArhebBoxCustomerDriverEnRoute(db, afterRow, requestId);
+    const updated = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
+    return res.status(200).json({
+      success: true,
+      message: 'Arheb Box marked as on the way',
+      data: { request: enrichArhebBoxRow(updated, db) },
+    });
+  }
+
+  // POST /api/driver/arheb-box/:id/on-the-way
+  app.post('/api/driver/arheb-box/:id/on-the-way', driverAuth, (req, res) => {
+    return markArhebBoxOnTheWayAsDriver(req, res, parseInt(req.params.id, 10), req.driver.id);
   });
 
   // POST /api/driver/arheb-box/:id/reject-request — driver rejects an Arheb Box request
@@ -1362,10 +1469,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     return res.status(200).json({ success: true, message: 'Arheb Box request rejected' });
   });
 
-  // POST /api/driver/arheb-box/:id/complete — Bearer + request id; only assigned driver, status in_progress → delivered
-  app.post('/api/driver/arheb-box/:id/complete', driverAuth, (req, res) => {
-    const requestId = parseInt(req.params.id, 10);
-    const driverId = req.driver.id;
+  function completeArhebBoxAsDriver(req, res, requestId, driverId) {
     if (isNaN(requestId)) return res.status(400).json({ success: false, message: 'Invalid request id' });
     let row;
     try {
@@ -1390,10 +1494,10 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
         data: { request: enrichArhebBoxRow(updated, db) },
       });
     }
-    if (statusLower !== 'in_progress') {
+    if (statusLower !== 'on_the_way' && statusLower !== 'in_progress') {
       return res.status(400).json({
         success: false,
-        message: 'Arheb Box request must be in progress (accept the assignment first) before completing.',
+        message: 'Arheb Box must be on the way before marking delivered. Mark on the way first, then complete.',
       });
     }
     db.prepare('UPDATE arheb_box_requests SET status = ? WHERE id = ?').run('delivered', requestId);
@@ -1423,5 +1527,15 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
       message: 'Arheb Box marked as delivered successfully',
       data: { request: enrichArhebBoxRow(updated, db) },
     });
+  }
+
+  // POST /api/driver/arheb-box/:id/complete — on_the_way (or legacy in_progress) → delivered
+  app.post('/api/driver/arheb-box/:id/complete', driverAuth, (req, res) => {
+    return completeArhebBoxAsDriver(req, res, parseInt(req.params.id, 10), req.driver.id);
+  });
+
+  app.post('/api/driver/arheb-box/:id/delivered', driverAuth, (req, res) => {
+    return completeArhebBoxAsDriver(req, res, parseInt(req.params.id, 10), req.driver.id);
   });
 };
+

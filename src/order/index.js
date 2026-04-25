@@ -28,7 +28,7 @@ function broadcastDriverPresenceLocation(io, db, driverId, latitude, longitude) 
   // Store orders: live map while driver is assigned (preparing or en route)
   try {
     const rows = db
-      .prepare("SELECT id FROM orders WHERE driverId = ? AND status IN ('Preparing', 'On the way')")
+      .prepare("SELECT id FROM orders WHERE driverId = ? AND status IN ('Preparing', 'On the way', 'Driver to pick', 'Being prepared')")
       .all(driverId);
     for (const row of rows) {
       const orderId = row.id;
@@ -41,10 +41,13 @@ function broadcastDriverPresenceLocation(io, db, driverId, latitude, longitude) 
     }
   } catch (e) { /* ignore */ }
 
-  // Arheb Box requests (in_progress — driver picked up parcel)
+  // Arheb Box: live map while driver has the job (pickup through delivery)
   try {
     const boxRows = db
-      .prepare("SELECT id FROM arheb_box_requests WHERE driverId = ? AND LOWER(status) = 'in_progress'")
+      .prepare(
+        `SELECT id FROM arheb_box_requests WHERE driverId = ?
+         AND LOWER(TRIM(status)) IN ('driver_to_pick', 'on_the_way', 'in_progress', 'assigned')`,
+      )
       .all(driverId);
     for (const row of boxRows) {
       const roomKey = `arheb_box:${row.id}`;

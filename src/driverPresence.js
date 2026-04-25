@@ -223,7 +223,7 @@ module.exports = function attachDriverPresence(io, db, JWT_SECRET) {
           SELECT id, phoneNumber, dropoff, nearArrivalNotified
           FROM arheb_box_requests
           WHERE driverId = ?
-            AND LOWER(status) = 'in_progress'
+            AND LOWER(TRIM(status)) IN ('on_the_way', 'in_progress')
         `).all(driverId);
         for (const box of boxRows) {
           if (Number(box.nearArrivalNotified || 0) === 1) continue;
@@ -247,7 +247,7 @@ module.exports = function attachDriverPresence(io, db, JWT_SECRET) {
               null,
               {
                 requestId: String(box.id),
-                status: 'in_progress',
+                status: 'on_the_way',
                 type: 'arheb_box_near_arrival',
                 distanceKm: String(round3(distanceKm)),
                 screen: 'arheb_box_details',

@@ -245,7 +245,7 @@ function runDeliveryClusterAutoAssign(db, io, storeId, ctx, options = {}) {
     const driverName = dr?.name || null;
 
     for (const o of pending) {
-      assignDriverToOrder(db, o.id, driverId, driverName, 'Preparing');
+      assignDriverToOrder(db, o.id, driverId, driverName, 'Driver to pick');
       try {
         db.prepare(`UPDATE orders SET driverAssignmentStatus = NULL WHERE id = ?`).run(o.id);
       } catch (e) {

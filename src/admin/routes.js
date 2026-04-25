@@ -2110,6 +2110,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       'waiting confirmation': ['Preparing'],
       'payment rejected': [],
       preparing: ['On the way'],
+      'driver to pick': ['On the way'],
       'on the way': ['Delivered'],
     };
     return nextBy[cur] || [];
@@ -2469,10 +2470,16 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     }
 
     if (nextStatus.toLowerCase() === 'delivered') {
-      const { submitJofotaraInvoice } = require('../jofotara');
-      submitJofotaraInvoice(db, orderId).catch((e) => {
-        console.error(`[jofotara] Async submission failed for order ${orderId}:`, e.message || e);
-      });
+      if (isEinvoicePaused(db)) {
+        try {
+          db.prepare(`UPDATE orders SET einvoiceStatus = 'paused', einvoiceError = ? WHERE id = ?`).run('E-invoice submissions are paused', orderId);
+        } catch (e) { /* ignore */ }
+      } else {
+        const { submitJofotaraInvoice } = require('../jofotara');
+        submitJofotaraInvoice(db, orderId).catch((e) => {
+          console.error(`[jofotara] Async submission failed for order ${orderId}:`, e.message || e);
+        });
+      }
     }
 
     try {
@@ -2818,7 +2825,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     if (!driver) return res.status(400).json({ success: false, message: 'Invalid or blocked driver' });
     clearStoreOrderOfferTimeout(orderId);
     rejectAllPendingDriverRequestsForStoreOrder(db, orderId);
-    assignDriverToOrder(db, orderId, driverIdNum, driver.name, order.status || 'Preparing');
+    assignDriverToOrder(db, orderId, driverIdNum, driver.name, 'Driver to pick');
     try {
       const { emitOrderEvent } = require('../order');
       if (emitOrderEvent) emitOrderEvent(orderId, 'status_update', { status: order.status || 'Preparing' });
@@ -2869,10 +2876,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       return res.status(400).json({ success: false, message: 'driverId is required' });
     }
     const statusLower = String(order.status || '').trim().toLowerCase();
-    if (!statusLower.includes('preparing') && !statusLower.includes('on the way')) {
+    if (!statusLower.includes('preparing') && !statusLower.includes('on the way') && !statusLower.includes('driver to pick')) {
       return res.status(400).json({
         success: false,
-        message: 'Can only reassign when order is Preparing or On the way',
+        message: 'Can only reassign when order is Preparing, Driver to pick, or On the way',
       });
     }
     if (order.driverId != null && Number(order.driverId) === driverIdNum) {
@@ -3469,12 +3476,21 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         fcm.sendToUserByPhone(db, rowBefore.phoneNumber, 'Arheb Box update', `Your request #${id} is now: ${nextStatus}`, null, { type: 'arheb_box_status', requestId: String(id), status: nextStatus }).catch(() => {});
       }
       if (String(nextStatus).toLowerCase() === 'delivered') {
-        try {
-          const { submitJofotaraInvoiceForArhebBox } = require('../jofotara');
-          submitJofotaraInvoiceForArhebBox(db, id).catch((err) => {
-            console.error(`[jofotara] Async submission failed for arheb box ${id}:`, err?.message || err);
-          });
-        } catch (e) { /* ignore */ }
+        if (isEinvoicePaused(db)) {
+          try {
+            db.prepare(`UPDATE arheb_box_requests SET einvoiceStatus = 'paused', einvoiceError = ? WHERE id = ?`).run(
+              'E-invoice submissions are paused',
+              id,
+            );
+          } catch (e) { /* ignore */ }
+        } else {
+          try {
+            const { submitJofotaraInvoiceForArhebBox } = require('../jofotara');
+            submitJofotaraInvoiceForArhebBox(db, id).catch((err) => {
+              console.error(`[jofotara] Async submission failed for arheb box ${id}:`, err?.message || err);
+            });
+          } catch (e) { /* ignore */ }
+        }
       }
       const row = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(id);
       const request = enrichArhebBoxRow(row, db);
@@ -3564,6 +3580,100 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     } catch (e) {
       console.error('Arheb box assign driver error:', e);
       return res.status(500).json({ success: false, message: 'Failed to assign driver' });
+    }
+  });
+
+  app.post('/api/admin/arheb-box/:id/reassign-driver', auth, requireAdminOrSuper, (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
+    const { driverId } = req.body || {};
+    const driverIdNum = driverId != null ? parseInt(driverId, 10) : NaN;
+    if (!driverIdNum || isNaN(driverIdNum)) return res.status(400).json({ success: false, message: 'driverId is required' });
+    try {
+      const row = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(id);
+      if (!row) return res.status(404).json({ success: false, message: 'Arheb box request not found' });
+      const st = String(row.status || '').trim().toLowerCase();
+      if (st === 'delivered' || st === 'cancelled') {
+        return res.status(400).json({ success: false, message: 'Cannot reassign a completed or cancelled request' });
+      }
+      if (row.driverId == null) {
+        return res.status(400).json({
+          success: false,
+          message: 'No driver is assigned yet. Use assign-driver first.',
+        });
+      }
+      if (Number(row.driverId) === driverIdNum) {
+        const updatedSame = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(id);
+        return res.status(200).json({
+          success: true,
+          message: 'Already assigned to this driver',
+          data: { request: enrichArhebBoxRow(updatedSame, db) },
+        });
+      }
+      const oldDriverId = Number(row.driverId);
+      const driver = db.prepare('SELECT id, name FROM drivers WHERE id = ? AND isBlocked = 0').get(driverIdNum);
+      if (!driver) return res.status(404).json({ success: false, message: 'Driver not found or blocked' });
+      db.prepare('UPDATE arheb_box_requests SET driverId = ?, driverName = ? WHERE id = ?').run(driverIdNum, driver.name, id);
+      clearArhebBoxOfferExpansion(id);
+      try {
+        writeArhebBoxDriverEarningsSnapshot(db, id, driverIdNum);
+      } catch (e) {
+        /* ignore */
+      }
+      try {
+        const { emitArhebBoxEvent } = require('../order');
+        if (emitArhebBoxEvent) emitArhebBoxEvent(id, 'status_update', { status: row.status });
+      } catch (e) {
+        /* ignore */
+      }
+      const updated = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(id);
+      fcm
+        .sendToDriver(
+          db,
+          driverIdNum,
+          'Arheb Box reassigned',
+          `Arheb Box #${id} has been assigned to you.`,
+          { ...fcmPayloadForArhebBoxRequest(updated, id), orderType: 'arheb_box' },
+        )
+        .catch((err) => console.warn('[arheb-box] reassign FCM:', err?.message || err));
+      if (oldDriverId && oldDriverId !== driverIdNum) {
+        fcm
+          .sendToDriver(db, oldDriverId, 'Arheb Box reassigned', `Arheb Box #${id} was assigned to another driver.`, {
+            type: 'arheb_box_reassigned',
+            requestId: String(id),
+          })
+          .catch(() => {});
+      }
+      const cust = customerArhebBoxTrackingData(id, row.status || '');
+      fcm
+        .sendToToken(
+          updated.fcmToken,
+          'Driver update',
+          `A new driver is handling your Arheb Box request #${id}.`,
+          null,
+          cust,
+          { db },
+        )
+        .catch(() => {});
+      if (!updated.fcmToken) {
+        fcm.sendToUserByPhone(db, updated.phoneNumber, 'Driver update', `A new driver is handling your Arheb Box request #${id}.`, null, cust).catch(() => {});
+      }
+      logActivity(db, req, {
+        action: 'edit',
+        resourceType: 'arheb_box',
+        resourceId: String(id),
+        storeScopeId: null,
+        summary: `Arheb Box #${id}: reassigned driver → ${driverIdNum}`,
+        details: { previousDriverId: oldDriverId },
+      });
+      return res.status(200).json({
+        success: true,
+        message: 'Driver reassigned.',
+        data: { request: enrichArhebBoxRow(updated, db) },
+      });
+    } catch (e) {
+      console.error('Arheb box reassign driver error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to reassign driver' });
     }
   });
 

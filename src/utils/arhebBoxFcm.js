@@ -65,13 +65,37 @@ function notifyArhebBoxCustomerRequestReceived(db, row) {
   });
 }
 
-/** Customer push when a driver accepts / is en route to pickup (in_progress). */
+/**
+ * Customer push: driver accepted the job; next they will head out (not yet to customer).
+ * @param {string} [status] — payload status (default driver_to_pick)
+ */
+function notifyArhebBoxCustomerDriverToPick(db, row, requestId, status) {
+  if (!db || !row || requestId == null) return;
+  const id = requestId;
+  const st = String(status || 'driver_to_pick');
+  const payload = customerArhebBoxTrackingData(id, st);
+  const title = 'Driver assigned';
+  const body = `A driver is handling your Arheb Box #${id}. They will start delivery when they are on the way.`;
+  const hasBoxTok = !!(row.fcmToken && String(row.fcmToken).trim());
+  if (hasBoxTok) {
+    fcm
+      .sendToToken(row.fcmToken, title, body, null, payload, { db })
+      .catch((e) => {
+        console.warn('[arheb-fcm] driver to pick token send failed:', e?.message || e);
+        fcm.sendToUserByPhone(db, row.phoneNumber, title, body, null, payload).catch(() => {});
+      });
+    return;
+  }
+  fcm.sendToUserByPhone(db, row.phoneNumber, title, body, null, payload).catch(() => {});
+}
+
+/** Customer push: driver is heading to the customer (on_the_way) — use for live dropoff tracking. */
 function notifyArhebBoxCustomerDriverEnRoute(db, row, requestId) {
   if (!db || !row || requestId == null) return;
   const id = requestId;
-  const payload = customerArhebBoxTrackingData(id, 'in_progress');
+  const payload = customerArhebBoxTrackingData(id, 'on_the_way');
   const title = 'Driver on the way';
-  const body = `A driver is heading to pick up your Arheb Box request #${id}. Track live in the app.`;
+  const body = `Your Arheb Box #${id} is on the way. Track live in the app.`;
   const hasBoxTok = !!(row.fcmToken && String(row.fcmToken).trim());
   if (arhebDebugEnabled()) {
     logArhebDebug('customer_driver_en_route', {
@@ -105,6 +129,7 @@ function notifyArhebBoxCustomerDriverEnRoute(db, row, requestId) {
 module.exports = {
   customerArhebBoxTrackingData,
   notifyArhebBoxCustomerRequestReceived,
+  notifyArhebBoxCustomerDriverToPick,
   notifyArhebBoxCustomerDriverEnRoute,
   arhebDebugEnabled,
   logArhebDebug,
