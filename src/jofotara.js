@@ -9,6 +9,7 @@
  *   JOFOTARA_CLIENT_ID, JOFOTARA_SECRET_KEY, JOFOTARA_INCOME_SOURCE,
  *   JOFOTARA_SELLER_TIN, JOFOTARA_SELLER_NAME, JOFOTARA_INVOICE_XML_VAT (optional, default off),
  *   JOFOTARA_VAT_PERCENT (only when JOFOTARA_INVOICE_XML_VAT=true, default 7)
+ *   JOFOTARA_PAUSED or EINVOICE_PAUSED: true | 1 | yes — skip all submissions (status paused in DB).
  *   JOFOTARA_INVOICE_CATEGORY: income | general_sales | special_sales (default general_sales).
  *   Must match the invoice type tied to your "تسلسل مصدر الدخل" / activity in the portal (e.g. ضريبة دخل → use **income**, codes 011/021).
  *   If the portal shows **ضريبة دخل** for your serial but Render still sends 012/022, you left the default **general_sales** on
@@ -327,7 +328,17 @@ async function submitJofotaraInvoice(db, orderId) {
   }
 
   const invoiceUUID = crypto.randomUUID();
-  const xml = buildInvoiceXml(order, invoiceUUID);
+  let xml;
+  try {
+    xml = buildInvoiceXml(order, invoiceUUID);
+  } catch (buildErr) {
+    const msg = String(buildErr?.message || buildErr || 'Invoice XML build failed').slice(0, 1000);
+    console.error(`[jofotara] XML build failed order ${orderId}:`, buildErr);
+    try {
+      db.prepare(`UPDATE orders SET einvoiceStatus = 'failed', einvoiceError = ? WHERE id = ?`).run(msg, orderId);
+    } catch (e) { /* ignore */ }
+    return { ok: false, error: msg, uuid: invoiceUUID };
+  }
   const base64Invoice = Buffer.from(xml, 'utf-8').toString('base64');
 
   try {
@@ -437,11 +448,21 @@ async function submitJofotaraInvoiceForArhebBox(db, requestId) {
     paymentType: row.paymentMethod || 'cash',
     name: row.userName || 'Customer',
   };
-  const xml = buildInvoiceXml(pseudoOrder, invoiceUUID, {
-    idPrefix: 'ARHEBBOX',
-    notePrefix: 'Arheb Box',
-    includeServiceLine: true,
-  });
+  let xml;
+  try {
+    xml = buildInvoiceXml(pseudoOrder, invoiceUUID, {
+      idPrefix: 'ARHEBBOX',
+      notePrefix: 'Arheb Box',
+      includeServiceLine: true,
+    });
+  } catch (buildErr) {
+    const msg = String(buildErr?.message || buildErr || 'Invoice XML build failed').slice(0, 1000);
+    console.error(`[jofotara] XML build failed Arheb Box ${requestId}:`, buildErr);
+    try {
+      db.prepare(`UPDATE arheb_box_requests SET einvoiceStatus = 'failed', einvoiceError = ? WHERE id = ?`).run(msg, requestId);
+    } catch (e) { /* ignore */ }
+    return { ok: false, error: msg, uuid: invoiceUUID };
+  }
   const base64Invoice = Buffer.from(xml, 'utf-8').toString('base64');
 
   try {

@@ -7,3 +7,7 @@ services:
     plan: free
     buildCommand: npm install
     startCommand: npm start
+    # Set JOFOTARA_PAUSED=false (or remove) when JoFotara should run again.
+    envVars:
+      - key: JOFOTARA_PAUSED
+        value: "true"
