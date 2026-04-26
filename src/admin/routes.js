@@ -2876,10 +2876,15 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       return res.status(400).json({ success: false, message: 'driverId is required' });
     }
     const statusLower = String(order.status || '').trim().toLowerCase();
-    if (!statusLower.includes('preparing') && !statusLower.includes('on the way') && !statusLower.includes('driver to pick')) {
+    const canReassignStatus =
+      statusLower.includes('preparing') ||
+      statusLower.includes('being prepared') ||
+      statusLower.includes('on the way') ||
+      statusLower.includes('driver to pick');
+    if (!canReassignStatus) {
       return res.status(400).json({
         success: false,
-        message: 'Can only reassign when order is Preparing, Driver to pick, or On the way',
+        message: 'Can only reassign when order is Preparing, Being prepared, Driver to pick, or On the way',
       });
     }
     if (order.driverId != null && Number(order.driverId) === driverIdNum) {
