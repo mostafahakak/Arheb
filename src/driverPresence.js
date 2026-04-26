@@ -122,6 +122,21 @@ function broadcastDriverOrdersUpdated(io, payload) {
   } catch (e) { /* ignore */ }
 }
 
+/**
+ * Emit to one driver’s /driver-presence socket (reassign: old driver must drop job from home; new driver must see it).
+ */
+function emitDriverPresenceEvent(io, driverId, eventName, payload) {
+  if (!io || driverId == null) return false;
+  const d = activeDrivers.get(Number(driverId));
+  if (!d?.socketId) return false;
+  try {
+    io.of('/driver-presence').to(d.socketId).emit(eventName, payload || {});
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 function round3(n) {
   return Math.round((Number(n) + Number.EPSILON) * 1000) / 1000;
 }
@@ -282,4 +297,5 @@ module.exports.getActiveDriversWithLocation = getActiveDriversWithLocation;
 module.exports.getActiveFromListWithDistance = getActiveFromListWithDistance;
 module.exports.emitDriverDeliveryRequest = emitDriverDeliveryRequest;
 module.exports.broadcastDriverOrdersUpdated = broadcastDriverOrdersUpdated;
+module.exports.emitDriverPresenceEvent = emitDriverPresenceEvent;
 module.exports.haversineKm = haversineKm;

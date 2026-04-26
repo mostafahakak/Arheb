@@ -2964,6 +2964,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     notifyDriverAssigned(db, io, orderId, updated, driverIdNum, store);
     try {
       const { broadcastDriverOrdersUpdated } = require('../driverPresence');
+      // Live driver app only understands existing orders_updated types — mirror reject + accept.
+      if (oldDriverId && oldDriverId !== driverIdNum) {
+        broadcastDriverOrdersUpdated(io, { type: 'request_rejected', orderId, driverId: oldDriverId });
+      }
       broadcastDriverOrdersUpdated(io, { type: 'order_accepted', orderId, driverId: driverIdNum });
     } catch (e) {
       /* ignore */
@@ -2975,7 +2979,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           oldDriverId,
           'Order reassigned',
           `Order #${orderId} was assigned to another driver.`,
-          { type: 'order_reassigned', orderId: String(orderId) },
+          { type: 'request_rejected', orderId: String(orderId), driverId: String(oldDriverId) },
         )
         .catch(() => {});
     }
@@ -3759,8 +3763,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       if (oldDriverId && oldDriverId !== driverIdNum) {
         fcm
           .sendToDriver(db, oldDriverId, 'Arheb Box reassigned', `Arheb Box #${id} was assigned to another driver.`, {
-            type: 'arheb_box_reassigned',
+            type: 'arheb_box_request_rejected',
             requestId: String(id),
+            driverId: String(oldDriverId),
           })
           .catch(() => {});
       }
@@ -3786,6 +3791,25 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         summary: `Arheb Box #${id}: reassigned driver → ${driverIdNum}`,
         details: { previousDriverId: oldDriverId },
       });
+      try {
+        const { broadcastDriverOrdersUpdated, emitDriverDeliveryRequest } = require('../driverPresence');
+        if (oldDriverId && oldDriverId !== driverIdNum) {
+          broadcastDriverOrdersUpdated(io, { type: 'arheb_box_request_rejected', requestId: id, driverId: oldDriverId });
+        }
+        broadcastDriverOrdersUpdated(io, { type: 'arheb_box_accepted', requestId: id, driverId: driverIdNum });
+        if (io) {
+          emitDriverDeliveryRequest(io, driverIdNum, {
+            orderId: id,
+            requestId: id,
+            status: String(updated.status || row.status || 'assigned'),
+            storeName: 'Arheb Box',
+            type: 'driver_assigned',
+            orderType: 'arheb_box',
+          });
+        }
+      } catch (e) {
+        /* ignore */
+      }
       return res.status(200).json({
         success: true,
         message: 'Driver reassigned.',
