@@ -68,7 +68,7 @@ const {
   assignDriverToOrder,
 } = require('../utils/driverCommission');
 const { getStoreFcmToken } = require('../storeFcm');
-const { enrichWithJordanTime } = require('../utils/jordanTime');
+const { enrichWithJordanTime, jordanCalendarDateYmd } = require('../utils/jordanTime');
 const { normalizeHomeContentLinkArray } = require('../utils/homeContentLinks');
 const {
   parseLatLongFromGoogleMapsUrl,
@@ -238,6 +238,25 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   ensureActivityLogTable(db);
   ensureOrderAssignmentColumns(db);
   ensurePlatformCheckoutFeesTable(db);
+
+  /** Default: Jordan today→today. Pass allDates=true for no date filter (all time). */
+  function resolveOrdersListDateRange(query) {
+    const q = query || {};
+    const allDates = q.allDates === '1' || q.allDates === 'true';
+    if (allDates) return { allDates: true, dateFrom: '', dateTo: '' };
+    const today = jordanCalendarDateYmd();
+    let df = q.dateFrom ? String(q.dateFrom).trim().slice(0, 10) : '';
+    let dt = q.dateTo ? String(q.dateTo).trim().slice(0, 10) : '';
+    if (!df && !dt) {
+      df = today;
+      dt = today;
+    } else if (df && !dt) {
+      dt = today;
+    } else if (!df && dt) {
+      df = dt;
+    }
+    return { allDates: false, dateFrom: df, dateTo: dt };
+  }
 
   function normalizeAdminAppVersionInput(v) {
     if (v === undefined) return undefined;
@@ -2027,6 +2046,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
 
   // ——— Orders: same DB/table as checkout and order tracking; Store Admin sees their store or unassigned (null storeId) ———
   app.get('/api/admin/orders/counts', auth, (req, res) => {
+    const range = resolveOrdersListDateRange(req.query || {});
     const conditions = [];
     const params = [];
     if (req.admin.role === ROLES.STORE_ADMIN) {
@@ -2042,6 +2062,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         }
       }
     }
+    if (!range.allDates && range.dateFrom) {
+      conditions.push('date(createdAt) >= date(?)');
+      params.push(range.dateFrom);
+    }
+    if (!range.allDates && range.dateTo) {
+      conditions.push('date(createdAt) <= date(?)');
+      params.push(range.dateTo);
+    }
     const wherePrefix = conditions.length ? ' WHERE ' + conditions.join(' AND ') + ' AND ' : ' WHERE ';
     const activeSql = 'SELECT COUNT(*) AS n FROM orders' + wherePrefix + "(status IS NULL OR status NOT IN ('Delivered', 'Cancelled'))";
     const deliveredSql = "SELECT COUNT(*) AS n FROM orders" + wherePrefix + "status = 'Delivered'";
@@ -2052,16 +2080,36 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
 
     if (req.admin.role !== ROLES.STORE_ADMIN) {
       try {
-        const boxActive = db.prepare("SELECT COUNT(*) AS n FROM arheb_box_requests WHERE status NOT IN ('delivered', 'cancelled')").get()?.n ?? 0;
-        const boxDelivered = db.prepare("SELECT COUNT(*) AS n FROM arheb_box_requests WHERE status = 'delivered'").get()?.n ?? 0;
-        const boxCancelled = db.prepare("SELECT COUNT(*) AS n FROM arheb_box_requests WHERE status = 'cancelled'").get()?.n ?? 0;
+        const boxConds = [];
+        const boxParams = [];
+        if (!range.allDates && range.dateFrom) {
+          boxConds.push('date(createdAt) >= date(?)');
+          boxParams.push(range.dateFrom);
+        }
+        if (!range.allDates && range.dateTo) {
+          boxConds.push('date(createdAt) <= date(?)');
+          boxParams.push(range.dateTo);
+        }
+        const boxPrefix = boxConds.length ? boxConds.join(' AND ') + ' AND ' : '';
+        const boxActive = db
+          .prepare('SELECT COUNT(*) AS n FROM arheb_box_requests WHERE ' + boxPrefix + "status NOT IN ('delivered', 'cancelled')")
+          .get(...boxParams)?.n ?? 0;
+        const boxDelivered = db
+          .prepare('SELECT COUNT(*) AS n FROM arheb_box_requests WHERE ' + boxPrefix + "status = 'delivered'")
+          .get(...boxParams)?.n ?? 0;
+        const boxCancelled = db
+          .prepare('SELECT COUNT(*) AS n FROM arheb_box_requests WHERE ' + boxPrefix + "status = 'cancelled'")
+          .get(...boxParams)?.n ?? 0;
         active += boxActive;
         delivered += boxDelivered;
         cancelled += boxCancelled;
       } catch (e) { /* table may not exist */ }
     }
 
-    return res.status(200).json({ success: true, data: { active, delivered, cancelled, complete: delivered + cancelled } });
+    return res.status(200).json({
+      success: true,
+      data: { active, delivered, cancelled, complete: delivered + cancelled, dateRange: range },
+    });
   });
 
   /** Only SuperAdmin may move an order to an earlier step in the main flow (or reopen Delivered/Cancelled). */
@@ -2117,8 +2165,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   }
 
   // ——— Orders (sorted newest first; filter by date range, status, store, name, orderType, paymentType, driver) ———
-  function listAdminOrdersWithDetails(req) {
-    const { dateFrom, dateTo, status, storeId, storeIds, storeName, name, orderType, statusFilter, paymentType, driverId, unassigned } = req.query;
+  function buildAdminOrdersList(req) {
+    const range = resolveOrdersListDateRange(req.query || {});
+    const { status, storeId, storeIds, storeName, name, orderType, statusFilter, paymentType, driverId, unassigned } = req.query;
     const paymentTypeTrimmed =
       paymentType && String(paymentType).trim() ? String(paymentType).trim() : '';
     const onlyArhebBox = orderType === 'arheb_box';
@@ -2142,8 +2191,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           }
         }
       }
-      if (dateFrom) { conditions.push("date(createdAt) >= date(?)"); params.push(String(dateFrom).trim()); }
-      if (dateTo) { conditions.push("date(createdAt) <= date(?)"); params.push(String(dateTo).trim()); }
+      if (!range.allDates && range.dateFrom) { conditions.push("date(createdAt) >= date(?)"); params.push(range.dateFrom); }
+      if (!range.allDates && range.dateTo) { conditions.push("date(createdAt) <= date(?)"); params.push(range.dateTo); }
       if (statusFilter === 'active') {
         conditions.push("(status IS NULL OR status NOT IN ('Delivered', 'Cancelled'))");
       } else if (statusFilter === 'complete') {
@@ -2221,8 +2270,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       try {
         const boxCond = [];
         const boxParams = [];
-        if (dateFrom) { boxCond.push("date(createdAt) >= date(?)"); boxParams.push(String(dateFrom).trim()); }
-        if (dateTo) { boxCond.push("date(createdAt) <= date(?)"); boxParams.push(String(dateTo).trim()); }
+        if (!range.allDates && range.dateFrom) { boxCond.push("date(createdAt) >= date(?)"); boxParams.push(range.dateFrom); }
+        if (!range.allDates && range.dateTo) { boxCond.push("date(createdAt) <= date(?)"); boxParams.push(range.dateTo); }
         if (status && String(status).trim()) { boxCond.push('status = ?'); boxParams.push(String(status).trim()); }
         if (statusFilter === 'active') {
           boxCond.push("status NOT IN ('delivered', 'cancelled')");
@@ -2303,17 +2352,17 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       if (db2 !== da) return db2 - da;
       return (b.id || 0) - (a.id || 0);
     });
-    return merged;
+    return { orders: merged, dateRange: range };
   }
 
   app.get('/api/admin/orders', auth, (req, res) => {
-    const withItems = listAdminOrdersWithDetails(req);
-    return res.status(200).json({ success: true, data: { orders: withItems } });
+    const { orders: withItems, dateRange } = buildAdminOrdersList(req);
+    return res.status(200).json({ success: true, data: { orders: withItems, dateRange } });
   });
 
   app.get('/api/admin/orders/export', auth, (req, res) => {
     try {
-      const withItems = listAdminOrdersWithDetails(req);
+      const { orders: withItems } = buildAdminOrdersList(req);
       const rows = withItems.map((o) => ({
         id: o.id,
         createdAt: o.createdAt,
@@ -3340,32 +3389,98 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
 
   // ——— Dashboard sales (and for Admin/SuperAdmin: open/closed store counts) ———
   app.get('/api/admin/dashboard/sales', auth, (req, res) => {
-    let orders;
+    const range = resolveOrdersListDateRange(req.query || {});
+    const storeConds = [];
+    const storeParams = [];
     if (req.admin.role === ROLES.STORE_ADMIN) {
-      orders = db.prepare('SELECT * FROM orders WHERE CAST(storeId AS TEXT) = ?').all(String(req.admin.storeId));
-    } else {
-      orders = db.prepare('SELECT * FROM orders').all();
+      storeConds.push('(CAST(storeId AS TEXT) = ? OR storeId IS NULL)');
+      storeParams.push(String(req.admin.storeId));
     }
-    const totalRevenue = orders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+    if (!range.allDates && range.dateFrom) {
+      storeConds.push('date(createdAt) >= date(?)');
+      storeParams.push(range.dateFrom);
+    }
+    if (!range.allDates && range.dateTo) {
+      storeConds.push('date(createdAt) <= date(?)');
+      storeParams.push(range.dateTo);
+    }
+    const storeWhere = storeConds.length ? ' WHERE ' + storeConds.join(' AND ') : '';
+    const orders = db.prepare('SELECT * FROM orders' + storeWhere).all(...storeParams);
+
+    let boxRows = [];
+    if (req.admin.role === ROLES.ADMIN || req.admin.role === ROLES.SUPERADMIN) {
+      try {
+        const bc = [];
+        const bp = [];
+        if (!range.allDates && range.dateFrom) {
+          bc.push('date(createdAt) >= date(?)');
+          bp.push(range.dateFrom);
+        }
+        if (!range.allDates && range.dateTo) {
+          bc.push('date(createdAt) <= date(?)');
+          bp.push(range.dateTo);
+        }
+        const bw = bc.length ? ' WHERE ' + bc.join(' AND ') : '';
+        boxRows = db.prepare('SELECT * FROM arheb_box_requests' + bw).all(...bp);
+      } catch (e) {
+        boxRows = [];
+      }
+    }
+
+    const totalRevenueStore = orders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+    const totalRevenueBox = boxRows.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+    const totalRevenue = totalRevenueStore + totalRevenueBox;
+
     const byStatus = {};
     orders.forEach((o) => {
       const s = o.status || 'Unknown';
       byStatus[s] = (byStatus[s] || 0) + 1;
     });
-    const recent = orders
-      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-      .slice(0, 10)
-      .map((o) =>
-        enrichWithJordanTime(
-          { id: o.id, totalAmount: o.totalAmount, status: o.status, createdAt: o.createdAt, storeId: o.storeId },
+    boxRows.forEach((r) => {
+      const s = r.status || 'Unknown';
+      byStatus[s] = (byStatus[s] || 0) + 1;
+    });
+
+    const recentMerged = [
+      ...orders.map((o) => ({ kind: 'store', o })),
+      ...boxRows.map((o) => ({ kind: 'box', o })),
+    ];
+    recentMerged.sort((a, b) => new Date(b.o.createdAt || 0) - new Date(a.o.createdAt || 0));
+    const recent = recentMerged.slice(0, 50).map((item) => {
+      if (item.kind === 'store') {
+        const o = item.o;
+        return enrichWithJordanTime(
+          {
+            id: o.id,
+            totalAmount: o.totalAmount,
+            status: o.status,
+            createdAt: o.createdAt,
+            storeId: o.storeId,
+            orderType: 'store',
+          },
           ['createdAt'],
-        ),
+        );
+      }
+      const r = item.o;
+      return enrichWithJordanTime(
+        {
+          id: r.id,
+          totalAmount: Number(r.amount) || 0,
+          status: r.status,
+          createdAt: r.createdAt,
+          storeId: null,
+          orderType: 'arheb_box',
+        },
+        ['createdAt'],
       );
+    });
+
     const data = {
-        totalOrders: orders.length,
-        totalRevenue,
-        byStatus,
-        recentOrders: recent,
+      totalOrders: orders.length + boxRows.length,
+      totalRevenue,
+      byStatus,
+      recentOrders: recent,
+      dateRange: range,
     };
     // Admin and SuperAdmin only: open/closed/paused store counts. Jordan time + opening hours: open = within hours + admin open + unpaused; closed = admin closed or outside hours (not paused); paused = separate count.
     if (req.admin.role === ROLES.ADMIN || req.admin.role === ROLES.SUPERADMIN) {

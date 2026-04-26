@@ -115,10 +115,25 @@ function nowOrderCreatedAtForDb(date = new Date()) {
   return `${y}-${mo}-${da}T${h}:${mi}:${se}.${ms}${offset}`;
 }
 
+/** Calendar date YYYY-MM-DD in Asia/Amman (for SQL date(createdAt) filters). */
+function jordanCalendarDateYmd(date = new Date()) {
+  const d = date instanceof Date ? date : new Date(date);
+  const base = isNaN(d.getTime()) ? new Date() : d;
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: JORDAN_IANA_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(base);
+  const get = (t) => parts.find((p) => p.type === t)?.value ?? '';
+  return `${get('year')}-${get('month')}-${get('day')}`;
+}
+
 module.exports = {
   JORDAN_IANA_TIMEZONE,
   parseInstantForJordan,
   formatJordanDateTime,
   enrichWithJordanTime,
   nowOrderCreatedAtForDb,
+  jordanCalendarDateYmd,
 };
