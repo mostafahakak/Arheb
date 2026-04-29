@@ -19,11 +19,32 @@ function haversineKm(lat1, lon1, lat2, lon2) {
   return R * c;
 }
 
-/** Seed pins match Maps anchors used historically for uncapped-tier zones */
+/**
+ * Default pins (WGS84): aligned with shared Maps short links + OSM place centroids.
+ * University: https://maps.app.goo.gl/n82LC1hPn71P11hK6 — campus amenity ~29.436922, 35.012859
+ * Tala Bay: https://maps.app.goo.gl/W5casnKhHwHdshzT9 — تالا بي ~29.409196, 34.979815
+ */
 const DEFAULT_ZONES = [
-  { sortOrder: 0, label: 'جامعة العقبة للتكنولوجيا', centerLat: 29.5488, centerLon: 35.0025, radiusKm: 3, feeJod: 2 },
-  { sortOrder: 1, label: 'تالا باي', centerLat: 29.3915, centerLon: 34.9795, radiusKm: 3, feeJod: 2 },
+  { sortOrder: 0, label: 'جامعة العقبة للتكنولوجيا', centerLat: 29.4369224, centerLon: 35.0128589, radiusKm: 3, feeJod: 2 },
+  { sortOrder: 1, label: 'تالا باي', centerLat: 29.4091955, centerLon: 34.9798154, radiusKm: 3, feeJod: 2 },
 ];
+
+/** One-time: move rows still on pre–Maps-link seed coords to the pins above. */
+const LEGACY_PIN_UPDATES = [
+  { oldLat: 29.5488, oldLon: 35.0025, newLat: 29.4369224, newLon: 35.0128589 },
+  { oldLat: 29.3915, oldLon: 34.9795, newLat: 29.4091955, newLon: 34.9798154 },
+];
+
+function migrateLegacyDeliveryPinCoordinates(db) {
+  if (!db) return;
+  const stmt = db.prepare(
+    `UPDATE delivery_fixed_zones SET centerLat = @newLat, centerLon = @newLon, updatedAt = datetime('now')
+     WHERE ABS(centerLat - @oldLat) < 0.002 AND ABS(centerLon - @oldLon) < 0.002`,
+  );
+  for (const m of LEGACY_PIN_UPDATES) {
+    stmt.run({ newLat: m.newLat, newLon: m.newLon, oldLat: m.oldLat, oldLon: m.oldLon });
+  }
+}
 
 function ensureDeliveryFixedZonesTable(db) {
   if (!db) return;
@@ -44,6 +65,7 @@ function ensureDeliveryFixedZonesTable(db) {
 
 function seedDeliveryFixedZonesIfEmpty(db) {
   ensureDeliveryFixedZonesTable(db);
+  migrateLegacyDeliveryPinCoordinates(db);
   const row = db.prepare('SELECT COUNT(*) AS c FROM delivery_fixed_zones').get();
   if (!row || row.c > 0) return;
   const ins = db.prepare(
