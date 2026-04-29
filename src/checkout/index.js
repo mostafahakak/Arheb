@@ -9,6 +9,7 @@ const {
   resolveStoreOrderDeliveryFeeJod,
 } = require('../utils/deliveryFees');
 const { getPlatformCheckoutFeeTiers, ensurePlatformCheckoutFeesTable } = require('../utils/platformCheckoutFees');
+const { seedDeliveryFixedZonesIfEmpty } = require('../utils/deliveryFixedZones');
 const { mapOrderItemsRows } = require('../utils/orderItemApi');
 const { enrichWithJordanTime, nowOrderCreatedAtForDb } = require('../utils/jordanTime');
 const { promoAppliesToStore, promoMinAmountOk } = require('../utils/promoCode');
@@ -23,6 +24,7 @@ const {
 module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   const { getJsonPath } = require('../config/jsonPaths');
   ensurePlatformCheckoutFeesTable(db);
+  seedDeliveryFixedZonesIfEmpty(db);
   const FEES_TAX_RATE = 0;
 
   function fallbackStoreOrderServiceFeeJod() {
@@ -591,28 +593,33 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
               ? { latitude: Number(st.latitude), longitude: Number(st.longitude) }
               : parseLatLongFromGoogleMapsUrl(st.mapsUrl);
           if (storeLoc) {
-            const qOrder = quoteFromPickupDropoff(storeLoc, {
-              latitude: addressLat,
-              longitude: addressLong,
-            });
+            const qOrder = quoteFromPickupDropoff(
+              storeLoc,
+              {
+                latitude: addressLat,
+                longitude: addressLong,
+              },
+              db,
+            );
             if (qOrder) {
               computedDeliveryFee = storeOrderDeliveryFeeFromDistanceTiers(
                 qOrder.distanceKm,
                 addressLat,
                 addressLong,
                 platformTiers,
+                db,
               );
             } else {
-              computedDeliveryFee = storeOrderDeliveryFeeFromDistanceTiers(0, addressLat, addressLong, platformTiers);
+              computedDeliveryFee = storeOrderDeliveryFeeFromDistanceTiers(0, addressLat, addressLong, platformTiers, db);
             }
           } else {
-            computedDeliveryFee = storeOrderDeliveryFeeFromDistanceTiers(0, addressLat, addressLong, platformTiers);
+            computedDeliveryFee = storeOrderDeliveryFeeFromDistanceTiers(0, addressLat, addressLong, platformTiers, db);
           }
         } else {
-          computedDeliveryFee = storeOrderDeliveryFeeFromDistanceTiers(0, addressLat, addressLong, platformTiers);
+          computedDeliveryFee = storeOrderDeliveryFeeFromDistanceTiers(0, addressLat, addressLong, platformTiers, db);
         }
       } else {
-        computedDeliveryFee = storeOrderDeliveryFeeFromDistanceTiers(0, undefined, undefined, platformTiers);
+        computedDeliveryFee = storeOrderDeliveryFeeFromDistanceTiers(0, undefined, undefined, platformTiers, db);
       }
     }
     computedDeliveryFee = resolveStoreOrderDeliveryFeeJod(
@@ -620,7 +627,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       computedDeliveryFee,
       addressLat,
       addressLong,
-      { cartAmountJod: effectiveCartAmountForPromo, platformTiers },
+      { cartAmountJod: effectiveCartAmountForPromo, platformTiers, db },
     );
     const computedServiceFee = resolveStoreOrderServiceFeeJod(storeJsonForFees, platformTiers.defaultServiceFeeJod);
     const computedFeesTax = calcFeesTaxJod(computedDeliveryFee, computedServiceFee);
@@ -788,7 +795,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
           message: 'Store location is unavailable. Please set store mapsUrl with coordinates.',
         });
       }
-      const q = quoteFromPickupDropoff(storeLocation, deliveryLocation);
+      const q = quoteFromPickupDropoff(storeLocation, deliveryLocation, db);
       if (!q) {
         return res.status(400).json({
           success: false,
@@ -802,13 +809,14 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         deliveryLocation.latitude,
         deliveryLocation.longitude,
         platformTiers,
+        db,
       );
       const deliveryFee = resolveStoreOrderDeliveryFeeJod(
         store,
         distanceFee,
         deliveryLocation.latitude,
         deliveryLocation.longitude,
-        { cartAmountJod: cartAmountNum, platformTiers },
+        { cartAmountJod: cartAmountNum, platformTiers, db },
       );
       const serviceFee = resolveStoreOrderServiceFeeJod(store, platformTiers.defaultServiceFeeJod);
       const invoice = buildInvoice(deliveryFee, serviceFee);

@@ -93,6 +93,11 @@ const {
   setPlatformCheckoutFeeTiers,
   ensurePlatformCheckoutFeesTable,
 } = require('../utils/platformCheckoutFees');
+const {
+  listDeliveryFixedZones,
+  replaceDeliveryFixedZones,
+  seedDeliveryFixedZonesIfEmpty,
+} = require('../utils/deliveryFixedZones');
 const { round2: round2Money } = require('../utils/deliveryFees');
 
 const storesResponsePath = getJsonPath('stores_listing_response.json');
@@ -4948,7 +4953,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           deliveryOverCartThresholdJod: tiers.deliveryOverCartThresholdJod,
           deliveryFeeAboveJod: tiers.deliveryFeeAboveJod,
           note:
-            'SuperAdmin: tiers, optional flatDeliveryFeeJod (e.g. 1 = 1 JOD delivery everywhere except special-far, uncapped, remote pins), and optional deliveryOverCartThresholdJod + deliveryFeeAboveJod (when cart total >= threshold, charge feeAbove). Per-store overrides: checkoutDeliveryFeeZero, checkoutDeliveryFeeJod, checkoutServiceFeeDisabled, checkoutServiceFeeJod, checkoutDeliveryOverCartThresholdJod, checkoutDeliveryFeeAboveJod.',
+            'SuperAdmin: tiers, optional flatDeliveryFeeJod (e.g. 1 = 1 JOD delivery everywhere except special-far, dashboard fixed zones, remote pins), and optional deliveryOverCartThresholdJod + deliveryFeeAboveJod (when cart total >= threshold, charge feeAbove). Per-store overrides: checkoutDeliveryFeeZero, checkoutDeliveryFeeJod, checkoutServiceFeeDisabled, checkoutServiceFeeJod, checkoutDeliveryOverCartThresholdJod, checkoutDeliveryFeeAboveJod.',
         },
       });
     } catch (e) {
@@ -4990,6 +4995,45 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       }
       console.error(e);
       return res.status(500).json({ success: false, message: 'Failed to update checkout fees' });
+    }
+  });
+
+  /** Fixed delivery zones (haversine km — store checkout + Arheb Box). SuperAdmin edits; Admin/SuperAdmin read. */
+  app.get('/api/admin/settings/delivery-fixed-zones', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      seedDeliveryFixedZonesIfEmpty(db);
+      const zones = listDeliveryFixedZones(db);
+      return res.status(200).json({
+        success: true,
+        data: {
+          zones,
+          note:
+            'Circular zones around pins (WGS84 haversine distance — straight-line km, not driving distance). Default seed: جامعة العقبة للتكنولوجيا & تالا باي — 3 km, 2 JOD each.',
+        },
+      });
+    } catch (e) {
+      console.error(e);
+      return res.status(500).json({ success: false, message: 'Failed to load delivery fixed zones' });
+    }
+  });
+
+  app.put('/api/admin/settings/delivery-fixed-zones', auth, requireSuperAdmin, (req, res) => {
+    try {
+      const zones = replaceDeliveryFixedZones(db, req.body?.zones ?? []);
+      logActivity(db, req, {
+        action: 'edit',
+        resourceType: 'settings',
+        resourceId: 'delivery-fixed-zones',
+        storeScopeId: null,
+        summary: 'Updated dashboard fixed delivery zones',
+      });
+      return res.status(200).json({ success: true, data: { zones } });
+    } catch (e) {
+      if (e.code === 'VALIDATION') {
+        return res.status(400).json({ success: false, message: e.message });
+      }
+      console.error(e);
+      return res.status(500).json({ success: false, message: 'Failed to update delivery fixed zones' });
     }
   });
 

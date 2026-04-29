@@ -2,12 +2,12 @@ const fcm = require('../fcm');
 const { enrichWithJordanTime, nowOrderCreatedAtForDb } = require('../utils/jordanTime');
 const {
   arhebBoxDeliveryFeeFromDistanceJod,
-  remoteDeliveryZoneFixedFeeJod,
   STORE_MAX_JOD,
 } = require('../utils/deliveryFees');
 const { getArhebBoxServiceFeeJod } = require('../utils/driverCommission');
 const { quoteFromPickupDropoff, minAmountJod, distanceKm: haversineKm } = require('./pricing');
 const { isArhebBoxOrdersPaused } = require('./pause');
+const { seedDeliveryFixedZonesIfEmpty } = require('../utils/deliveryFixedZones');
 
 const FEES_TAX_RATE = 0;
 
@@ -35,16 +35,14 @@ function calcArhebBoxDeliveryFeeJod(_weightKg) {
  * @param {number} [_weightKg]
  * @param {{ latitude?: number, longitude?: number }} [dropoff] — remote zones use fixed fee from dropoff coords
  */
-function calcDeliveryFeeFromDistanceAndWeight(distanceKm, _weightKg, dropoff) {
+function calcDeliveryFeeFromDistanceAndWeight(distanceKm, _weightKg, dropoff, db) {
   const lat = dropoff?.latitude;
   const lng = dropoff?.longitude;
   const d = typeof distanceKm === 'number' && Number.isFinite(distanceKm) ? Math.max(0, distanceKm) : null;
   if (d == null) {
-    const fixed = remoteDeliveryZoneFixedFeeJod(lat, lng);
-    if (fixed != null) return fixed;
-    return round2(1);
+    return arhebBoxDeliveryFeeFromDistanceJod(0, lat, lng, db);
   }
-  return arhebBoxDeliveryFeeFromDistanceJod(d, lat, lng);
+  return arhebBoxDeliveryFeeFromDistanceJod(d, lat, lng, db);
 }
 
 function calcFeesTaxJod(deliveryFeeJod, serviceFeeJod) {
@@ -93,7 +91,7 @@ function enrichRequestRow(row, db) {
     row.deliveryFee != null
       ? Number(row.deliveryFee)
       : dKm != null && Number.isFinite(dKm)
-        ? calcDeliveryFeeFromDistanceAndWeight(dKm, weightKg, dropoffObj)
+        ? calcDeliveryFeeFromDistanceAndWeight(dKm, weightKg, dropoffObj, db)
         : calcArhebBoxDeliveryFeeJod(weightKg);
   const serviceFee =
     row.serviceFee != null && Number.isFinite(Number(row.serviceFee))
@@ -246,10 +244,10 @@ function createArhebBoxRequest(db, phoneNumber, body, statusOverride, options = 
   const who = whoPays != null ? String(whoPays).trim().toLowerCase() : '';
   if (who !== 'sender' && who !== 'receiver') return { ok: false, statusCode: 400, message: 'whoPays is required and must be "sender" or "receiver"' };
 
-  const quote = quoteFromPickupDropoff(pickup, dropoff);
+  const quote = quoteFromPickupDropoff(pickup, dropoff, db);
   if (!quote) return { ok: false, statusCode: 400, message: 'Could not compute route distance' };
   const dKm = haversineKm(pickup.latitude, pickup.longitude, dropoff.latitude, dropoff.longitude);
-  const minJod = minAmountJod(dKm, dropoff);
+  const minJod = minAmountJod(dKm, dropoff, db);
   const amountNum = amount != null ? Number(amount) : NaN;
   if (Number.isNaN(amountNum) || amountNum < minJod) {
     return { ok: false, statusCode: 400, message: `amount must be at least ${minJod} JOD for this distance (${quote.distanceKm} km). Call POST /api/arheb-box/quote first.`, data: { minAmountJod: minJod, distanceKm: quote.distanceKm } };
@@ -259,7 +257,7 @@ function createArhebBoxRequest(db, phoneNumber, body, statusOverride, options = 
   const dropoffJson = JSON.stringify({ latitude: dropoff.latitude, longitude: dropoff.longitude, address: dropoff.address != null ? String(dropoff.address) : '' });
   const notesStr = notes != null ? String(notes) : '';
   const weightKgNum = Math.max(0, safeNumber(weightKg, 0));
-  const computedDeliveryFee = calcDeliveryFeeFromDistanceAndWeight(quote.distanceKm, weightKgNum, dropoff);
+  const computedDeliveryFee = calcDeliveryFeeFromDistanceAndWeight(quote.distanceKm, weightKgNum, dropoff, db);
   const computedServiceFee = getArhebBoxServiceFeeJod(db);
   const computedFeesTax = calcFeesTaxJod(computedDeliveryFee, computedServiceFee);
 
@@ -346,6 +344,7 @@ function notifyDriversAboutNewArhebBox(db, io, row) {
 
 module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest, io) {
   ensureArhebBoxTable(db);
+  seedDeliveryFixedZonesIfEmpty(db);
 
   // Quote: distance, minimum parcel amount, delivery fee + zero service fee + zero fees tax (no auth)
   app.post('/api/arheb-box/quote', (req, res) => {
@@ -361,7 +360,7 @@ module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest, io)
       if (!pickup || !dropoff) {
         return res.status(400).json({ success: false, message: 'pickup and dropoff are required' });
       }
-      const q = quoteFromPickupDropoff(pickup, dropoff);
+      const q = quoteFromPickupDropoff(pickup, dropoff, db);
       if (!q) {
         return res.status(400).json({
           success: false,
@@ -369,7 +368,7 @@ module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest, io)
         });
       }
       const weightKgNum = Math.max(0, safeNumber(weightKg, 0));
-      const deliveryFee = calcDeliveryFeeFromDistanceAndWeight(q.distanceKm, weightKgNum, dropoff);
+      const deliveryFee = calcDeliveryFeeFromDistanceAndWeight(q.distanceKm, weightKgNum, dropoff, db);
       const serviceFee = getArhebBoxServiceFeeJod(db);
       const feesTax = calcFeesTaxJod(deliveryFee, serviceFee);
       const invoice = buildInvoice(deliveryFee, serviceFee);
@@ -384,7 +383,7 @@ module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest, io)
           invoice,
           currency: 'JOD',
           pricingNote:
-            'Arheb Box: delivery 1 JOD first km + 0.5 JOD per extra km (no cap). No platform service fee. No checkout VAT on fees. Parcel amount must be at least minAmountJod.',
+            'Arheb Box: special-far / dashboard fixed zones / remote pins use fixed fees; otherwise 1 JOD first km + 0.5 JOD per extra km (no cap). No checkout VAT on fees. Parcel amount must be at least minAmountJod.',
         },
         timestamp: new Date().toISOString(),
       });
