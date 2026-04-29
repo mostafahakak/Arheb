@@ -20,19 +20,21 @@ function haversineKm(lat1, lon1, lat2, lon2) {
 }
 
 /**
- * Default pins (WGS84): aligned with shared Maps short links + OSM place centroids.
- * University: https://maps.app.goo.gl/n82LC1hPn71P11hK6 — campus amenity ~29.436922, 35.012859
- * Tala Bay: https://maps.app.goo.gl/W5casnKhHwHdshzT9 — تالا بي ~29.409196, 34.979815
+ * Default pins (WGS84) from Google Maps place / directions:
+ * جامعة العقبة للتكنولوجيا — destination lat/lng from Maps (~29.4368563, 35.0125407)
+ * تالا باي — The Beach Club, Tala Bay (29.411629, 34.978631)
  */
 const DEFAULT_ZONES = [
-  { sortOrder: 0, label: 'جامعة العقبة للتكنولوجيا', centerLat: 29.4369224, centerLon: 35.0128589, radiusKm: 3, feeJod: 2 },
-  { sortOrder: 1, label: 'تالا باي', centerLat: 29.4091955, centerLon: 34.9798154, radiusKm: 3, feeJod: 2 },
+  { sortOrder: 0, label: 'جامعة العقبة للتكنولوجيا', centerLat: 29.4368563, centerLon: 35.0125407, radiusKm: 3, feeJod: 2 },
+  { sortOrder: 1, label: 'تالا باي', centerLat: 29.411629, centerLon: 34.978631, radiusKm: 3, feeJod: 2 },
 ];
 
-/** One-time: move rows still on pre–Maps-link seed coords to the pins above. */
+/** One-time: nudge rows still on older seed pins toward current Maps anchors. */
 const LEGACY_PIN_UPDATES = [
-  { oldLat: 29.5488, oldLon: 35.0025, newLat: 29.4369224, newLon: 35.0128589 },
-  { oldLat: 29.3915, oldLon: 34.9795, newLat: 29.4091955, newLon: 34.9798154 },
+  { oldLat: 29.5488, oldLon: 35.0025, newLat: 29.4368563, newLon: 35.0125407 },
+  { oldLat: 29.4369224, oldLon: 35.0128589, newLat: 29.4368563, newLon: 35.0125407 },
+  { oldLat: 29.3915, oldLon: 34.9795, newLat: 29.411629, newLon: 34.978631 },
+  { oldLat: 29.4091955, oldLon: 34.9798154, newLat: 29.411629, newLon: 34.978631 },
 ];
 
 function migrateLegacyDeliveryPinCoordinates(db) {

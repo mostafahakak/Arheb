@@ -200,11 +200,12 @@ function resolveStoreOrderServiceFeeJod(storeJson, platformDefaultServiceFeeJod)
 /**
  * Checkout delivery order of precedence (first match wins):
  *   1. Special-far desert pins → fixed 10 JOD (never overridden).
- *   2. Per-store cart threshold (`checkoutDeliveryOverCartThresholdJod` + `checkoutDeliveryFeeAboveJod`) — admin-set on the store.
- *   3. Platform-wide cart threshold (`platformTiers.deliveryOverCartThresholdJod` + `deliveryFeeAboveJod`).
- *   4. Per-store fixed fee (`checkoutDeliveryFeeJod`) from dashboard.
- *   5. Per-store free delivery (`checkoutDeliveryFeeZero` — respected outside remote & dashboard fixed zones).
- *   6. Distance-based `computedFromDistanceJod` (already honors tiers / platform flatDeliveryFeeJod).
+ *   2. Dashboard fixed circular zones (`delivery_fixed_zones`) — fee/radius from DB; not overridden by cart thresholds or store fixed delivery fee.
+ *   3. Per-store cart threshold (`checkoutDeliveryOverCartThresholdJod` + `checkoutDeliveryFeeAboveJod`).
+ *   4. Platform-wide cart threshold (`platformTiers.deliveryOverCartThresholdJod` + `deliveryFeeAboveJod`).
+ *   5. Per-store fixed fee (`checkoutDeliveryFeeJod`) from store settings.
+ *   6. Per-store free delivery (`checkoutDeliveryFeeZero` — outside remote & dashboard fixed zones).
+ *   7. Distance-based `computedFromDistanceJod` (tiers / platform flatDeliveryFeeJod).
  *
  * @param {object | null} storeJson
  * @param {number} computedFromDistanceJod
@@ -215,6 +216,9 @@ function resolveStoreOrderServiceFeeJod(storeJson, platformDefaultServiceFeeJod)
 function resolveStoreOrderDeliveryFeeJod(storeJson, computedFromDistanceJod, deliveryLat, deliveryLng, options) {
   const specialFar = specialFarDeliveryZoneFixedFeeJod(deliveryLat, deliveryLng);
   if (specialFar != null) return specialFar;
+
+  const dashboardZoneFee = matchFixedDeliveryZoneFeeJod(deliveryLat, deliveryLng, options?.db);
+  if (dashboardZoneFee != null) return round2(dashboardZoneFee);
 
   const base =
     computedFromDistanceJod != null && Number.isFinite(Number(computedFromDistanceJod))
