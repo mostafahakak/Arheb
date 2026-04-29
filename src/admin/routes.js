@@ -2124,6 +2124,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       'waiting cliq confirmation': 1,
       'payment rejected': 2,
       preparing: 3,
+      'driver to pick': 3.5,
+      'in progress': 3.5,
       'on the way': 4,
       delivered: 5,
     };
@@ -2159,6 +2161,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       'payment rejected': [],
       preparing: ['On the way'],
       'driver to pick': ['On the way'],
+      'in progress': ['On the way'],
       'on the way': ['Delivered'],
     };
     return nextBy[cur] || [];
@@ -2874,10 +2877,11 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     if (!driver) return res.status(400).json({ success: false, message: 'Invalid or blocked driver' });
     clearStoreOrderOfferTimeout(orderId);
     rejectAllPendingDriverRequestsForStoreOrder(db, orderId);
-    assignDriverToOrder(db, orderId, driverIdNum, driver.name, 'Driver to pick');
+    assignDriverToOrder(db, orderId, driverIdNum, driver.name, 'In progress');
     try {
       const { emitOrderEvent } = require('../order');
-      if (emitOrderEvent) emitOrderEvent(orderId, 'status_update', { status: order.status || 'Preparing' });
+      const updatedAfterAssign = findOrderById.get(orderId);
+      if (emitOrderEvent) emitOrderEvent(orderId, 'status_update', { status: updatedAfterAssign?.status || 'In progress' });
     } catch (e) { /* ignore */ }
     const updated = findOrderById.get(orderId);
     const stores = loadStores();
@@ -2894,7 +2898,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         'Driver assigned',
         `A driver has been assigned to Order #${orderId}.`,
         null,
-        customerOrderTrackingData(orderId, updated.status || 'Preparing'),
+        customerOrderTrackingData(orderId, updated.status || 'In progress'),
       )
       .catch(() => {});
     const items = findOrderItems.all(orderId);
@@ -2929,11 +2933,12 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       statusLower.includes('preparing') ||
       statusLower.includes('being prepared') ||
       statusLower.includes('on the way') ||
-      statusLower.includes('driver to pick');
+      statusLower.includes('driver to pick') ||
+      statusLower.includes('in progress');
     if (!canReassignStatus) {
       return res.status(400).json({
         success: false,
-        message: 'Can only reassign when order is Preparing, Being prepared, Driver to pick, or On the way',
+        message: 'Can only reassign when order is Preparing, Being prepared, In progress, Driver to pick, or On the way',
       });
     }
     if (order.driverId != null && Number(order.driverId) === driverIdNum) {

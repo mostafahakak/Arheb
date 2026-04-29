@@ -24,8 +24,8 @@ const { getActiveFromListWithDistance } = require('../driverPresence');
 const { offerNextSequentialDriver, offerNextSequentialArhebBoxDriver, parseLatLongFromGoogleMapsUrl } = require('../utils/sequentialDriverOffer');
 const { notifyArhebBoxCustomerDriverToPick, notifyArhebBoxCustomerDriverEnRoute } = require('../utils/arhebBoxFcm');
 
-/** After a driver accepts (or is assigned) a store order — before "On the way". */
-const STORE_STATUS_DRIVER_TO_PICK = 'Driver to pick';
+/** After a driver accepts (or is assigned) a store order — before "On the way". Legacy DB rows may still say "Driver to pick". */
+const STORE_ORDER_STATUS_AFTER_ASSIGN = 'In progress';
 /** Arheb Box: driver accepted, has not started trip to customer yet. */
 const ARHEB_STATUS_DRIVER_TO_PICK = 'driver_to_pick';
 /** Arheb Box: driver is heading to customer. */
@@ -223,7 +223,8 @@ function mapOrderStatus(s) {
   if (!s) return 'pending';
   const lower = s.toLowerCase();
   if (lower.includes('waiting') || lower.includes('confirmation')) return 'pending';
-  if (lower === 'driver to pick' || (lower.includes('driver') && lower.includes('pick'))) return 'picking';
+  if (lower === 'driver to pick' || lower === 'in progress' || (lower.includes('driver') && lower.includes('pick')))
+    return 'picking';
   if (lower.includes('prepared') || lower.includes('preparing')) return 'ready';
   if (lower.includes('way') || lower.includes('delivering')) return 'delivering';
   if (lower.includes('delivered')) return 'delivered';
@@ -1029,8 +1030,8 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     } catch (e) {
       /* ignore */
     }
-    assignDriverToOrder(db, orderId, driverId, driverName, STORE_STATUS_DRIVER_TO_PICK);
-    const currentStatus = STORE_STATUS_DRIVER_TO_PICK;
+    assignDriverToOrder(db, orderId, driverId, driverName, STORE_ORDER_STATUS_AFTER_ASSIGN);
+    const currentStatus = STORE_ORDER_STATUS_AFTER_ASSIGN;
     emitOrderStatus(orderId, currentStatus);
     try {
       const { broadcastDriverOrdersUpdated } = require('../driverPresence');
@@ -1075,7 +1076,8 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     return (
       statusKey === 'preparing' ||
       statusKey === 'being prepared' ||
-      statusKey === 'driver to pick'
+      statusKey === 'driver to pick' ||
+      statusKey === 'in progress'
     );
   }
 

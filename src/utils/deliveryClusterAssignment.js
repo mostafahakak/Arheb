@@ -105,6 +105,7 @@ function findExistingDriverForCluster(db, cluster, storeIdStr, onlineSorted, max
 }
 
 function notifyDriverAssigned(db, io, orderId, order, driverId, store) {
+  const liveStatus = String(order?.status || '').trim() || 'Preparing';
   fcm
     .sendToDriver(
       db,
@@ -113,7 +114,7 @@ function notifyDriverAssigned(db, io, orderId, order, driverId, store) {
       `Order #${orderId} from ${store?.nameEn || store?.name || store?.nameAr || 'store'} — assigned to you. Open the app for details.`,
       {
         orderId: String(orderId),
-        status: 'Preparing',
+        status: liveStatus,
         storeId: String(order.storeId || ''),
         storeName: String(store?.nameEn || store?.name || store?.nameAr || ''),
         storeMapsUrl: String(store?.mapsUrl || ''),
@@ -126,7 +127,7 @@ function notifyDriverAssigned(db, io, orderId, order, driverId, store) {
     .catch(() => {});
   emitDriverDeliveryRequest(io, driverId, {
     orderId,
-    status: 'Preparing',
+    status: liveStatus,
     storeId: order.storeId,
     storeName: store?.nameEn || store?.name || store?.nameAr || '',
     type: 'driver_assigned',
@@ -245,7 +246,7 @@ function runDeliveryClusterAutoAssign(db, io, storeId, ctx, options = {}) {
     const driverName = dr?.name || null;
 
     for (const o of pending) {
-      assignDriverToOrder(db, o.id, driverId, driverName, 'Driver to pick');
+      assignDriverToOrder(db, o.id, driverId, driverName, 'In progress');
       try {
         db.prepare(`UPDATE orders SET driverAssignmentStatus = NULL WHERE id = ?`).run(o.id);
       } catch (e) {
@@ -253,7 +254,7 @@ function runDeliveryClusterAutoAssign(db, io, storeId, ctx, options = {}) {
       }
       const full = db.prepare('SELECT * FROM orders WHERE id = ?').get(o.id);
       notifyDriverAssigned(db, io, o.id, full, driverId, store);
-      emitOrderStatus(o.id, 'Preparing');
+      emitOrderStatus(o.id, full?.status || 'In progress');
       assigned.push({ orderId: o.id, driverId });
     }
   }

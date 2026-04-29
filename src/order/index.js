@@ -28,7 +28,7 @@ function broadcastDriverPresenceLocation(io, db, driverId, latitude, longitude) 
   // Store orders: live map while driver is assigned (preparing or en route)
   try {
     const rows = db
-      .prepare("SELECT id FROM orders WHERE driverId = ? AND status IN ('Preparing', 'On the way', 'Driver to pick', 'Being prepared')")
+      .prepare("SELECT id FROM orders WHERE driverId = ? AND status IN ('Preparing', 'On the way', 'Driver to pick', 'In progress', 'Being prepared')")
       .all(driverId);
     for (const row of rows) {
       const orderId = row.id;
