@@ -231,7 +231,24 @@ const findUserByPhone = db.prepare('SELECT * FROM users WHERE phoneNumber = ?');
 const findUserByFirebaseUid = db.prepare('SELECT * FROM users WHERE firebaseUid = ?');
 const findDriverByMobile = db.prepare('SELECT * FROM drivers WHERE mobile = ?');
 
-const { jordanMobileLookupKeys } = require('./utils/jordanMobile');
+const {
+  jordanMobileLookupKeys,
+  normalizeJordanMobileKey,
+  normalizeOtpDigits,
+} = require('./utils/jordanMobile');
+const {
+  ensureWhatsappOtpTable,
+  generateOtpCode,
+  generateVerificationId,
+  jordanKeyToWhatsAppDigits,
+  getWhatsappConfig,
+  sendWhatsappAuthenticationOtp,
+  upsertWhatsappOtp,
+  getPendingWhatsappOtp,
+  deleteWhatsappOtp,
+  checkResendCooldown,
+  OTP_TTL_MS,
+} = require('./utils/whatsappLoginOtp');
 
 function findUserByPhoneFlexible(phone) {
   const keys = jordanMobileLookupKeys(phone);
@@ -250,6 +267,8 @@ function findDriverByPhoneFlexible(phone) {
   }
   return null;
 }
+
+ensureWhatsappOtpTable(db);
 
 function maskPhoneForLog(phone) {
   const s = String(phone || '').trim();
@@ -595,6 +614,127 @@ app.post('/api/auth/verify-firebase-token', async (req, res) => {
       message: error.message || 'Invalid id token',
       case: 2,
     });
+  }
+});
+
+/**
+ * WhatsApp OTP login (customer app): Meta Authentication template in Arabic; OTP valid 2 minutes.
+ * Env: WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_OTP_TEMPLATE_NAME (default arheb_login_otp_ar), WHATSAPP_OTP_LANG (default ar).
+ */
+app.post('/api/auth/whatsapp/send-code', async (req, res) => {
+  const { phoneNumber } = req.body || {};
+  const cfg = getWhatsappConfig();
+  if (!cfg.configured) {
+    return res.status(503).json({
+      success: false,
+      message: 'WhatsApp login is not configured on server',
+      case: 2,
+    });
+  }
+  if (!phoneNumber || !String(phoneNumber).trim()) {
+    return res.status(400).json({ success: false, message: 'phoneNumber is required', case: 2 });
+  }
+  const phoneKey = normalizeJordanMobileKey(phoneNumber);
+  if (!phoneKey || phoneKey.replace(/\D/g, '').length < 9) {
+    return res.status(400).json({ success: false, message: 'Invalid phone number', case: 2 });
+  }
+  const waDigits = jordanKeyToWhatsAppDigits(phoneKey);
+  if (!waDigits) {
+    return res.status(400).json({ success: false, message: 'Could not format phone for WhatsApp', case: 2 });
+  }
+
+  const existingUser = findUserByPhoneFlexible(phoneKey);
+  if (existingUser && existingUser.isBlocked) {
+    return res.status(403).json({ success: false, message: 'User is blocked', case: 2 });
+  }
+
+  const now = Date.now();
+  const pending = getPendingWhatsappOtp(db, phoneKey, 'customer');
+  const cooldown = checkResendCooldown(pending, now);
+  if (!cooldown.ok) {
+    return res.status(429).json({
+      success: false,
+      message: `Wait ${cooldown.waitSec}s before requesting another code`,
+      case: 2,
+      retryAfterSec: cooldown.waitSec,
+    });
+  }
+
+  const code = generateOtpCode();
+  const verificationId = generateVerificationId();
+  try {
+    await sendWhatsappAuthenticationOtp(waDigits, code);
+  } catch (error) {
+    const raw =
+      error.response?.data?.error?.message ||
+      error.response?.data?.error ||
+      error.message ||
+      'WhatsApp send failed';
+    console.error('whatsapp/send-code error:', raw);
+    if (error.code === 'WHATSAPP_NOT_CONFIGURED') {
+      return res.status(503).json({ success: false, message: String(raw), case: 2 });
+    }
+    return res.status(502).json({ success: false, message: String(raw), case: 2 });
+  }
+
+  upsertWhatsappOtp(db, {
+    phoneKey,
+    channel: 'customer',
+    code,
+    verificationId,
+    now,
+  });
+
+  return res.status(200).json({
+    success: true,
+    message: 'OTP sent via WhatsApp',
+    case: 1,
+    alreadyRegistered: Boolean(existingUser && !existingUser.deleted),
+    verificationId,
+    expiresIn: Math.floor(OTP_TTL_MS / 1000),
+    channel: 'whatsapp',
+  });
+});
+
+app.post('/api/auth/whatsapp/verify-code', async (req, res) => {
+  const { phoneNumber, verificationId, otp } = req.body || {};
+  if (!phoneNumber || !verificationId || otp === undefined || otp === null || otp === '') {
+    return res.status(400).json({
+      success: false,
+      message: 'phoneNumber, verificationId, and otp are required',
+      case: 2,
+    });
+  }
+  const phoneKey = normalizeJordanMobileKey(phoneNumber);
+  if (!phoneKey) {
+    return res.status(400).json({ success: false, message: 'Invalid phone number', case: 2 });
+  }
+
+  const pending = getPendingWhatsappOtp(db, phoneKey, 'customer');
+  if (!pending || String(pending.verificationId) !== String(verificationId)) {
+    return res.status(401).json({
+      success: false,
+      message: 'Invalid or expired code. Request a new WhatsApp code.',
+      case: 2,
+    });
+  }
+  const otpNorm = normalizeOtpDigits(otp);
+  if (otpNorm.length !== 6 || otpNorm !== String(pending.code)) {
+    return res.status(401).json({ success: false, message: 'Invalid OTP code', case: 2 });
+  }
+
+  deleteWhatsappOtp(db, phoneKey, 'customer');
+
+  try {
+    const sessionBody = finalizePhoneAuthSession(phoneKey, `whatsapp:${verificationId}`, null);
+    const body = attachDriverClaimsToSession(sessionBody, phoneKey, null);
+    return res.status(200).json(body);
+  } catch (error) {
+    if (error.statusCode === 403) {
+      return res.status(403).json({ success: false, message: error.message, case: 2 });
+    }
+    console.error('whatsapp/verify-code error:', error?.message || error);
+    return res.status(500).json({ success: false, message: 'Internal server error', case: 2 });
   }
 });
 

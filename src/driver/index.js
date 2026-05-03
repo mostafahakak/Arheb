@@ -23,6 +23,18 @@ const {
 const { getActiveFromListWithDistance } = require('../driverPresence');
 const { offerNextSequentialDriver, offerNextSequentialArhebBoxDriver, parseLatLongFromGoogleMapsUrl } = require('../utils/sequentialDriverOffer');
 const { notifyArhebBoxCustomerDriverToPick, notifyArhebBoxCustomerDriverEnRoute } = require('../utils/arhebBoxFcm');
+const {
+  generateOtpCode: generateWhatsappOtpCode,
+  generateVerificationId: generateWhatsappVerificationId,
+  jordanKeyToWhatsAppDigits,
+  getWhatsappConfig,
+  sendWhatsappAuthenticationOtp,
+  upsertWhatsappOtp,
+  getPendingWhatsappOtp,
+  deleteWhatsappOtp,
+  checkResendCooldown,
+  OTP_TTL_MS: WHATSAPP_OTP_TTL_MS,
+} = require('../utils/whatsappLoginOtp');
 
 /** After a driver accepts (or is assigned) a store order — before "On the way". Legacy DB rows may still say "Driver to pick". */
 const STORE_ORDER_STATUS_AFTER_ASSIGN = 'In progress';
@@ -499,6 +511,156 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
         },
         token: `Bearer ${token}`,
         refreshToken: null,
+      },
+    });
+  });
+
+  // WhatsApp OTP login (same JWT as /api/driver/login); OTP valid 2 minutes; Arabic auth template on Meta.
+  app.post('/api/driver/whatsapp/send-otp', async (req, res) => {
+    const { mobile } = req.body || {};
+    console.log('driver/whatsapp/send-otp hit', { mobile: maskPhoneForLog(mobile) });
+    const cfg = getWhatsappConfig();
+    if (!cfg.configured) {
+      return res.status(503).json({ success: false, message: 'WhatsApp login is not configured on server' });
+    }
+    if (!mobile || !String(mobile).trim()) {
+      return res.status(400).json({ success: false, message: 'mobile is required' });
+    }
+    const driver = findDriverByMobileFlexible(mobile);
+    if (!driver || driver.deleted) {
+      return res.status(404).json({
+        success: false,
+        message: 'Driver not found. Contact admin to be added.',
+      });
+    }
+    if (driver.isBlocked) {
+      return res.status(403).json({ success: false, message: 'Account is blocked' });
+    }
+    const canonicalMobile = String(driver.mobile).trim();
+    const waDigits = jordanKeyToWhatsAppDigits(canonicalMobile);
+    if (!waDigits) {
+      return res.status(400).json({ success: false, message: 'Could not format phone for WhatsApp' });
+    }
+
+    const now = Date.now();
+    const pendingWa = getPendingWhatsappOtp(db, canonicalMobile, 'driver');
+    const cooldown = checkResendCooldown(pendingWa, now);
+    if (!cooldown.ok) {
+      return res.status(429).json({
+        success: false,
+        message: `Wait ${cooldown.waitSec}s before requesting another code`,
+        retryAfterSec: cooldown.waitSec,
+      });
+    }
+
+    const code = generateWhatsappOtpCode();
+    const verificationId = generateWhatsappVerificationId();
+    try {
+      await sendWhatsappAuthenticationOtp(waDigits, code);
+    } catch (error) {
+      const raw =
+        error.response?.data?.error?.message ||
+        error.response?.data?.error ||
+        error.message ||
+        'WhatsApp send failed';
+      console.error('driver/whatsapp/send-otp error:', raw);
+      return res.status(502).json({ success: false, message: String(raw) });
+    }
+
+    upsertWhatsappOtp(db, {
+      phoneKey: canonicalMobile,
+      channel: 'driver',
+      code,
+      verificationId,
+      now,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'OTP sent via WhatsApp',
+      data: {
+        verificationId,
+        expiresIn: Math.floor(WHATSAPP_OTP_TTL_MS / 1000),
+        mobile: canonicalMobile,
+        channel: 'whatsapp',
+      },
+    });
+  });
+
+  app.post('/api/driver/whatsapp/login', async (req, res) => {
+    const { mobile, otpCode, verificationId } = req.body || {};
+    console.log('driver/whatsapp/login hit', {
+      mobile: maskPhoneForLog(mobile),
+      otpLength: String(otpCode ?? '').length,
+      hasVerificationId: Boolean(verificationId),
+    });
+    const cfg = getWhatsappConfig();
+    if (!cfg.configured) {
+      return res.status(503).json({ success: false, message: 'WhatsApp login is not configured on server' });
+    }
+    if (!mobile || otpCode === undefined || otpCode === null || otpCode === '') {
+      return res.status(400).json({ success: false, message: 'mobile and otpCode are required' });
+    }
+    const driver = findDriverByMobileFlexible(mobile);
+    if (!driver || driver.deleted) {
+      return res.status(401).json({ success: false, message: 'Driver not found. Contact admin to be added.' });
+    }
+    if (driver.isBlocked) {
+      return res.status(403).json({ success: false, message: 'Account is blocked' });
+    }
+    const canonicalMobile = String(driver.mobile).trim();
+    const pending = getPendingWhatsappOtp(db, canonicalMobile, 'driver');
+    if (!pending) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired OTP. Request a new code from POST /api/driver/whatsapp/send-otp.',
+      });
+    }
+    if (verificationId && String(verificationId) !== pending.verificationId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid verificationId. Use the value returned by whatsapp/send-otp.',
+      });
+    }
+    const otpNorm = normalizeOtpDigits(otpCode);
+    if (otpNorm.length !== 6 || otpNorm !== String(pending.code)) {
+      return res.status(401).json({ success: false, message: 'Invalid OTP code' });
+    }
+    deleteWhatsappOtp(db, canonicalMobile, 'driver');
+
+    const token = jwt.sign(
+      { driverId: driver.id, mobile: driver.mobile },
+      JWT_SECRET,
+      { expiresIn: '7d' },
+    );
+    const d = { ...driver };
+    delete d.licenseNumber;
+    const defaultPct = getDriverDeliveryDefaultPercent(db);
+    const commissionPercent =
+      d.commissionPercent != null && Number.isFinite(Number(d.commissionPercent))
+        ? Number(d.commissionPercent)
+        : defaultPct;
+    return res.status(200).json({
+      success: true,
+      message: 'Login successful',
+      data: {
+        driver: {
+          id: String(d.id),
+          name: d.name,
+          photo: d.photo,
+          mobile: d.mobile,
+          email: d.email,
+          vehicleType: d.vehicleType,
+          vehicleNumber: d.vehicleNumber,
+          latitude: d.latitude,
+          longitude: d.longitude,
+          rating: d.rating ?? 5,
+          isVerified: Boolean(d.isVerified),
+          commissionPercent,
+        },
+        token: `Bearer ${token}`,
+        refreshToken: null,
+        channel: 'whatsapp',
       },
     });
   });

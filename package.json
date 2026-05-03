@@ -8,7 +8,8 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "build:dashboard": "cd dashboard && npm run build",
-    "deploy:dashboard": "npm run build:dashboard && firebase deploy"
+    "deploy:dashboard": "npm run build:dashboard && firebase deploy",
+    "whatsapp:create-auth-template": "node scripts/createWhatsappAuthTemplate.js"
   },
   "engines": {
     "node": "20.x"
