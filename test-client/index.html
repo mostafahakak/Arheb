@@ -464,6 +464,7 @@
       <nav class="sidebar">
         <h2>Navigation</h2>
         <a class="nav-item active" data-section="auth">🔐 Authentication</a>
+        <a class="nav-item" data-section="whatsapp">💬 WhatsApp OTP</a>
         <a class="nav-item" data-section="products">📦 Products</a>
         <a class="nav-item" data-section="stores">🏪 Stores</a>
         <a class="nav-item" data-section="categories">📂 Categories</a>
@@ -519,6 +520,71 @@
           </div>
 
           <div id="recaptcha-container"></div>
+        </section>
+
+        <!-- WhatsApp OTP (customer + driver) -->
+        <section id="whatsapp" class="section">
+          <h2>WhatsApp OTP <span class="badge public">Public</span></h2>
+          <p style="font-size: 0.875rem; color: #718096; margin-bottom: 1rem;">
+            Requires Meta WhatsApp Cloud API env on the backend (<code>WHATSAPP_ACCESS_TOKEN</code>, <code>WHATSAPP_PHONE_NUMBER_ID</code>, …).
+            Customer endpoints mirror Firebase OTP session behavior but use <code>verificationId</code> from WhatsApp. Driver flow only works for mobiles already registered as drivers.
+          </p>
+
+          <div class="card">
+            <h3>Customer — Send code</h3>
+            <p style="font-size: 0.8rem; color: #718096;">POST <code>/api/auth/whatsapp/send-code</code></p>
+            <div class="form-group">
+              <label for="waCustomerPhone">Phone number</label>
+              <input id="waCustomerPhone" type="tel" placeholder="+962791234567 or 0791234567" dir="ltr" />
+            </div>
+            <button id="waCustomerSendBtn" type="button">Send WhatsApp code</button>
+            <div id="waCustomerSendStatus" class="status info" style="display: none;"></div>
+            <div id="waCustomerSendOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Customer — Verify code</h3>
+            <p style="font-size: 0.8rem; color: #718096;">POST <code>/api/auth/whatsapp/verify-code</code></p>
+            <div class="form-group">
+              <label for="waCustomerVerificationId">verificationId</label>
+              <input id="waCustomerVerificationId" type="text" placeholder="From send-code response" dir="ltr" />
+            </div>
+            <div class="form-group">
+              <label for="waCustomerOtp">OTP (6 digits)</label>
+              <input id="waCustomerOtp" type="text" inputmode="numeric" maxlength="8" placeholder="123456" dir="ltr" />
+            </div>
+            <button id="waCustomerVerifyBtn" type="button" class="secondary">Verify &amp; login</button>
+            <div id="waCustomerVerifyStatus" class="status info" style="display: none;"></div>
+            <div id="waCustomerVerifyOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Driver — Send OTP</h3>
+            <p style="font-size: 0.8rem; color: #718096;">POST <code>/api/driver/whatsapp/send-otp</code></p>
+            <div class="form-group">
+              <label for="waDriverMobile">Driver mobile</label>
+              <input id="waDriverMobile" type="tel" placeholder="0790000000" dir="ltr" />
+            </div>
+            <button id="waDriverSendBtn" type="button">Send driver WhatsApp OTP</button>
+            <div id="waDriverSendStatus" class="status info" style="display: none;"></div>
+            <div id="waDriverSendOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Driver — Login</h3>
+            <p style="font-size: 0.8rem; color: #718096;">POST <code>/api/driver/whatsapp/login</code></p>
+            <div class="form-group">
+              <label for="waDriverVerificationId">verificationId</label>
+              <input id="waDriverVerificationId" type="text" placeholder="From send-otp response" dir="ltr" />
+            </div>
+            <div class="form-group">
+              <label for="waDriverOtp">OTP</label>
+              <input id="waDriverOtp" type="text" inputmode="numeric" maxlength="8" placeholder="123456" dir="ltr" />
+            </div>
+            <button id="waDriverLoginBtn" type="button" class="secondary">Driver WhatsApp login</button>
+            <div id="waDriverLoginStatus" class="status info" style="display: none;"></div>
+            <div id="waDriverLoginOutput" class="output" style="display: none;"></div>
+          </div>
         </section>
 
         <!-- Products Section -->
@@ -1564,6 +1630,123 @@
           showOutput('deleteOutput', data);
         } catch (error) {
           showOutput('deleteOutput', { error: error.message });
+        }
+      });
+
+      // WhatsApp OTP (customer + driver)
+      document.getElementById('waCustomerSendBtn').addEventListener('click', async () => {
+        const phoneNumber = document.getElementById('waCustomerPhone').value.trim();
+        if (!phoneNumber) {
+          showStatus('waCustomerSendStatus', 'Enter phone number', 'error');
+          return;
+        }
+        showStatus('waCustomerSendStatus', 'Sending…', 'info');
+        try {
+          const res = await fetch(`${getBackendBase()}/api/auth/whatsapp/send-code`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phoneNumber }),
+          });
+          const data = await res.json().catch(() => ({}));
+          showOutput('waCustomerSendOutput', data);
+          if (data.verificationId) {
+            document.getElementById('waCustomerVerificationId').value = data.verificationId;
+          }
+          showStatus(
+            'waCustomerSendStatus',
+            res.ok ? 'Code sent (check WhatsApp).' : (data.message || res.statusText || 'Failed'),
+            res.ok ? 'success' : 'error',
+          );
+        } catch (error) {
+          showStatus('waCustomerSendStatus', `Error: ${error.message}`, 'error');
+        }
+      });
+
+      document.getElementById('waCustomerVerifyBtn').addEventListener('click', async () => {
+        const phoneNumber = document.getElementById('waCustomerPhone').value.trim();
+        const verificationId = document.getElementById('waCustomerVerificationId').value.trim();
+        const otp = document.getElementById('waCustomerOtp').value.trim();
+        if (!phoneNumber || !verificationId || !otp) {
+          showStatus('waCustomerVerifyStatus', 'Phone, verificationId, and OTP required', 'error');
+          return;
+        }
+        showStatus('waCustomerVerifyStatus', 'Verifying…', 'info');
+        try {
+          const res = await fetch(`${getBackendBase()}/api/auth/whatsapp/verify-code`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phoneNumber, verificationId, otp }),
+          });
+          const data = await res.json().catch(() => ({}));
+          showOutput('waCustomerVerifyOutput', data);
+          if (data.success && data.token) {
+            lastAppToken = data.token;
+            lastFirebaseToken = data.firebaseToken || '';
+          }
+          showStatus(
+            'waCustomerVerifyStatus',
+            res.ok && data.success ? 'Logged in — user token saved for Delete User / profile tests.' : (data.message || 'Verification failed'),
+            res.ok && data.success ? 'success' : 'error',
+          );
+        } catch (error) {
+          showStatus('waCustomerVerifyStatus', `Error: ${error.message}`, 'error');
+        }
+      });
+
+      document.getElementById('waDriverSendBtn').addEventListener('click', async () => {
+        const mobile = document.getElementById('waDriverMobile').value.trim();
+        if (!mobile) {
+          showStatus('waDriverSendStatus', 'Enter driver mobile', 'error');
+          return;
+        }
+        showStatus('waDriverSendStatus', 'Sending…', 'info');
+        try {
+          const res = await fetch(`${getBackendBase()}/api/driver/whatsapp/send-otp`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mobile }),
+          });
+          const data = await res.json().catch(() => ({}));
+          showOutput('waDriverSendOutput', data);
+          const vid = data.data?.verificationId ?? data.verificationId;
+          if (vid) document.getElementById('waDriverVerificationId').value = vid;
+          showStatus(
+            'waDriverSendStatus',
+            res.ok ? 'OTP sent to driver WhatsApp.' : (data.message || res.statusText || 'Failed'),
+            res.ok ? 'success' : 'error',
+          );
+        } catch (error) {
+          showStatus('waDriverSendStatus', `Error: ${error.message}`, 'error');
+        }
+      });
+
+      document.getElementById('waDriverLoginBtn').addEventListener('click', async () => {
+        const mobile = document.getElementById('waDriverMobile').value.trim();
+        const verificationId = document.getElementById('waDriverVerificationId').value.trim();
+        const otpCode = document.getElementById('waDriverOtp').value.trim();
+        if (!mobile || !verificationId || !otpCode) {
+          showStatus('waDriverLoginStatus', 'Mobile, verificationId, and OTP required', 'error');
+          return;
+        }
+        showStatus('waDriverLoginStatus', 'Logging in…', 'info');
+        try {
+          const res = await fetch(`${getBackendBase()}/api/driver/whatsapp/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mobile, otpCode, verificationId }),
+          });
+          const data = await res.json().catch(() => ({}));
+          showOutput('waDriverLoginOutput', data);
+          if (res.ok && data.success && data.data?.token) {
+            lastDriverToken = data.data.token;
+          }
+          showStatus(
+            'waDriverLoginStatus',
+            res.ok && data.success ? 'Driver logged in — token saved for Driver API section.' : (data.message || 'Login failed'),
+            res.ok && data.success ? 'success' : 'error',
+          );
+        } catch (error) {
+          showStatus('waDriverLoginStatus', `Error: ${error.message}`, 'error');
         }
       });
 

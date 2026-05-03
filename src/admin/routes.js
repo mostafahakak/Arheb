@@ -1736,8 +1736,19 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
 
   app.get('/api/admin/stores/:storeId/products/export', auth, requireStoreAccess((req) => req.params.storeId), (req, res) => {
     const storeId = req.params.storeId;
+    const categoryFilterRaw = req.query.categoryFilter;
+    const categoryFilter =
+      categoryFilterRaw != null && String(categoryFilterRaw).trim() !== '' && String(categoryFilterRaw).trim().toLowerCase() !== 'all'
+        ? String(categoryFilterRaw).trim().toLowerCase()
+        : '';
     const products = loadProducts();
-    const storeProducts = products.filter((p) => p.store?.id === storeId);
+    let storeProducts = products.filter((p) => p.store?.id === storeId);
+    if (categoryFilter) {
+      storeProducts = storeProducts.filter((p) => {
+        const vals = [p.category, p.categoryEn, p.categoryAr].map((x) => String(x ?? '').trim().toLowerCase());
+        return vals.some((v) => v === categoryFilter);
+      });
+    }
     const rows = [EXCEL_HEADERS];
     storeProducts.forEach((p) => {
       rows.push([
@@ -1761,7 +1772,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     const ws = XLSX.utils.aoa_to_sheet(rows);
     XLSX.utils.book_append_sheet(wb, ws, 'Products');
     const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-    res.setHeader('Content-Disposition', `attachment; filename="store-${storeId}-products.xlsx"`);
+    const catSlug = categoryFilter ? `-cat-${categoryFilter.replace(/[^a-z0-9_-]+/gi, '_').slice(0, 40)}` : '';
+    res.setHeader('Content-Disposition', `attachment; filename="store-${storeId}-products${catSlug}.xlsx"`);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.send(buf);
   });
@@ -2175,11 +2187,16 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   // ——— Orders (sorted newest first; filter by date range, status, store, name, orderType, paymentType, driver) ———
   function buildAdminOrdersList(req) {
     const range = resolveOrdersListDateRange(req.query || {});
-    const { status, storeId, storeIds, storeName, name, orderType, statusFilter, paymentType, driverId, unassigned } = req.query;
+    const { status, storeId, storeIds, storeName, name, orderType, statusFilter, paymentType, driverId, unassigned, orderId } = req.query;
     const paymentTypeTrimmed =
       paymentType && String(paymentType).trim() ? String(paymentType).trim() : '';
     const onlyArhebBox = orderType === 'arheb_box';
     const onlyStore = orderType === 'store';
+    const orderIdNum =
+      orderId !== undefined && orderId !== null && String(orderId).trim() !== ''
+        ? parseInt(String(orderId).trim(), 10)
+        : NaN;
+    const filterByOrderId = !isNaN(orderIdNum);
 
     let storeOrders = [];
     if (!onlyArhebBox) {
@@ -2199,8 +2216,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           }
         }
       }
-      if (!range.allDates && range.dateFrom) { conditions.push("date(createdAt) >= date(?)"); params.push(range.dateFrom); }
-      if (!range.allDates && range.dateTo) { conditions.push("date(createdAt) <= date(?)"); params.push(range.dateTo); }
+      if (filterByOrderId) {
+        conditions.push('id = ?');
+        params.push(orderIdNum);
+      } else {
+        if (!range.allDates && range.dateFrom) { conditions.push("date(createdAt) >= date(?)"); params.push(range.dateFrom); }
+        if (!range.allDates && range.dateTo) { conditions.push("date(createdAt) <= date(?)"); params.push(range.dateTo); }
+      }
       if (statusFilter === 'active') {
         conditions.push("(status IS NULL OR status NOT IN ('Delivered', 'Cancelled'))");
       } else if (statusFilter === 'complete') {
@@ -2278,8 +2300,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       try {
         const boxCond = [];
         const boxParams = [];
-        if (!range.allDates && range.dateFrom) { boxCond.push("date(createdAt) >= date(?)"); boxParams.push(range.dateFrom); }
-        if (!range.allDates && range.dateTo) { boxCond.push("date(createdAt) <= date(?)"); boxParams.push(range.dateTo); }
+        if (filterByOrderId) {
+          boxCond.push('id = ?');
+          boxParams.push(orderIdNum);
+        } else {
+          if (!range.allDates && range.dateFrom) { boxCond.push("date(createdAt) >= date(?)"); boxParams.push(range.dateFrom); }
+          if (!range.allDates && range.dateTo) { boxCond.push("date(createdAt) <= date(?)"); boxParams.push(range.dateTo); }
+        }
         if (status && String(status).trim()) { boxCond.push('status = ?'); boxParams.push(String(status).trim()); }
         if (statusFilter === 'active') {
           boxCond.push("status NOT IN ('delivered', 'cancelled')");

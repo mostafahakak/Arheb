@@ -54,6 +54,12 @@ JOFOTARA_SELLER_NAME=your-company-name
 # Pause new Arheb Box orders (quote, POST /api/arheb-box, card initiate). Values: true | 1 | yes (case-insensitive). Omit or set false to allow orders.
 # ARHEB_BOX_PAUSED=true
 
+# WhatsApp OTP login (customer + driver): Meta Cloud API Authentication template. Omit WHATSAPP_ACCESS_TOKEN or WHATSAPP_PHONE_NUMBER_ID to disable.
+# WHATSAPP_ACCESS_TOKEN=
+# WHATSAPP_PHONE_NUMBER_ID=
+# WHATSAPP_OTP_TEMPLATE_NAME=arheb_login_otp_ar
+# WHATSAPP_OTP_LANG=ar
+
 # Show Arheb Box as “coming soon” in GET /api/contact → data.arhebBox.comingSoon (OR with DB flag from PATCH /api/admin/info). Not hardcoded in app code.
 # ARHEB_BOX_COMING_SOON=true
 ```
@@ -154,6 +160,7 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
 - [Authentication](#authentication)
   - [Register / Send OTP](#register--send-otp)
   - [Verify OTP](#verify-otp)
+  - [WhatsApp OTP login (customer)](#whatsapp-otp-login-customer)
   - [Delete User](#delete-user)
 - [Products](#products)
   - [Get Products (Paginated)](#get-products-paginated)
@@ -212,6 +219,7 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
   - [App version (public)](#app-version-public)
   - [Update Contact Information (Admin)](#update-contact-information-admin)
 - [Admin API](#admin-api)
+  - [Admin API complete endpoint catalog](#admin-api-complete-endpoint-catalog)
   - [Admin Login](#admin-login)
   - [Get Current Admin (Me)](#get-current-admin-me)
   - [Admins CRUD](#admins-crud)
@@ -231,6 +239,7 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
 - [Driver API](#driver-api)
   - [Driver workflow (store & Arheb Box)](#driver-workflow-store--arheb-box)
   - [Driver Send OTP](#driver-send-otp)
+  - [Driver WhatsApp OTP](#driver-whatsapp-otp)
   - [Driver Login](#driver-login)
   - [Driver Home](#driver-home)
   - [Driver Stats](#driver-stats)
@@ -384,6 +393,26 @@ if (data.success) {
   const firebaseToken = data.firebaseToken; // Firebase ID token
 }
 ```
+
+---
+
+### WhatsApp OTP login (customer)
+
+Alternative to Firebase phone OTP: sends a **6-digit code** via WhatsApp using a Meta **Authentication** template (Arabic by default). Codes are short-lived (about **2 minutes**); resend cooldown applies.
+
+**Configure:** set **`WHATSAPP_ACCESS_TOKEN`**, **`WHATSAPP_PHONE_NUMBER_ID`**, and optionally **`WHATSAPP_OTP_TEMPLATE_NAME`** (default `arheb_login_otp_ar`), **`WHATSAPP_OTP_LANG`** (default `ar`). If the token or phone number ID is missing, both endpoints return **503** (“not configured”).
+
+**Send code —** `POST /api/auth/whatsapp/send-code`
+
+**Body:** `{ "phoneNumber": "+9627XXXXXXXX" }` (Jordan numbers normalized server-side)
+
+**Success (200):** `{ "success": true, "verificationId": "...", "expiresIn": 120, "alreadyRegistered": boolean, "channel": "whatsapp", ... }`
+
+**Verify —** `POST /api/auth/whatsapp/verify-code`
+
+**Body:** `{ "phoneNumber": "...", "verificationId": "...", "otp": "123456" }`
+
+**Success (200):** Same session shape as **Verify OTP** (`token`, `firebaseToken` when applicable, `phoneNumber`).
 
 ---
 
@@ -2987,7 +3016,171 @@ The **E-Invoices** page (sidebar, Admin/SuperAdmin only) shows:
 
 ## Admin API
 
-All admin endpoints require **Admin JWT** authentication. Send the token in the `Authorization` header as `Bearer <token>`. The token is obtained from `POST /api/admin/login`. Roles: **SuperAdmin**, **Admin**, **Store Admin**. Store Admin can only access their assigned store.
+All admin endpoints require **Admin JWT** authentication unless noted. Send the token in the `Authorization` header exactly as returned by **`POST /api/admin/login`** (typically `Bearer …`). Roles: **SuperAdmin**, **Admin**, **Store Admin**. **Store Admin** is scoped to their **`storeId`** on routes that carry a store id.
+
+### Admin API complete endpoint catalog
+
+Single reference for every **`/api/admin/*`** route (mirrors `src/admin/routes.js`). **`A/S`** = Admin + SuperAdmin; **`SA`** = Store Admin (store-scoped); **`Sup`** = SuperAdmin only; **`Dash`** = any dashboard role (`SuperAdmin`, `Admin`, `Store Admin`). **`Auth`** = Bearer admin JWT required.
+
+#### Session & accounts
+
+| Method | Endpoint | Access | Notes |
+|--------|----------|--------|-------|
+| POST | `/api/admin/login` | Public | Email + password → `{ token, admin }`. |
+| GET | `/api/admin/me` | Auth | Current admin profile. |
+| PATCH | `/api/admin/me/password` | Dash | Change own password. |
+| GET | `/api/admin/activity-log` | Dash | Pagination + filters; SA sees own rows only. |
+
+#### Admins & users (customers)
+
+| Method | Endpoint | Access | Notes |
+|--------|----------|--------|-------|
+| GET | `/api/admin/admins` | A/S | Admin list (Admin cannot see SuperAdmins). |
+| POST | `/api/admin/admins` | A/S | Create admin / store admin. |
+| PATCH | `/api/admin/admins/:id` | A/S | Update admin. |
+| DELETE | `/api/admin/admins/:id` | A/S | Delete admin (rules per role). |
+| GET | `/api/admin/users` | A/S | List/search users. |
+| PATCH | `/api/admin/users/:phone/block` | A/S | Block/unblock user. |
+| GET | `/api/admin/users/:phone/orders` | A/S | Orders for phone. |
+| GET | `/api/admin/customers/:phone/profile` | A/S | Profile + orders shortcut. |
+
+#### Stores & catalog
+
+| Method | Endpoint | Access | Notes |
+|--------|----------|--------|-------|
+| GET | `/api/admin/stores` | Auth | List; SA = one store; filters `isOpen`, `paused`. |
+| GET | `/api/admin/stores/pause-history` | Auth | Pause sessions; optional `storeIds`, dates. |
+| POST | `/api/admin/stores` | A/S | Create store. |
+| GET | `/api/admin/stores/:id` | Auth | SA must own store. |
+| PATCH | `/api/admin/stores/:id` | Auth | Update store; SA blocked if store **blocked**. |
+| DELETE | `/api/admin/stores/:id` | A/S | Delete store + products JSON. |
+| POST | `/api/admin/stores/:id/clone` | Auth | Clone store (SA own store). |
+| POST | `/api/admin/stores/bulk-checkout-policy` | A/S | Bulk checkout flags / fees. |
+
+#### Products (per store)
+
+| Method | Endpoint | Access | Notes |
+|--------|----------|--------|-------|
+| GET | `/api/admin/stores/:storeId/products` | Auth | Optional `?name=` search. |
+| POST | `/api/admin/stores/:storeId/products` | Auth | SA → pending queue; A/S → live. |
+| PATCH | `/api/admin/stores/:storeId/products/:productId` | Auth | Update product. |
+| DELETE | `/api/admin/stores/:storeId/products/:productId` | Auth | Delete product. |
+| POST | `/api/admin/stores/:storeId/products/import` | Auth | Excel upload `multipart/form-data` `file`. |
+| GET | `/api/admin/stores/:storeId/products/export` | Auth | Excel; optional `?categoryFilter=` (see changelog). |
+| POST | `/api/admin/stores/:storeId/products/bulk-discount` | Auth | Bulk % discount. |
+| POST | `/api/admin/stores/:storeId/products/bulk-remove-discount` | Auth | Clear discounts. |
+
+#### Pending products
+
+| Method | Endpoint | Access | Notes |
+|--------|----------|--------|-------|
+| GET | `/api/admin/pending-products` | Auth | SA = own store pending rows. |
+| GET | `/api/admin/pending-products/:id` | Auth | Detail. |
+| POST | `/api/admin/pending-products/:id/approve` | A/S | Approve → live product. |
+| POST | `/api/admin/pending-products/:id/reject` | A/S | Reject + optional note. |
+
+#### Orders
+
+| Method | Endpoint | Access | Notes |
+|--------|----------|--------|-------|
+| GET | `/api/admin/orders/counts` | Auth | Aggregates; optional `storeIds`. |
+| GET | `/api/admin/orders` | Auth | List + filters (`orderId`, dates, status, `orderType`, …). |
+| GET | `/api/admin/orders/export` | Auth | Excel export (same filters). |
+| GET | `/api/admin/orders/:orderId` | Auth | Detail; box: `?type=arheb_box`. |
+| PATCH | `/api/admin/orders/:orderId/status` | Auth | SA = step-forward / reject rules. |
+| POST | `/api/admin/orders/:orderId/reject` | Auth | Cancel when allowed. |
+| DELETE | `/api/admin/orders/:orderId` | Sup | Permanent delete (first registered handler). |
+| GET | `/api/admin/orders/:orderId/available-drivers` | A/S | Drivers not already pending invite. |
+| GET | `/api/admin/orders/:orderId/nearby-drivers` | A/S | Online + distance to store. |
+| GET | `/api/admin/orders/:orderId/assignable-drivers` | A/S | Online first, then offline. |
+| POST | `/api/admin/orders/:orderId/request-driver` | A/S | Targeted FCM/socket invites. |
+| POST | `/api/admin/orders/:orderId/auto-assign` | A/S | Re-run cluster assign. |
+| POST | `/api/admin/orders/:orderId/assign-driver` | A/S | Manual assign → Driver to pick. |
+| POST | `/api/admin/orders/:orderId/reassign-driver` | A/S | Reassign driver. |
+| GET | `/api/admin/orders/:orderId/tracking` | Auth | Live tracking payload. |
+| GET | `/api/admin/orders/:orderId/driver-map` | Auth | Map / driver / URLs. |
+
+#### Notifications & dashboard
+
+| Method | Endpoint | Access | Notes |
+|--------|----------|--------|-------|
+| POST | `/api/admin/notifications/broadcast` | A/S | FCM broadcast + history row. |
+| POST | `/api/admin/notifications/fcm-test` | Sup | Single-device test push. |
+| GET | `/api/admin/notifications` | A/S | Broadcast history list. |
+| GET | `/api/admin/dashboard/sales` | Auth | Sales aggregates (scoped for SA). |
+
+#### Arheb Box (admin)
+
+| Method | Endpoint | Access | Notes |
+|--------|----------|--------|-------|
+| GET | `/api/admin/arheb-box` | Auth | List requests (SA may be limited). |
+| GET | `/api/admin/arheb-box/:id` | Auth | Detail. |
+| PATCH | `/api/admin/arheb-box/:id` | Auth | Status updates. |
+| DELETE | `/api/admin/arheb-box/:id` | Sup | Permanent delete. |
+| POST | `/api/admin/arheb-box/:id/assign-driver` | Auth | Assign driver. |
+| POST | `/api/admin/arheb-box/:id/reassign-driver` | A/S | Change driver. |
+| POST | `/api/admin/arheb-box/:id/request-driver` | A/S | Invite drivers / broadcast. |
+
+#### Drivers
+
+| Method | Endpoint | Access | Notes |
+|--------|----------|--------|-------|
+| GET | `/api/admin/drivers` | A/S | List drivers. |
+| GET | `/api/admin/drivers/export` | A/S | Excel export. |
+| GET | `/api/admin/drivers/:id/profile` | A/S | Profile + deliveries + ratings. |
+| POST | `/api/admin/drivers` | A/S | Create driver. |
+| PATCH | `/api/admin/drivers/:id` | A/S | Update driver / block / commission. |
+| DELETE | `/api/admin/drivers/:id` | A/S | Remove driver. |
+| GET | `/api/admin/drivers/active-map` | A/S | Socket presence + locations. |
+
+#### Settings & fees
+
+| Method | Endpoint | Access | Notes |
+|--------|----------|--------|-------|
+| GET | `/api/admin/settings/driver-commission` | A/S | Global commission defaults. |
+| PATCH | `/api/admin/settings/driver-commission` | A/S | Update defaults. |
+| GET | `/api/admin/settings/checkout-fees` | A/S | Platform checkout tiers. |
+| PATCH | `/api/admin/settings/checkout-fees` | Sup | Update platform fees. |
+| GET | `/api/admin/settings/delivery-fixed-zones` | A/S | Fixed delivery zones. |
+| PUT | `/api/admin/settings/delivery-fixed-zones` | Sup | Replace zones list. |
+
+#### Categories, popup, home, info
+
+| Method | Endpoint | Access | Notes |
+|--------|----------|--------|-------|
+| GET | `/api/admin/categories` | A/S | List (admin). |
+| POST | `/api/admin/categories` | A/S | Create. |
+| PATCH | `/api/admin/categories/:id` | A/S | Update. |
+| DELETE | `/api/admin/categories/:id` | A/S | Delete. |
+| GET | `/api/admin/popup` | A/S | In-app popup JSON. |
+| PATCH | `/api/admin/popup` | A/S | Update popup. |
+| GET | `/api/admin/home/link-options` | A/S | Stores/categories/products for editors. |
+| GET | `/api/admin/home/banners` | A/S | Read home banners. |
+| PATCH | `/api/admin/home/banners` | A/S | Replace home banners. |
+| GET | `/api/admin/home/offers` | A/S | Read home offers strip. |
+| PATCH | `/api/admin/home/offers` | A/S | Replace home offers. |
+| GET | `/api/admin/info` | A/S | Contact, versions, feature flags, driver %. |
+| PATCH | `/api/admin/info` | A/S | Update same fields. |
+
+#### Promo codes & e-invoices
+
+| Method | Endpoint | Access | Notes |
+|--------|----------|--------|-------|
+| GET | `/api/admin/promo-codes` | A/S | List promos. |
+| POST | `/api/admin/promo-codes` | A/S | Create. |
+| PATCH | `/api/admin/promo-codes/:id` | A/S | Update. |
+| DELETE | `/api/admin/promo-codes/:id` | A/S | Delete. |
+| GET | `/api/admin/einvoices` | A/S | Invoice list + filters. |
+| GET | `/api/admin/orders/:orderId/einvoice` | A/S | Single order invoice meta. |
+| POST | `/api/admin/orders/:orderId/einvoice/retry` | A/S | Retry JoFotara. |
+
+#### Other
+
+| Method | Endpoint | Access | Notes |
+|--------|----------|--------|-------|
+| GET | `/api/admin/merchants/online` | A/S | Merchant/store-admin socket presence. |
+
+For behaviour details (Store Admin status rules, payment methods, checkout fields), see the subsections below and [API Changelog](#api-changelog).
 
 ### Admin Login
 
@@ -3182,7 +3375,7 @@ Order list and order detail responses include **`driverId`** and **`driverName`*
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/admin/orders/counts` | Returns `{ active, complete }`: active = orders not Delivered/Cancelled; complete = Delivered or Cancelled. Store Admin: only their store. |
-| GET | `/api/admin/orders` | List orders (Store Admin: only their store). Each order includes driverId, driverName when assigned. Query: `dateFrom`, `dateTo`, `status`, `orderType` (`active` \| `complete`), `storeId`, `storeIds`, `storeName`, `name` (customer name/phone), `paymentType` (`cash`, `Cliq`, `card`, etc.). Sorted by `createdAt DESC, id DESC`. |
+| GET | `/api/admin/orders` | List orders (Store Admin: only their store). Each order includes driverId, driverName when assigned. Query: `dateFrom`, `dateTo`, **`orderId`** (exact numeric id — **skips date range** when set), `status`, `orderType` (`store` \| `arheb_box`), `statusFilter` (`active` \| `complete`), `storeId`, `storeIds`, `storeName`, `name` (customer name/phone), `paymentType`, `driverId`, `unassigned`. Sorted by `createdAt DESC, id DESC`. |
 | GET | `/api/admin/orders/:orderId` | Get one order with full details (items, address, notes, paymentType, storeName, driverId, driverName, etc.). Store Admin: only their store. |
 | PATCH | `/api/admin/orders/:orderId/status` | Update order status. Body: `{ "status": "Preparing" }` (exact status strings as in app). **Store Admin:** only **one step forward** in the flow, or **Cancelled** only while still awaiting payment/confirmation (see Order status section). |
 | DELETE | `/api/admin/orders/:orderId` | Delete order (Admin and SuperAdmin only). Removes order and its items. |
@@ -3411,6 +3604,20 @@ Sends an OTP flow identifier for driver login/register (backend returns a mock v
   }
 }
 ```
+
+---
+
+### Driver WhatsApp OTP
+
+Driver login via WhatsApp uses the **same** Meta WhatsApp config as the customer flow. **Only drivers already registered** in the admin dashboard receive codes (`404` if unknown).
+
+**Send OTP —** `POST /api/driver/whatsapp/send-otp`  
+**Body:** `{ "mobile": "0790000000" }`  
+**Success (200):** `{ "success": true, "data": { "verificationId", "expiresIn", "mobile", "channel": "whatsapp" } }`
+
+**Login —** `POST /api/driver/whatsapp/login`  
+**Body:** `{ "mobile": "0790000000", "otpCode": "123456", "verificationId": "<from send-otp>" }`  
+**Success (200):** Same payload shape as **Driver Login** (`POST /api/driver/login`): driver profile + `Bearer` token.
 
 ---
 
@@ -3960,6 +4167,8 @@ A comprehensive test client is available at:
 
 This interactive interface allows you to:
 - ✅ Test authentication flow (register, verify OTP, delete user)
+- ✅ **WhatsApp OTP:** customer **`POST /api/auth/whatsapp/send-code`** + **`verify-code`**; driver **`POST /api/driver/whatsapp/send-otp`** + **`login`** (requires WhatsApp env on server)
+- ✅ **Admin REST catalog:** all **`/api/admin/*`** routes are listed under [Admin API complete endpoint catalog](#admin-api-complete-endpoint-catalog) in this README.
 - ✅ Browse all data endpoints (categories, products, stores, home)
 - ✅ Search stores and products (GET /api/search?q=text)
 - ✅ Test home with optional auth (activeOrder when user has order in Waiting confirmation / Being prepared / On the way)
@@ -4082,7 +4291,7 @@ For issues or questions, please contact: `contact@arheb.app`
 | POST | `/api/driver/arheb-box/:id/on-the-way` | Driver | Arheb Box → **`on_the_way`** (after accept). |
 | POST | `/api/driver/arheb-box/:id/delivered` | Driver | Alias of **`/complete`** (mark box **delivered**). |
 | POST | `/api/admin/stores/:storeId/products/import` | Admin / SuperAdmin / Store Admin (per-store) | Imports products for a store from an Excel file. Expects `multipart/form-data` with field `file` (`.xlsx`/`.xls`). Store Admin rows go to the pending products queue; Admin/SuperAdmin rows are imported directly. Rows with an `id` column that already exists for the store are **skipped** (no duplicate). Export includes `id` column. |
-| GET | `/api/admin/stores/:storeId/products/export` | Admin / SuperAdmin / Store Admin (per-store) | Exports all products for the given store as an Excel file. Columns include `id`, `nameEn`, `nameAr`, `price`, `discount`, `unit`, `category`, `description`, `stock`, `isAvailable`. |
+| GET | `/api/admin/stores/:storeId/products/export` | Admin / SuperAdmin / Store Admin (per-store) | Exports products as Excel (`id`, `nameEn`, `nameAr`, `price`, …). Without **`categoryFilter`**, exports **all** products for the store. With **`categoryFilter`** (same lowercase string as the dashboard category chip — matched against `category` / `categoryEn` / `categoryAr`), exports **only that category**. |
 | POST | `/api/admin/orders/:orderId/reject` | Admin / SuperAdmin / Store Admin (own store) | **Store Admin:** cancel only while **`Pending payment`**, **`Waiting cliq confirmation`**, or **`Waiting confirmation`**. **Admin/SuperAdmin:** same pre-confirmation rule as before (pending / waiting / cliq). Sets status to `Cancelled`. |
 | GET | `/api/admin/stores/pause-history` | Admin | Returns store pause history: sessions (pausedAt, unpausedAt, durationMinutes) and total duration. Query: `dateFrom`, `dateTo` (default today), optional `storeIds` (comma-separated). Store Admin sees only their store. |
 | GET | `/api/admin/notifications` | Admin / SuperAdmin | Returns list of sent broadcast notifications (id, title, body, imageUrl, successCount, failureCount, createdAt) for the dashboard history. |
