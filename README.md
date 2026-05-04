@@ -3153,7 +3153,8 @@ Single reference for every **`/api/admin/*`** route (mirrors `src/admin/routes.j
 | PATCH | `/api/admin/categories/:id` | A/S | Update. |
 | DELETE | `/api/admin/categories/:id` | A/S | Delete. |
 | GET | `/api/admin/popup` | A/S | In-app popup JSON. |
-| PATCH | `/api/admin/popup` | A/S | Update popup. |
+| PATCH | `/api/admin/popup` | A/S | Update popup fields. |
+| DELETE | `/api/admin/popup` | A/S | Reset popup (disabled, no image/CTA/destination). |
 | GET | `/api/admin/home/link-options` | A/S | Stores/categories/products for editors. |
 | GET | `/api/admin/home/banners` | A/S | Read home banners. |
 | PATCH | `/api/admin/home/banners` | A/S | Replace home banners. |

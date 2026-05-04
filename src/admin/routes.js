@@ -4611,6 +4611,25 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     return res.status(200).json({ success: true, data: { popup: updated } });
   });
 
+  app.delete('/api/admin/popup', auth, requireAdminOrSuper, (req, res) => {
+    const cleared = {
+      enabled: false,
+      image: '',
+      call_of_action_button: '',
+      destination: '',
+      destination_value: '',
+    };
+    savePopup(cleared);
+    logActivity(db, req, {
+      action: 'delete',
+      resourceType: 'popup',
+      resourceId: null,
+      storeScopeId: null,
+      summary: 'Removed / reset app popup',
+    });
+    return res.status(200).json({ success: true, message: 'Popup removed', data: { popup: cleared } });
+  });
+
   // ——— Home banners / offers: link picker data (names → ids in dashboard) ———
   app.get('/api/admin/home/link-options', auth, requireAdminOrSuper, (req, res) => {
     try {
