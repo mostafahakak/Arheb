@@ -11,6 +11,35 @@ const {
 const { normalizeHomeContentLinkArray } = require('../utils/homeContentLinks');
 const { applyCatalogListPriceAndOriginal } = require('../utils/productCatalogPrice');
 
+function round2Money(n) {
+  return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+}
+
+function safeMoney(v, fallback = 0) {
+  const x = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(x) ? x : fallback;
+}
+
+/** Store order: DB `totalAmount` is items subtotal; customer-facing total adds fees. */
+function storeOrderMoneyFields(row) {
+  const itemsSubtotal = safeMoney(row.totalAmount, 0);
+  const deliveryFee = safeMoney(row.deliveryFee, 0);
+  const serviceFee = safeMoney(row.serviceFee, 0);
+  const feesTax = safeMoney(row.feesTax, 0);
+  const totalAmount = round2Money(itemsSubtotal + deliveryFee + serviceFee + feesTax);
+  return { totalAmount, itemsSubtotal, deliveryFee, serviceFee, feesTax };
+}
+
+/** Arheb Box: `amount` is parcel/declared value; total adds delivery, service, tax. */
+function arhebBoxOrderMoneyFields(row) {
+  const itemsSubtotal = safeMoney(row.amount, 0);
+  const deliveryFee = safeMoney(row.deliveryFee, 0);
+  const serviceFee = safeMoney(row.serviceFee, 0);
+  const feesTax = safeMoney(row.feesTax, 0);
+  const totalAmount = round2Money(itemsSubtotal + deliveryFee + serviceFee + feesTax);
+  return { totalAmount, itemsSubtotal, deliveryFee, serviceFee, feesTax };
+}
+
 function loadStoresListForVisibility() {
   try {
     const filePath = getJsonPath('stores_listing_response.json');
@@ -352,14 +381,14 @@ module.exports = function attachHomeRoutes(app, db, JWT_SECRET) {
   }
 
   const findActiveStoreOrdersForUser = db.prepare(`
-    SELECT id, status, createdAt FROM orders
+    SELECT id, status, createdAt, totalAmount, deliveryFee, serviceFee, feesTax FROM orders
     WHERE (userId = ? OR phoneNumber = ?)
       AND LOWER(COALESCE(TRIM(status), '')) NOT IN ('delivered', 'cancelled', 'payment rejected')
     ORDER BY datetime(COALESCE(createdAt, '1970-01-01')) DESC, id DESC
   `);
 
   const findActiveArhebBoxForUser = db.prepare(`
-    SELECT id, status, createdAt FROM arheb_box_requests
+    SELECT id, status, createdAt, amount, deliveryFee, serviceFee, feesTax FROM arheb_box_requests
     WHERE (phoneNumber = ? OR phoneNumber = ?)
       AND LOWER(COALESCE(TRIM(status), '')) NOT IN ('delivered', 'cancelled')
     ORDER BY datetime(COALESCE(createdAt, '1970-01-01')) DESC, id DESC
@@ -447,18 +476,34 @@ module.exports = function attachHomeRoutes(app, db, JWT_SECRET) {
               if (!e.message || !e.message.includes('no such table')) throw e;
             }
             const activeOrders = [
-              ...storeRows.map((r) => ({
-                orderType: 'store',
-                id: r.id,
-                status: r.status,
-                createdAt: r.createdAt ?? null,
-              })),
-              ...boxRows.map((r) => ({
-                orderType: 'arheb_box',
-                id: r.id,
-                status: r.status,
-                createdAt: r.createdAt ?? null,
-              })),
+              ...storeRows.map((r) => {
+                const money = storeOrderMoneyFields(r);
+                return {
+                  orderType: 'store',
+                  id: r.id,
+                  status: r.status,
+                  createdAt: r.createdAt ?? null,
+                  totalAmount: money.totalAmount,
+                  itemsSubtotal: money.itemsSubtotal,
+                  deliveryFee: money.deliveryFee,
+                  serviceFee: money.serviceFee,
+                  feesTax: money.feesTax,
+                };
+              }),
+              ...boxRows.map((r) => {
+                const money = arhebBoxOrderMoneyFields(r);
+                return {
+                  orderType: 'arheb_box',
+                  id: r.id,
+                  status: r.status,
+                  createdAt: r.createdAt ?? null,
+                  totalAmount: money.totalAmount,
+                  itemsSubtotal: money.itemsSubtotal,
+                  deliveryFee: money.deliveryFee,
+                  serviceFee: money.serviceFee,
+                  feesTax: money.feesTax,
+                };
+              }),
             ].sort((a, b) => {
               const ta = new Date(a.createdAt || 0).getTime();
               const tb = new Date(b.createdAt || 0).getTime();
@@ -468,7 +513,16 @@ module.exports = function attachHomeRoutes(app, db, JWT_SECRET) {
             if (activeOrders.length) {
               response.activeOrders = activeOrders;
               const top = activeOrders[0];
-              response.activeOrder = { orderID: top.id, status: top.status, orderType: top.orderType };
+              response.activeOrder = {
+                orderID: top.id,
+                status: top.status,
+                orderType: top.orderType,
+                totalAmount: top.totalAmount,
+                itemsSubtotal: top.itemsSubtotal,
+                deliveryFee: top.deliveryFee,
+                serviceFee: top.serviceFee,
+                feesTax: top.feesTax,
+              };
             }
           }
         } catch (e) {

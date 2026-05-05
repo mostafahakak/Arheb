@@ -117,6 +117,7 @@ A separate **Admin Dashboard** (React + Next.js) is in the `dashboard/` folder. 
   - **Store Admin**: Sees only their assigned store; can edit store details, add/edit/delete products, and view orders for that store.
 - **Arheb Box**: Admins can list requests, open **detail** (**GET /api/admin/arheb-box/:id**), update status, **assign** (**POST /api/admin/arheb-box/:id/assign-driver**) or **reassign** (**POST /api/admin/arheb-box/:id/reassign-driver**, Admin/SuperAdmin — same idea as **POST /api/admin/orders/:orderId/reassign-driver**), and track pricing fields. **SuperAdmin** can **permanently delete** a request (**DELETE /api/admin/arheb-box/:id**), same idea as deleting a store order. Requests are submitted by users with Bearer token and stored in the database.
 - **English and Arabic** (language switcher in the UI).
+- **HTTP API:** all data operations use this backend’s **`/api/admin/*`** routes (see [Admin Dashboard HTTP usage](#admin-dashboard-http-usage)); the dashboard also uploads images to **Firebase Storage** in the browser, then persists returned URLs via **`PATCH`** endpoints.
 - **Driver earnings:** Each driver can have a **per-driver commission percent** (`commissionPercent` on the driver row). If unset, the effective rate comes from **App info** — **`driverDeliveryPercent`** on **GET/PATCH /api/admin/info** (same screen as email/phone/Cliq). If that is also unset, the legacy **global driver commission** setting (**GET/PATCH /api/admin/settings/driver-commission**) is used. The **Drivers** list links to a **driver profile** page (`/dashboard/drivers/profile/?id=`) with filters (status, date range), delivered-order profit totals, and full customer **driver ratings** (stars + notes). Drivers only see their **average rating** in the driver app, not individual reviews.
 
 To create the **initial SuperAdmin** on first run, set in the backend `.env`:
@@ -174,6 +175,9 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
   - [Get Store Payment Methods](#get-store-payment-methods)
   - [Update Store FCM Token](#update-store-fcm-token)
   - [Get Store Products](#get-store-products)
+  - [Get Store Products (paginated)](#get-store-products-paginated)
+  - [Get Store Products (paginated by store categories)](#get-store-products-paginated-by-store-categories)
+  - [Store category tab images](#store-category-tab-images)
   - [Get Store Products by Category](#get-store-products-by-category)
 - [Categories](#categories)
   - [Get All Categories](#get-all-categories)
@@ -219,6 +223,8 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
   - [App version (public)](#app-version-public)
   - [Update Contact Information (Admin)](#update-contact-information-admin)
 - [Admin API](#admin-api)
+  - [Admin Dashboard HTTP usage](#admin-dashboard-http-usage)
+  - [GET /api/admin/users (order statistics)](#get-apiproadminusers-order-statistics)
   - [Admin API complete endpoint catalog](#admin-api-complete-endpoint-catalog)
   - [Admin Login](#admin-login)
   - [Get Current Admin (Me)](#get-current-admin-me)
@@ -869,7 +875,7 @@ Retrieves all products for a specific store.
       "closingTime": "23:00",
       "openingTime": "09:00",
       "storeCategories": [
-        { "id": "1", "nameEn": "Meals", "nameAr": "وجبات", "name": "Meals" }
+        { "id": "1", "nameEn": "Meals", "nameAr": "وجبات", "name": "Meals", "image": "https://firebasestorage.googleapis.com/..." }
       ]
     },
     "products": [
@@ -905,7 +911,7 @@ For stores with very large catalogs, use this endpoint instead of **`GET /api/st
 - **`page`** — Page number starting at **1** (default `1` if omitted or invalid).
 
 **Behavior (same model as [paginated by store categories](#get-store-products-paginated-by-store-categories)):**
-- Always includes **all** `store.storeCategories` plus an **`other`** bucket in **`data.categories`** (each with `total` and `items[]` for that page).
+- Always includes **all** `store.storeCategories` plus an **`other`** bucket in **`data.categories`** (each with `total` and `items[]` for that page). Each non-`other` category object may include **`image`** when present on the store JSON entry — see [Store category tab images](#store-category-tab-images).
 - **`data.products`** is a **flattened** list of the same items as in `categories[].items` (category order preserved), for clients that only read `products`.
 - Each page returns up to **10** products **per active category** (categories that still have remaining products). When a category is exhausted it drops out of “active” for later pages; remaining categories keep getting up to 10 until the catalog is exhausted.
 - Products are bucketed by matching product category fields to store categories (same rules as the category-specific endpoint); unmatched products go to **`other`**.
@@ -941,8 +947,31 @@ For very large stores where you want to **render categories always** (and avoid 
 - When a category runs out of products, it stops contributing to next pages; the remaining categories continue to return 10 until all products are exhausted.
 
 **Success Response (200):**
-- `data.categories`: array of categories with `{ id, nameEn, nameAr, name, total, items[] }`
+- `data.categories`: array of categories with `{ id, nameEn, nameAr, name, image?, total, items[] }` — **`image`** is included when the store’s **`storeCategories`** entry has **`image`** (or legacy **`imageUrl`**) set; see [Store category tab images](#store-category-tab-images).
 - `data.pagination`: `{ page, perCategory: 10, perPage: 10, total, totalProducts, totalPages, hasNextPage, hasPrevPage, finished }`
+
+---
+
+### Store category tab images
+
+Optional **HTTPS** image URLs on **`store.storeCategories`** entries (persisted in the stores JSON via **`PATCH /api/admin/stores/:id`**). Fields supported:
+
+| Field | Meaning |
+|-------|---------|
+| **`image`** | Preferred download URL for the category tab / chip (shown to customers when returned). |
+| **`imageUrl`** | Legacy alias — **`GET /api/stores/:id/products/paged`** and **`GET /api/stores/:id/products/paged-categories`** normalize this to **`image`** on **`data.categories`** only ( **`data.store.storeCategories`** keeps whatever keys were saved). |
+
+The dashboard uploads binary files to **Firebase Storage** for selected stores, then saves **`image`** on save store — see [Admin Dashboard HTTP usage](#admin-dashboard-http-usage).
+
+**Customer endpoints exposing category images:**
+
+| Endpoint | Where `image` appears |
+|----------|------------------------|
+| **`GET /api/stores/:id/products/paged`** | **`data.categories[].image`** (each bucket except synthetic **`other`** only when configured). |
+| **`GET /api/stores/:id/products/paged-categories`** | **`data.categories[].image`** (same rules). |
+| **`GET /api/stores/:id/products`** | **`data.store.storeCategories[].image`** when saved on the store. |
+| **`GET /api/stores/:id/products/category/:categoryName`** | **`data.store.storeCategories`** echoes stored objects. |
+| **`GET /api/stores`** (list) | Each **`store.storeCategories`** entry may include **`image`** if present in JSON. |
 
 ---
 
@@ -1208,62 +1237,86 @@ console.log(data.data.products); // Products matching "pizza"
 
 ## Home
 
-Retrieves home page data including banners, categories (from categories API), popular stores, and offers. **Banners** and **`offers`** are editable by SuperAdmin/Admin via [Admin Home Banners & Offers](#admin-home-banners--offers) (`GET/PATCH /api/admin/home/banners` and `GET/PATCH /api/admin/home/offers`). Each banner/offer may include optional **`linkTarget`** (`"product"` \| `"category"` \| `"store"`) and **`linkTargetId`** (product id, category id, or store id) for in-app navigation. When the user is authenticated, the response may include **activeOrder** (orderID and status) if they have an order in an active status. The response also includes **`discountedProducts`**: a list of products that currently have a discount (same shape as in [Get Products](#get-products-paginated)).
+Retrieves home page data including banners, categories (from categories API), popular stores, and offers. **Banners** and **`offers`** are editable by SuperAdmin/Admin via [Admin Home Banners & Offers](#admin-home-banners--offers) (`GET/PATCH /api/admin/home/banners` and `GET/PATCH /api/admin/home/offers`). Each banner/offer may include optional **`linkTarget`** (`"product"` \| `"category"` \| `"store"`) and **`linkTargetId`** (product id, category id, or store id) for in-app navigation. When the user is authenticated, the response may include **`activeOrders`** and **`activeOrder`** for every non-terminal store order and Arheb Box request (see SQL exclusions below). **`totalAmount`** on those objects is the **full amount to pay** (items/parcel subtotal + delivery + service + tax), not the items-only subtotal. The response also includes **`discountedProducts`**: a list of products that currently have a discount (same shape as in [Get Products](#get-products-paginated)).
 
 **Endpoint:** `GET /api/home`
 
-**Authentication:** Optional. If `Authorization: Bearer <token>` is sent and valid, the response may include `activeOrder` when the user has an order in "Waiting confirmation", "Being prepared", or "On the way".
+**Authentication:** Optional. If `Authorization: Bearer <token>` is sent and valid, **`activeOrders`** / **`activeOrder`** are included when the user has at least one **active** row: store orders whose status is not `Delivered`, `Cancelled`, or `Payment rejected` (case-insensitive), and Arheb Box requests whose status is not `delivered` or `cancelled`.
 
-**Success Response (200):**
+**Success Response (200):** Body is loaded from `home_response.json` (or the empty payload), then **`data.categories`** is replaced from **`categories_response.json`**, **`data.discountedProducts`** is injected from live product/store JSON, **`data.mostPopularStores`** may be filtered/sorted by visibility, and optional **`activeOrders`** / **`activeOrder`** are added at the **top level** of the JSON (next to **`success`**, **`message`**, **`data`**).
+
+Typical shape:
+
 ```json
 {
   "success": true,
+  "message": "Home data retrieved successfully",
   "data": {
-    "banners": [...],
-    "categories": [...],
-    "mostPopularStores": [...],
-    "offers": [...],
-    "discountedProducts": [
-      {
-        "id": "1",
-        "name": "وجبة فردية",
-        "price": 4.5,
-        "originalPrice": 5.0,
-        "discount": "10"
-      }
-    ]
-  }
+    "banners": [],
+    "categories": [],
+    "mostPopularStores": [],
+    "offers": [],
+    "discountedProducts": []
+  },
+  "timestamp": "2026-04-23T12:00:00.000Z"
 }
 ```
 
-**With active order (when user sends Bearer token and has an order in active status):**
+Fields inside **`data`** match your CMS JSON (plus **`discountedProducts`** always present — possibly empty `[]`).
+
+**With active order(s)** (authenticated user with at least one active order or box request):
+
 ```json
 {
   "success": true,
+  "message": "Home data retrieved successfully",
   "data": {
-    "banners": [...],
-    "categories": [...],
-    "mostPopularStores": [...],
-    "offers": [...],
-    "discountedProducts": [...]
+    "banners": [],
+    "categories": [],
+    "mostPopularStores": [],
+    "offers": [],
+    "discountedProducts": []
   },
+  "timestamp": "2026-04-23T12:00:00.000Z",
+  "activeOrders": [
+    {
+      "orderType": "store",
+      "id": 42,
+      "status": "Preparing",
+      "createdAt": "2026-04-23T10:00:00.000Z",
+      "totalAmount": 18.5,
+      "itemsSubtotal": 15,
+      "deliveryFee": 2,
+      "serviceFee": 0.65,
+      "feesTax": 0.85
+    }
+  ],
   "activeOrder": {
     "orderID": 42,
-    "status": "Being prepared"
+    "orderType": "store",
+    "status": "Preparing",
+    "totalAmount": 18.5,
+    "itemsSubtotal": 15,
+    "deliveryFee": 2,
+    "serviceFee": 0.65,
+    "feesTax": 0.85
   }
 }
 ```
 
-**Note:** `activeOrder` is only present when the user is authenticated and has at least one order with status `Waiting confirmation`, `Being prepared`, or `On the way`. The latest such order is returned (orderID and status only).
+- **`totalAmount`**: Grand total in JOD — **`itemsSubtotal` + `deliveryFee` + `serviceFee` + `feesTax`** (same notion as checkout **`orderSummary.total`** for store orders).
+- **`itemsSubtotal`**: For **`store`** orders this is the cart/items sum stored on the order row (historically labeled `totalAmount` in the DB). For **`arheb_box`** it is the parcel **`amount`** (declared value), before delivery/service/tax.
 
-**Example (with token to get activeOrder):**
+**Note:** **`activeOrder`** is the same entry as **`activeOrders[0]`** (most recently created among merged store + box rows). **`orderID`** matches **`id`** on the list entries.
+
+**Example (with token):**
 ```javascript
 const response = await fetch('https://arheb-backend.onrender.com/api/home', {
   headers: { 'Authorization': 'Bearer your-jwt-token-here' }
 });
 const data = await response.json();
 if (data.activeOrder) {
-  console.log('Active order:', data.activeOrder.orderID, data.activeOrder.status);
+  console.log('Active order:', data.activeOrder.orderID, data.activeOrder.status, data.activeOrder.totalAmount);
 }
 ```
 
@@ -3039,7 +3092,7 @@ Single reference for every **`/api/admin/*`** route (mirrors `src/admin/routes.j
 | POST | `/api/admin/admins` | A/S | Create admin / store admin. |
 | PATCH | `/api/admin/admins/:id` | A/S | Update admin. |
 | DELETE | `/api/admin/admins/:id` | A/S | Delete admin (rules per role). |
-| GET | `/api/admin/users` | A/S | List/search users. |
+| GET | `/api/admin/users` | A/S | List/search users — optional order aggregates (see [GET /api/admin/users (order statistics)](#get-apiproadminusers-order-statistics)); query `q` / `search`. |
 | PATCH | `/api/admin/users/:phone/block` | A/S | Block/unblock user. |
 | GET | `/api/admin/users/:phone/orders` | A/S | Orders for phone. |
 | GET | `/api/admin/customers/:phone/profile` | A/S | Profile + orders shortcut. |
@@ -3052,7 +3105,7 @@ Single reference for every **`/api/admin/*`** route (mirrors `src/admin/routes.j
 | GET | `/api/admin/stores/pause-history` | Auth | Pause sessions; optional `storeIds`, dates. |
 | POST | `/api/admin/stores` | A/S | Create store. |
 | GET | `/api/admin/stores/:id` | Auth | SA must own store. |
-| PATCH | `/api/admin/stores/:id` | Auth | Update store; SA blocked if store **blocked**. |
+| PATCH | `/api/admin/stores/:id` | Auth | Update store (including **`storeCategories`** — each item may include **`image`** URL for category tabs); SA blocked if store **blocked**. |
 | DELETE | `/api/admin/stores/:id` | A/S | Delete store + products JSON. |
 | POST | `/api/admin/stores/:id/clone` | Auth | Clone store (SA own store). |
 | POST | `/api/admin/stores/bulk-checkout-policy` | A/S | Bulk checkout flags / fees. |
@@ -3182,6 +3235,44 @@ Single reference for every **`/api/admin/*`** route (mirrors `src/admin/routes.j
 | GET | `/api/admin/merchants/online` | A/S | Merchant/store-admin socket presence. |
 
 For behaviour details (Store Admin status rules, payment methods, checkout fields), see the subsections below and [API Changelog](#api-changelog).
+
+### Admin Dashboard HTTP usage
+
+The **admin dashboard** (`dashboard/` Next.js app) does **not** implement a separate public REST API for catalog data. All CRUD goes to this backend:
+
+| Environment | Base URL |
+|-------------|----------|
+| **Production** | `NEXT_PUBLIC_API_BASE` if set in the dashboard build; otherwise **`https://arheb-backend.onrender.com`** — see `dashboard/lib/api.js` (`getApiBase()`). |
+| **Local dev** | **`/backend-api`** on the Next.js origin (rewrites to the real backend — `dashboard/next.config.js`) so the browser avoids CORS while still sending **`Authorization`**. |
+
+**Socket.IO** (live orders list, merchant presence) uses **`getRemoteApiOrigin()`** — always the real backend host, not the `/backend-api` rewrite.
+
+**Browser-only (not backend REST):** Firebase Storage uploads from `dashboard/lib/firebase.js` (compat SDK from `gstatic`): store **cover** / **logo**, **product** images, **home** banners & offers, **popup**, **notification** broadcast images, **store category tab** images (for configured store ids), etc. The upload returns a **download URL**; the dashboard saves it via **`PATCH /api/admin/stores/:id`**, product PATCH, **`PATCH /api/admin/home/banners`**, and related admin endpoints. Requires **`NEXT_PUBLIC_FIREBASE_*`** (and Storage rules allowing client writes).
+
+### GET /api/admin/users (order statistics)
+
+**Endpoint:** `GET /api/admin/users`
+
+**Authentication:** Admin JWT (**Admin** or **SuperAdmin**).
+
+**Query parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| **`q`** or **`search`** | Optional substring filter on **`phoneNumber`** / **`name`**. |
+| **`withOrderStats`** | **`1`** / **`true`** enables aggregates; **`stats`** = **`1`** / **`true`** is an alias. |
+| **`allTime`** | With stats: **`1`** / **`true`** / **`allDates=1`** counts **all** orders (no date filter). |
+| **`dateFrom`**, **`dateTo`** | With stats and **without** “all time”: optional **`YYYY-MM-DD`** bounds on **`date(orders.createdAt)`** (inclusive). Either or both may be set. |
+
+**When `withOrderStats` is set:**
+
+- Each user includes **`orderCount`** (matching orders) and **`ordersGrandTotalJod`** (rounded sum). Each counted order contributes **`totalAmount` + `deliveryFee` + `serviceFee` + `feesTax`** from the **`orders`** row (same idea as customer-facing payable totals: DB **`totalAmount`** is items subtotal).
+- Orders match when **`orders.phoneNumber`** equals **`users.phoneNumber`** or **`orders.userId`** equals **`COALESCE(NULLIF(TRIM(users.userId),''), users.phoneNumber)`**.
+- Sort order: **`orderCount`** descending, then **`ordersGrandTotalJod`** descending, then **`createdAt`** descending.
+
+**When `withOrderStats` is omitted:** unchanged behaviour — users sorted by **`createdAt`** descending only.
+
+---
 
 ### Admin Login
 

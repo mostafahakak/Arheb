@@ -511,12 +511,21 @@ module.exports = function attachStoresRoutes(app, db) {
   function buildStoreCategoryBuckets(store, storeProducts) {
     const storeCategories = Array.isArray(store.storeCategories) ? store.storeCategories : [];
     const categoriesForPaging = [
-      ...storeCategories.map((c, idx) => ({
-        id: c?.id != null ? String(c.id) : `cat_${idx + 1}`,
-        nameEn: c?.nameEn ?? '',
-        nameAr: c?.nameAr ?? '',
-        name: c?.name ?? '',
-      })),
+      ...storeCategories.map((c, idx) => {
+        const img =
+          typeof c?.image === 'string' && String(c.image).trim() !== ''
+            ? String(c.image).trim()
+            : typeof c?.imageUrl === 'string' && String(c.imageUrl).trim() !== ''
+              ? String(c.imageUrl).trim()
+              : null;
+        return {
+          id: c?.id != null ? String(c.id) : `cat_${idx + 1}`,
+          nameEn: c?.nameEn ?? '',
+          nameAr: c?.nameAr ?? '',
+          name: c?.name ?? '',
+          ...(img ? { image: img } : {}),
+        };
+      }),
       { id: 'other', nameEn: 'Other', nameAr: 'أخرى', name: 'Other' },
     ];
 

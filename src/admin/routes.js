@@ -467,29 +467,85 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   app.get('/api/admin/users', auth, requireAdminOrSuper, (req, res) => {
     try {
       const q = (req.query.q || req.query.search || '').toString().trim();
-      const where = ['deleted = 0'];
-      const params = [];
+      const withOrderStats =
+        req.query.withOrderStats === '1' ||
+        req.query.withOrderStats === 'true' ||
+        req.query.stats === '1';
+      const allTime =
+        req.query.allTime === '1' ||
+        req.query.allTime === 'true' ||
+        req.query.allDates === '1';
+
+      let dateFrom = (req.query.dateFrom || '').toString().trim();
+      let dateTo = (req.query.dateTo || '').toString().trim();
+      const ymd = /^\d{4}-\d{2}-\d{2}$/;
+      if (dateFrom && !ymd.test(dateFrom)) dateFrom = '';
+      if (dateTo && !ymd.test(dateTo)) dateTo = '';
+
+      const where = ['u.deleted = 0'];
+      const whereParams = [];
       if (q) {
         const like = `%${q}%`;
-        where.push('(phoneNumber LIKE ? OR name LIKE ?)');
-        params.push(like, like);
+        where.push('(u.phoneNumber LIKE ? OR u.name LIKE ?)');
+        whereParams.push(like, like);
       }
-      const rows = db
-        .prepare(
-          `SELECT phoneNumber, userId, name, addressName, createdAt, deleted, isBlocked
-           FROM users
-           WHERE ${where.join(' AND ')}
-           ORDER BY createdAt DESC`
-        )
-        .all(...params);
-      const users = rows.map((u) => ({
-        phoneNumber: u.phoneNumber,
-        userId: u.userId || u.phoneNumber,
-        name: u.name || '',
-        addressName: u.addressName || '',
-        isBlocked: Boolean(u.isBlocked),
-        createdAt: u.createdAt,
-      }));
+
+      let rows;
+      if (withOrderStats) {
+        const joinDateParts = [];
+        const joinParams = [];
+        if (!allTime && (dateFrom || dateTo)) {
+          if (dateFrom) {
+            joinDateParts.push('date(o.createdAt) >= date(?)');
+            joinParams.push(dateFrom);
+          }
+          if (dateTo) {
+            joinDateParts.push('date(o.createdAt) <= date(?)');
+            joinParams.push(dateTo);
+          }
+        }
+        const joinDateSql = joinDateParts.length ? ` AND ${joinDateParts.join(' AND ')}` : '';
+        const sql = `
+          SELECT u.phoneNumber, u.userId, u.name, u.addressName, u.createdAt, u.deleted, u.isBlocked,
+            COUNT(o.id) AS orderCount,
+            ROUND(COALESCE(SUM(
+              COALESCE(o.totalAmount, 0) + COALESCE(o.deliveryFee, 0) + COALESCE(o.serviceFee, 0) + COALESCE(o.feesTax, 0)
+            ), 0), 2) AS ordersGrandTotalJod
+          FROM users u
+          LEFT JOIN orders o ON (
+            (o.phoneNumber = u.phoneNumber OR o.userId = COALESCE(NULLIF(TRIM(u.userId), ''), u.phoneNumber))
+            ${joinDateSql}
+          )
+          WHERE ${where.join(' AND ')}
+          GROUP BY u.phoneNumber
+          ORDER BY orderCount DESC, ordersGrandTotalJod DESC, u.createdAt DESC`;
+        rows = db.prepare(sql).all(...joinParams, ...whereParams);
+      } else {
+        rows = db
+          .prepare(
+            `SELECT phoneNumber, userId, name, addressName, createdAt, deleted, isBlocked
+             FROM users u
+             WHERE ${where.join(' AND ').replace(/u\./g, '')}
+             ORDER BY createdAt DESC`
+          )
+          .all(...whereParams);
+      }
+
+      const users = rows.map((u) => {
+        const base = {
+          phoneNumber: u.phoneNumber,
+          userId: u.userId || u.phoneNumber,
+          name: u.name || '',
+          addressName: u.addressName || '',
+          isBlocked: Boolean(u.isBlocked),
+          createdAt: u.createdAt,
+        };
+        if (withOrderStats) {
+          base.orderCount = Number(u.orderCount) || 0;
+          base.ordersGrandTotalJod = Number(u.ordersGrandTotalJod) || 0;
+        }
+        return base;
+      });
       return res.status(200).json({ success: true, data: { users } });
     } catch (e) {
       console.error('Admin users list error:', e);
