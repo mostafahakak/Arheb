@@ -490,6 +490,12 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         whereParams.push(like, like);
       }
 
+      const totalRegisteredUsersRow = db.prepare('SELECT COUNT(*) AS c FROM users WHERE deleted = 0').get();
+      const totalRegisteredUsers = Number(totalRegisteredUsersRow?.c ?? 0) || 0;
+
+      let statsLimit = null;
+      let statsExcludeZerosApplied = false;
+
       let rows;
       if (withOrderStats) {
         const joinDateParts = [];
@@ -505,6 +511,27 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           }
         }
         const joinDateSql = joinDateParts.length ? ` AND ${joinDateParts.join(' AND ')}` : '';
+
+        const limitRaw = req.query.limit != null ? parseInt(String(req.query.limit).trim(), 10) : NaN;
+        const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 500) : null;
+
+        const includeZeroOrders =
+          req.query.includeZeroOrders === '1' ||
+          req.query.includeZeroOrders === 'true';
+        const excludeZeroOrders =
+          limit != null
+            ? !includeZeroOrders
+            : req.query.excludeZeroOrders === '1' || req.query.excludeZeroOrders === 'true';
+
+        const havingSql =
+          excludeZeroOrders ? ' HAVING COUNT(o.id) > 0' : '';
+
+        const limitSql = limit != null ? ' LIMIT ?' : '';
+        const limitParams = limit != null ? [limit] : [];
+
+        statsLimit = limit;
+        statsExcludeZerosApplied = excludeZeroOrders;
+
         const sql = `
           SELECT u.phoneNumber, u.userId, u.name, u.addressName, u.createdAt, u.deleted, u.isBlocked,
             COUNT(o.id) AS orderCount,
@@ -517,9 +544,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             ${joinDateSql}
           )
           WHERE ${where.join(' AND ')}
-          GROUP BY u.phoneNumber
-          ORDER BY orderCount DESC, ordersGrandTotalJod DESC, u.createdAt DESC`;
-        rows = db.prepare(sql).all(...joinParams, ...whereParams);
+          GROUP BY u.phoneNumber${havingSql}
+          ORDER BY orderCount DESC, ordersGrandTotalJod DESC, u.createdAt DESC${limitSql}`;
+        rows = db.prepare(sql).all(...joinParams, ...whereParams, ...limitParams);
       } else {
         rows = db
           .prepare(
@@ -546,7 +573,20 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         }
         return base;
       });
-      return res.status(200).json({ success: true, data: { users } });
+      const meta = {
+        totalRegisteredUsers,
+        withOrderStats,
+        ...(withOrderStats
+          ? {
+              allTime,
+              dateFrom: allTime ? null : dateFrom || null,
+              dateTo: allTime ? null : dateTo || null,
+              limit: statsLimit,
+              excludeZeroOrders: statsExcludeZerosApplied,
+            }
+          : {}),
+      };
+      return res.status(200).json({ success: true, data: { users, meta } });
     } catch (e) {
       console.error('Admin users list error:', e);
       return res.status(500).json({ success: false, message: 'Failed to list users' });

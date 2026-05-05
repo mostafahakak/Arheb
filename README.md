@@ -3263,6 +3263,14 @@ The **admin dashboard** (`dashboard/` Next.js app) does **not** implement a sepa
 | **`withOrderStats`** | **`1`** / **`true`** enables aggregates; **`stats`** = **`1`** / **`true`** is an alias. |
 | **`allTime`** | With stats: **`1`** / **`true`** / **`allDates=1`** counts **all** orders (no date filter). |
 | **`dateFrom`**, **`dateTo`** | With stats and **without** “all time”: optional **`YYYY-MM-DD`** bounds on **`date(orders.createdAt)`** (inclusive). Either or both may be set. |
+| **`limit`** | With stats: optional positive integer (max **500**). Appends **`LIMIT`** after ranking by **`orderCount`** / **`ordersGrandTotalJod`**. Omit for the full ranked list. |
+| **`includeZeroOrders`** | With stats and **`limit`**: **`1`** / **`true`** keeps users with zero matching orders in the period (otherwise they are excluded via **`HAVING COUNT(o.id) > 0`**). |
+| **`excludeZeroOrders`** | With stats and **no** **`limit`**: **`1`** / **`true`** drops users with zero matching orders in the period. Ignored when **`limit`** is set (unless **`includeZeroOrders`** overrides). |
+
+**Response `data`:**
+
+- **`users`** — array as below.
+- **`meta`** — always includes **`totalRegisteredUsers`** (count of non-deleted **`users`**) and **`withOrderStats`**. When stats are on, **`meta`** also includes **`allTime`**, **`dateFrom`**, **`dateTo`**, **`limit`** (nullable), and **`excludeZeroOrders`** (whether zero-order rows were filtered).
 
 **When `withOrderStats` is set:**
 
