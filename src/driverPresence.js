@@ -31,7 +31,7 @@ function haversineKm(lat1, lon1, lat2, lon2) {
  * @returns {number|null} distance in km or null if driver has no location
  */
 function distanceFromStore(driverId, storeLat, storeLong) {
-  const d = activeDrivers.get(driverId);
+  const d = activeDrivers.get(Number(driverId));
   if (!d || d.latitude == null || d.longitude == null) return null;
   return haversineKm(d.latitude, d.longitude, storeLat, storeLong);
 }
@@ -65,10 +65,11 @@ function getActiveDriversWithLocation() {
  * @returns {Array<{ driverId: number, latitude: number, longitude: number, lastSeen: string, distanceKm?: number }>}
  */
 function getActiveFromListWithDistance(driverIds, storeLat, storeLong) {
-  const activeSet = new Set(activeDrivers.keys());
   const list = [];
   for (const id of driverIds) {
-    const d = activeDrivers.get(id);
+    const nid = Number(id);
+    if (!Number.isFinite(nid)) continue;
+    const d = activeDrivers.get(nid);
     if (!d) continue;
     const lastSeen = d.lastSeen;
     const now = Date.now();
@@ -80,7 +81,7 @@ function getActiveFromListWithDistance(driverIds, storeLat, storeLong) {
       distanceKm = haversineKm(lat, lon, storeLat, storeLong);
     }
     list.push({
-      driverId: id,
+      driverId: nid,
       latitude: lat,
       longitude: lon,
       lastSeen,
@@ -101,7 +102,7 @@ function getActiveFromListWithDistance(driverIds, storeLat, storeLong) {
  */
 function emitDriverDeliveryRequest(io, driverId, payload) {
   if (!io || driverId == null) return false;
-  const d = activeDrivers.get(driverId);
+  const d = activeDrivers.get(Number(driverId));
   if (!d?.socketId) return false;
   try {
     io.of('/driver-presence').to(d.socketId).emit('delivery_request', payload);
@@ -142,7 +143,7 @@ function round3(n) {
 }
 
 module.exports = function attachDriverPresence(io, db, JWT_SECRET) {
-  const findDriverById = db.prepare('SELECT id FROM drivers WHERE id = ? AND isBlocked = 0');
+  const findDriverById = db.prepare('SELECT id, latitude, longitude FROM drivers WHERE id = ? AND isBlocked = 0');
   const nsp = io.of('/driver-presence');
 
   nsp.use((socket, next) => {
@@ -152,9 +153,11 @@ module.exports = function attachDriverPresence(io, db, JWT_SECRET) {
     try {
       const payload = jwt.verify(clean, JWT_SECRET);
       if (!payload.driverId) return next(new Error('Invalid driver token'));
-      const driver = findDriverById.get(payload.driverId);
+      const driverId = Number(payload.driverId);
+      if (!Number.isFinite(driverId)) return next(new Error('Invalid driver token'));
+      const driver = findDriverById.get(driverId);
       if (!driver) return next(new Error('Driver not found or blocked'));
-      socket.driverId = payload.driverId;
+      socket.driverId = driverId;
       next();
     } catch (e) {
       next(new Error('Invalid or expired token'));
@@ -163,10 +166,25 @@ module.exports = function attachDriverPresence(io, db, JWT_SECRET) {
 
   nsp.on('connection', (socket) => {
     const driverId = socket.driverId;
+    let seedLat = null;
+    let seedLon = null;
+    try {
+      const row = findDriverById.get(driverId);
+      if (row) {
+        const la = Number(row.latitude);
+        const lo = Number(row.longitude);
+        if (Number.isFinite(la) && Number.isFinite(lo) && la >= -90 && la <= 90 && lo >= -180 && lo <= 180) {
+          seedLat = la;
+          seedLon = lo;
+        }
+      }
+    } catch (e) {
+      /* ignore */
+    }
     activeDrivers.set(driverId, {
       socketId: socket.id,
-      latitude: null,
-      longitude: null,
+      latitude: seedLat,
+      longitude: seedLon,
       lastSeen: new Date().toISOString(),
     });
     socket.emit('connected', { driverId, message: 'Driver presence registered' });
