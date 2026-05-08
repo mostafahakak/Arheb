@@ -20,6 +20,7 @@ const {
   isPaymentTypeAllowedForStore,
   paymentMethodRejectedUserMessage,
 } = require('../utils/storePaymentMethods');
+const { resolveStorePickupLocation } = require('../utils/mapsUrlResolve');
 
 module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   const { getJsonPath } = require('../config/jsonPaths');
@@ -110,26 +111,6 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
     }
   }
 
-  function parseLatLongFromGoogleMapsUrl(url) {
-    if (!url || typeof url !== 'string') return null;
-    const text = url.trim();
-    const patterns = [
-      /[?&]q=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
-      /[?&]query=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
-      /@(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
-    ];
-    for (const re of patterns) {
-      const m = text.match(re);
-      if (m) {
-        const latitude = Number(m[1]);
-        const longitude = Number(m[2]);
-        if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
-          return { latitude, longitude };
-        }
-      }
-    }
-    return null;
-  }
   // Create promo_codes table
   db.exec(`
     CREATE TABLE IF NOT EXISTS promo_codes (
@@ -401,7 +382,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
    * @param {object} body - Same shape as POST /api/checkout body
    * @param {{ forcePaymentType?: string, initialStatusOverride?: string }} options
    */
-  function createOrderFromCheckoutBody(userId, body, options = {}) {
+  async function createOrderFromCheckoutBody(userId, body, options = {}) {
     const {
       items,
       name,
@@ -588,10 +569,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       ) {
         const st = storeJsonForFees;
         if (st) {
-          const storeLoc =
-            (st.latitude != null && st.longitude != null)
-              ? { latitude: Number(st.latitude), longitude: Number(st.longitude) }
-              : parseLatLongFromGoogleMapsUrl(st.mapsUrl);
+          const storeLoc = await resolveStorePickupLocation(st);
           if (storeLoc) {
             const qOrder = quoteFromPickupDropoff(
               storeLoc,
@@ -765,7 +743,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
    * Pre-checkout quote: delivery + service + tax (7% on delivery fee only).
    * Store delivery fee: 1 JOD first km + 0.1 JOD per additional km, max 3 JOD.
    */
-  app.post('/api/checkout/quote-fees', authenticateRequest, (req, res) => {
+  app.post('/api/checkout/quote-fees', authenticateRequest, async (req, res) => {
     try {
       const { storeId, deliveryLocation, weightKg, cartAmount } = req.body || {};
       const cartAmountNum = (() => {
@@ -785,10 +763,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       if (!store) {
         return res.status(404).json({ success: false, message: 'Store not found' });
       }
-      const storeLocation =
-        (store.latitude != null && store.longitude != null)
-          ? { latitude: Number(store.latitude), longitude: Number(store.longitude) }
-          : parseLatLongFromGoogleMapsUrl(store.mapsUrl);
+      const storeLocation = await resolveStorePickupLocation(store);
       if (!storeLocation) {
         return res.status(400).json({
           success: false,
@@ -880,10 +855,10 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   });
 
   // Create order
-  app.post('/api/checkout', authenticateRequest, (req, res) => {
+  app.post('/api/checkout', authenticateRequest, async (req, res) => {
     try {
       const userId = req.user.userId || req.user.phoneNumber;
-      const result = createOrderFromCheckoutBody(userId, req.body, {});
+      const result = await createOrderFromCheckoutBody(userId, req.body, {});
       if (!result.ok) {
         return res.status(result.statusCode).json({
           success: false,

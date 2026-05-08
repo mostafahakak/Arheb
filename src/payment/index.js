@@ -94,7 +94,7 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest, io) 
     }
   }
 
-  function finalizePendingEntitiesForTransaction(existing, tranRef) {
+  async function finalizePendingEntitiesForTransaction(existing, tranRef) {
     if (!existing || existing.orderId || existing.arhebBoxRequestId) return;
     if (existing.pendingCheckoutJson) {
       try {
@@ -102,7 +102,7 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest, io) 
         if (typeof createOrderFromCheckoutBody !== 'function') return;
         const checkout = JSON.parse(existing.pendingCheckoutJson);
         const userId = existing.pendingPhoneNumber || checkout?.phoneNumber;
-        const createRes = createOrderFromCheckoutBody(userId, checkout, {
+        const createRes = await createOrderFromCheckoutBody(userId, checkout, {
           forcePaymentType: 'Card',
           initialStatusOverride: 'Waiting confirmation',
         });
@@ -218,7 +218,7 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest, io) 
 
       if (data.payment_result && data.payment_result.response_status === 'A') {
         const existing = db.prepare('SELECT * FROM payment_transactions WHERE tranRef = ?').get(tranRef);
-        finalizePendingEntitiesForTransaction(existing, tranRef);
+        await finalizePendingEntitiesForTransaction(existing, tranRef);
         const updatedTx = db.prepare('SELECT * FROM payment_transactions WHERE tranRef = ?').get(tranRef);
         const updatedRow = updatedTx?.arhebBoxRequestId != null
           ? db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(updatedTx.arhebBoxRequestId)
@@ -284,7 +284,7 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest, io) 
       delete checkoutBody.paymentType;
 
       const userId = req.user.userId || req.user.phoneNumber;
-      const dryRun = createOrderFromCheckoutBody(userId, checkoutBody, {
+      const dryRun = await createOrderFromCheckoutBody(userId, checkoutBody, {
         forcePaymentType: 'Card',
         initialStatusOverride: 'Pending payment',
         dryRun: true,
@@ -378,7 +378,7 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest, io) 
 
       if (data.payment_result && data.payment_result.response_status === 'A') {
         const existing = db.prepare('SELECT * FROM payment_transactions WHERE tranRef = ?').get(tranRef);
-        finalizePendingEntitiesForTransaction(existing, tranRef);
+        await finalizePendingEntitiesForTransaction(existing, tranRef);
         const tx = db.prepare('SELECT * FROM payment_transactions WHERE tranRef = ?').get(tranRef);
         const createdOrder = tx?.orderId != null ? findOrderById.get(tx.orderId) : null;
         return res.status(201).json({
@@ -437,7 +437,7 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest, io) 
   });
 
   // --- Callback (server-to-server from Madfoat after redirect completes) ---
-  app.post('/api/payment/callback', express.urlencoded({ extended: true }), (req, res) => {
+  app.post('/api/payment/callback', express.urlencoded({ extended: true }), async (req, res) => {
     try {
       const body = req.body || {};
       const {
@@ -475,7 +475,7 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest, io) 
           } else if (existing.orderId) {
             applyCardPaymentSuccessToOrder(existing.orderId, tranRef);
           }
-          finalizePendingEntitiesForTransaction(existing, tranRef);
+          await finalizePendingEntitiesForTransaction(existing, tranRef);
         }
       } else {
         db.prepare(`
@@ -493,7 +493,7 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest, io) 
   });
 
   // --- Return URL (browser redirect after 3DS / hosted page) ---
-  app.all('/api/payment/return', (req, res) => {
+  app.all('/api/payment/return', async (req, res) => {
     const params = { ...req.query, ...req.body };
     const { tranRef, respStatus, respMessage } = params;
 
@@ -510,7 +510,7 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest, io) 
           } else if (existing.orderId) {
             applyCardPaymentSuccessToOrder(existing.orderId, tranRef);
           }
-          finalizePendingEntitiesForTransaction(existing, tranRef);
+          await finalizePendingEntitiesForTransaction(existing, tranRef);
         }
       }
     }
@@ -570,7 +570,7 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest, io) 
           } else if (existing.orderId) {
             applyCardPaymentSuccessToOrder(existing.orderId, tranRef);
           }
-          finalizePendingEntitiesForTransaction(existing, tranRef);
+          await finalizePendingEntitiesForTransaction(existing, tranRef);
         }
       }
 
