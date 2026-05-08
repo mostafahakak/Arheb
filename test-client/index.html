@@ -531,7 +531,8 @@
               Set the <strong>API base URL</strong> in the header. This page calls the same production endpoints as your apps.
             </p>
             <ul style="font-size: 0.8rem; color: #2f855a; margin: 0; padding-left: 1.2rem;">
-              <li><strong>Twilio Verify (WhatsApp):</strong> <code>TWILIO_ACCOUNT_SID</code>, <code>TWILIO_AUTH_TOKEN</code>, <code>TWILIO_VERIFY_SERVICE_SID</code> (VA…). WhatsApp channel must be enabled on that Verify service in Twilio Console.</li>
+              <li><strong>Twilio Verify (WhatsApp):</strong> <code>TWILIO_ACCOUNT_SID</code>, <code>TWILIO_AUTH_TOKEN</code>, <code>TWILIO_VERIFY_SERVICE_SID</code> (<strong>must start with VA</strong> from Verify → Services — not AC). Enable WhatsApp on the service if using WhatsApp.</li>
+              <li><strong>Twilio Verify (SMS, no WhatsApp):</strong> same three vars + <code>TWILIO_VERIFY_CHANNEL=sms</code> on the server.</li>
               <li><strong>Twilio Messaging (template):</strong> above + <code>TWILIO_WHATSAPP_FROM</code>, <code>TWILIO_WHATSAPP_OTP_CONTENT_SID</code>.</li>
               <li><strong>Meta Cloud API:</strong> <code>WHATSAPP_ACCESS_TOKEN</code>, <code>WHATSAPP_PHONE_NUMBER_ID</code>, template env vars.</li>
             </ul>

@@ -59,6 +59,8 @@ JOFOTARA_SELLER_NAME=your-company-name
 # TWILIO_ACCOUNT_SID=
 # TWILIO_AUTH_TOKEN=
 # TWILIO_VERIFY_SERVICE_SID=VAxxxxxxxx
+# Must be the Verify *Service* SID (starts with VA), not Account SID (AC).
+# Optional: TWILIO_VERIFY_CHANNEL=sms — send OTP by SMS instead of WhatsApp (no Meta WhatsApp needed).
 # Optional: TWILIO_VERIFY_PENDING_TTL_MS=600000 (stored pending row TTL, default 10 min)
 #
 # Or Twilio Programmable Messaging (Content template + sender):
@@ -418,7 +420,7 @@ if (data.success) {
 
 Alternative to Firebase phone OTP: sends a **6-digit code** via WhatsApp. Codes are short-lived (about **2 minutes**); resend cooldown applies.
 
-**Configure (Twilio Verify WhatsApp — preferred if set):** **`TWILIO_ACCOUNT_SID`**, **`TWILIO_AUTH_TOKEN`**, **`TWILIO_VERIFY_SERVICE_SID`** (`VA…` from [Verify Services](https://console.twilio.com/us1/verify/services)). In the Twilio Console, create a Verify service and add **WhatsApp** as a channel; Twilio sends branded OTPs (no separate Content template or `TWILIO_WHATSAPP_FROM` required for this path). See [Verify WhatsApp](https://www.twilio.com/docs/verify/whatsapp).
+**Configure (Twilio Verify WhatsApp — preferred if set):** **`TWILIO_ACCOUNT_SID`**, **`TWILIO_AUTH_TOKEN`**, **`TWILIO_VERIFY_SERVICE_SID`** (`VA…` from [Verify Services](https://console.twilio.com/us1/verify/services) — not `AC…`). In the Twilio Console, create a Verify service and add **WhatsApp** as a channel when using WhatsApp delivery. Set **`TWILIO_VERIFY_CHANNEL=sms`** to deliver OTP by **SMS** instead (same API endpoints; no WhatsApp Business required). See [Verify WhatsApp](https://www.twilio.com/docs/verify/whatsapp).
 
 **Or (Twilio Messaging + Content template):** **`TWILIO_WHATSAPP_FROM`**, **`TWILIO_WHATSAPP_OTP_CONTENT_SID`**, plus Account SID and Auth Token — [WhatsApp quickstart](https://www.twilio.com/docs/whatsapp/quickstart).
 

@@ -240,7 +240,9 @@ const {
   ensureWhatsappOtpTable,
   generateOtpCode,
   generateVerificationId,
-  jordanKeyToWhatsAppDigits,
+  resolveOtpDestination,
+  getTwilioVerifyChannel,
+  getWhatsappOtpNotConfiguredHint,
   getWhatsappConfig,
   sendWhatsappAuthenticationOtp,
   startTwilioVerifyWhatsappOtp,
@@ -631,7 +633,7 @@ app.post('/api/auth/whatsapp/send-code', async (req, res) => {
   if (!cfg.configured) {
     return res.status(503).json({
       success: false,
-      message: 'WhatsApp login is not configured on server',
+      message: getWhatsappOtpNotConfiguredHint(),
       case: 2,
     });
   }
@@ -642,9 +644,13 @@ app.post('/api/auth/whatsapp/send-code', async (req, res) => {
   if (!phoneKey || phoneKey.replace(/\D/g, '').length < 9) {
     return res.status(400).json({ success: false, message: 'Invalid phone number', case: 2 });
   }
-  const waDigits = jordanKeyToWhatsAppDigits(phoneKey);
-  if (!waDigits) {
-    return res.status(400).json({ success: false, message: 'Could not format phone for WhatsApp', case: 2 });
+  const dest = resolveOtpDestination(phoneNumber, phoneKey);
+  if (!dest) {
+    return res.status(400).json({
+      success: false,
+      message: 'Could not format phone for OTP (use Jordan +962 / 079… or international +country + number)',
+      case: 2,
+    });
   }
 
   const existingUser = findUserByPhoneFlexible(phoneKey);
@@ -670,7 +676,7 @@ app.post('/api/auth/whatsapp/send-code', async (req, res) => {
   let expiresInSec = Math.floor(OTP_TTL_MS / 1000);
   try {
     if (cfg.provider === 'twilio_verify') {
-      const verification = await startTwilioVerifyWhatsappOtp(waDigits);
+      const verification = await startTwilioVerifyWhatsappOtp(dest.digits);
       responseVerificationId = verification.sid;
       expiresInSec = Math.floor(TWILIO_VERIFY_PENDING_TTL_MS / 1000);
       upsertWhatsappOtp(db, {
@@ -682,7 +688,7 @@ app.post('/api/auth/whatsapp/send-code', async (req, res) => {
         ttlMs: TWILIO_VERIFY_PENDING_TTL_MS,
       });
     } else {
-      await sendWhatsappAuthenticationOtp(waDigits, code);
+      await sendWhatsappAuthenticationOtp(dest.digits, code);
       upsertWhatsappOtp(db, {
         phoneKey,
         channel: 'customer',
@@ -704,14 +710,16 @@ app.post('/api/auth/whatsapp/send-code', async (req, res) => {
     return res.status(502).json({ success: false, message: String(raw), case: 2 });
   }
 
+  const verifyCh = getTwilioVerifyChannel();
+  const delivery = cfg.provider === 'twilio_verify' ? (verifyCh === 'sms' ? 'sms' : 'whatsapp') : 'whatsapp';
   return res.status(200).json({
     success: true,
-    message: 'OTP sent via WhatsApp',
+    message: delivery === 'sms' ? 'OTP sent via SMS (Twilio Verify)' : 'OTP sent via WhatsApp',
     case: 1,
     alreadyRegistered: Boolean(existingUser && !existingUser.deleted),
     verificationId: responseVerificationId,
     expiresIn: expiresInSec,
-    channel: 'whatsapp',
+    channel: delivery,
   });
 });
 
@@ -737,11 +745,12 @@ app.post('/api/auth/whatsapp/verify-code', async (req, res) => {
       case: 2,
     });
   }
-  const waDigits = jordanKeyToWhatsAppDigits(phoneKey);
-  if (isTwilioVerifyVerificationId(pending.verificationId) && waDigits) {
+  const verifyDest = resolveOtpDestination(phoneNumber, phoneKey);
+  const otpDigits = verifyDest ? verifyDest.digits : '';
+  if (isTwilioVerifyVerificationId(pending.verificationId) && otpDigits) {
     let approved = false;
     try {
-      approved = await checkTwilioVerifyWhatsappOtp(waDigits, otp);
+      approved = await checkTwilioVerifyWhatsappOtp(otpDigits, otp);
     } catch (err) {
       const raw = err.message || 'Verification check failed';
       console.error('whatsapp/verify-code (Twilio Verify) error:', raw);

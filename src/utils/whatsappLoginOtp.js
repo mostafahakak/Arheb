@@ -8,7 +8,7 @@ const OTP_TTL_MS = 2 * 60 * 1000;
 const TWILIO_VERIFY_PENDING_TTL_MS = Number(process.env.TWILIO_VERIFY_PENDING_TTL_MS) || 10 * 60 * 1000;
 const MIN_RESEND_INTERVAL_MS = 45 * 1000;
 
-const { normalizeJordanMobileKey } = require('./jordanMobile');
+const { normalizeJordanMobileKey, toAsciiDigits } = require('./jordanMobile');
 
 function ensureWhatsappOtpTable(db) {
   db.exec(`
@@ -45,6 +45,40 @@ function jordanKeyToWhatsAppDigits(jordanKey) {
     return `962${digits}`;
   }
   return '';
+}
+
+/**
+ * International + Jordan: digits for Meta/Twilio OTP (no leading +).
+ * @returns {{ digits: string, e164: string } | null}
+ */
+function resolveOtpDestination(phoneNumber, phoneKey) {
+  const j = jordanKeyToWhatsAppDigits(phoneKey);
+  if (j) {
+    return { digits: j, e164: `+${j}` };
+  }
+  const d = toAsciiDigits(String(phoneNumber ?? '')).replace(/\D/g, '');
+  if (d.length >= 10 && d.length <= 15) {
+    return { digits: d, e164: `+${d}` };
+  }
+  return null;
+}
+
+/** Twilio Verify delivery: `whatsapp` (default) or `sms` (no WhatsApp Business needed). */
+function getTwilioVerifyChannel() {
+  const c = (process.env.TWILIO_VERIFY_CHANNEL || 'whatsapp').trim().toLowerCase();
+  if (c === 'sms' || c === 'text') return 'sms';
+  return 'whatsapp';
+}
+
+/**
+ * Clear 503 hint when no provider is configured (safe for clients).
+ */
+function getWhatsappOtpNotConfiguredHint() {
+  const sid = process.env.TWILIO_VERIFY_SERVICE_SID?.trim();
+  if (sid && !sid.startsWith('VA')) {
+    return 'TWILIO_VERIFY_SERVICE_SID must start with VA (Twilio Console → Verify → Services). Do not use Account SID (AC…) here.';
+  }
+  return 'OTP not configured on server. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_VERIFY_SERVICE_SID (VA…), or Meta WHATSAPP_ACCESS_TOKEN + WHATSAPP_PHONE_NUMBER_ID. Use TWILIO_VERIFY_CHANNEL=sms for SMS without WhatsApp.';
 }
 
 /**
@@ -196,15 +230,16 @@ function buildTwilioOtpContentVariables(otpCode) {
 }
 
 /**
- * Twilio Verify: send OTP over WhatsApp (no Content template / From number needed).
- * @param {string} toDigits Jordan mobile digits e.g. 9627xxxxxxxx
+ * Twilio Verify: send OTP (WhatsApp or SMS — TWILIO_VERIFY_CHANNEL).
+ * @param {string} toDigits International digits without + e.g. 9627… or 2012…
  * @see https://www.twilio.com/docs/verify/whatsapp
+ * @see https://www.twilio.com/docs/verify/api/verification
  */
-async function startTwilioVerifyWhatsappOtp(toDigits) {
+async function startTwilioVerifyOtp(toDigits, channel) {
   const v = getTwilioVerifyConfig();
   if (!v.complete) {
     const err = new Error(
-      'Twilio Verify WhatsApp is not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_VERIFY_SERVICE_SID)',
+      'Twilio Verify is not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_VERIFY_SERVICE_SID)',
     );
     err.code = 'WHATSAPP_NOT_CONFIGURED';
     throw err;
@@ -217,11 +252,16 @@ async function startTwilioVerifyWhatsappOtp(toDigits) {
     err.code = 'INVALID_PHONE';
     throw err;
   }
+  const ch = channel === 'sms' ? 'sms' : 'whatsapp';
   const verification = await client.verify.v2.services(v.serviceSid).verifications.create({
-    channel: 'whatsapp',
+    channel: ch,
     to,
   });
   return verification;
+}
+
+async function startTwilioVerifyWhatsappOtp(toDigits) {
+  return startTwilioVerifyOtp(toDigits, getTwilioVerifyChannel());
 }
 
 /**
@@ -406,11 +446,15 @@ module.exports = {
   generateVerificationId,
   normalizeJordanMobileKey,
   jordanKeyToWhatsAppDigits,
+  resolveOtpDestination,
+  getTwilioVerifyChannel,
+  getWhatsappOtpNotConfiguredHint,
   getWhatsappConfig,
   getTwilioVerifyConfig,
   getTwilioWhatsappConfig,
   getMetaWhatsappConfig,
   buildAuthenticationTemplatePayload,
+  startTwilioVerifyOtp,
   startTwilioVerifyWhatsappOtp,
   checkTwilioVerifyWhatsappOtp,
   isTwilioVerifyVerificationId,

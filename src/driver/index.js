@@ -1,7 +1,7 @@
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const fs = require('fs');
-const { jordanMobileLookupKeys, normalizeOtpDigits } = require('../utils/jordanMobile');
+const { jordanMobileLookupKeys, normalizeJordanMobileKey, normalizeOtpDigits } = require('../utils/jordanMobile');
 const { getJsonPath } = require('../config/jsonPaths');
 const fcm = require('../fcm');
 const enrichArhebBoxRow = require('../arhebBox').enrichArhebBoxRow;
@@ -26,7 +26,9 @@ const { notifyArhebBoxCustomerDriverToPick, notifyArhebBoxCustomerDriverEnRoute 
 const {
   generateOtpCode: generateWhatsappOtpCode,
   generateVerificationId: generateWhatsappVerificationId,
-  jordanKeyToWhatsAppDigits,
+  resolveOtpDestination,
+  getTwilioVerifyChannel,
+  getWhatsappOtpNotConfiguredHint,
   getWhatsappConfig,
   sendWhatsappAuthenticationOtp,
   startTwilioVerifyWhatsappOtp,
@@ -525,7 +527,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     console.log('driver/whatsapp/send-otp hit', { mobile: maskPhoneForLog(mobile) });
     const cfg = getWhatsappConfig();
     if (!cfg.configured) {
-      return res.status(503).json({ success: false, message: 'WhatsApp login is not configured on server' });
+      return res.status(503).json({ success: false, message: getWhatsappOtpNotConfiguredHint() });
     }
     if (!mobile || !String(mobile).trim()) {
       return res.status(400).json({ success: false, message: 'mobile is required' });
@@ -541,9 +543,12 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
       return res.status(403).json({ success: false, message: 'Account is blocked' });
     }
     const canonicalMobile = String(driver.mobile).trim();
-    const waDigits = jordanKeyToWhatsAppDigits(canonicalMobile);
-    if (!waDigits) {
-      return res.status(400).json({ success: false, message: 'Could not format phone for WhatsApp' });
+    const dest = resolveOtpDestination(canonicalMobile, normalizeJordanMobileKey(canonicalMobile));
+    if (!dest) {
+      return res.status(400).json({
+        success: false,
+        message: 'Could not format driver phone for OTP',
+      });
     }
 
     const now = Date.now();
@@ -563,7 +568,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     let expiresInSec = Math.floor(WHATSAPP_OTP_TTL_MS / 1000);
     try {
       if (cfg.provider === 'twilio_verify') {
-        const verification = await startTwilioVerifyWhatsappOtp(waDigits);
+        const verification = await startTwilioVerifyWhatsappOtp(dest.digits);
         responseVerificationId = verification.sid;
         expiresInSec = Math.floor(TWILIO_VERIFY_PENDING_TTL_MS / 1000);
         upsertWhatsappOtp(db, {
@@ -575,7 +580,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
           ttlMs: TWILIO_VERIFY_PENDING_TTL_MS,
         });
       } else {
-        await sendWhatsappAuthenticationOtp(waDigits, code);
+        await sendWhatsappAuthenticationOtp(dest.digits, code);
         upsertWhatsappOtp(db, {
           phoneKey: canonicalMobile,
           channel: 'driver',
@@ -594,14 +599,16 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
       return res.status(502).json({ success: false, message: String(raw) });
     }
 
+    const verifyCh = getTwilioVerifyChannel();
+    const delivery = cfg.provider === 'twilio_verify' ? (verifyCh === 'sms' ? 'sms' : 'whatsapp') : 'whatsapp';
     return res.status(200).json({
       success: true,
-      message: 'OTP sent via WhatsApp',
+      message: delivery === 'sms' ? 'OTP sent via SMS (Twilio Verify)' : 'OTP sent via WhatsApp',
       data: {
         verificationId: responseVerificationId,
         expiresIn: expiresInSec,
         mobile: canonicalMobile,
-        channel: 'whatsapp',
+        channel: delivery,
       },
     });
   });
@@ -615,7 +622,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     });
     const cfg = getWhatsappConfig();
     if (!cfg.configured) {
-      return res.status(503).json({ success: false, message: 'WhatsApp login is not configured on server' });
+      return res.status(503).json({ success: false, message: getWhatsappOtpNotConfiguredHint() });
     }
     if (!mobile || otpCode === undefined || otpCode === null || otpCode === '') {
       return res.status(400).json({ success: false, message: 'mobile and otpCode are required' });
@@ -641,11 +648,12 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
         message: 'Invalid verificationId. Use the value returned by whatsapp/send-otp.',
       });
     }
-    const waDigitsLogin = jordanKeyToWhatsAppDigits(canonicalMobile);
-    if (isTwilioVerifyVerificationId(pending.verificationId) && waDigitsLogin) {
+    const loginDest = resolveOtpDestination(canonicalMobile, normalizeJordanMobileKey(canonicalMobile));
+    const otpDigitsLogin = loginDest ? loginDest.digits : '';
+    if (isTwilioVerifyVerificationId(pending.verificationId) && otpDigitsLogin) {
       let approved = false;
       try {
-        approved = await checkTwilioVerifyWhatsappOtp(waDigitsLogin, otpCode);
+        approved = await checkTwilioVerifyWhatsappOtp(otpDigitsLogin, otpCode);
       } catch (err) {
         console.error('driver/whatsapp/login (Twilio Verify) error:', err?.message || err);
         return res.status(502).json({ success: false, message: err.message || 'Verification check failed' });
