@@ -29,11 +29,15 @@ const {
   jordanKeyToWhatsAppDigits,
   getWhatsappConfig,
   sendWhatsappAuthenticationOtp,
+  startTwilioVerifyWhatsappOtp,
+  checkTwilioVerifyWhatsappOtp,
+  isTwilioVerifyVerificationId,
   upsertWhatsappOtp,
   getPendingWhatsappOtp,
   deleteWhatsappOtp,
   checkResendCooldown,
   OTP_TTL_MS: WHATSAPP_OTP_TTL_MS,
+  TWILIO_VERIFY_PENDING_TTL_MS,
 } = require('../utils/whatsappLoginOtp');
 
 /** After a driver accepts (or is assigned) a store order — before "On the way". Legacy DB rows may still say "Driver to pick". */
@@ -515,7 +519,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     });
   });
 
-  // WhatsApp OTP login (same JWT as /api/driver/login); OTP valid 2 minutes; Arabic auth template on Meta.
+  // WhatsApp OTP login (same JWT as /api/driver/login); Twilio Content template or Meta — see whatsappLoginOtp env vars.
   app.post('/api/driver/whatsapp/send-otp', async (req, res) => {
     const { mobile } = req.body || {};
     console.log('driver/whatsapp/send-otp hit', { mobile: maskPhoneForLog(mobile) });
@@ -554,9 +558,32 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     }
 
     const code = generateWhatsappOtpCode();
-    const verificationId = generateWhatsappVerificationId();
+    const localVerificationId = generateWhatsappVerificationId();
+    let responseVerificationId = localVerificationId;
+    let expiresInSec = Math.floor(WHATSAPP_OTP_TTL_MS / 1000);
     try {
-      await sendWhatsappAuthenticationOtp(waDigits, code);
+      if (cfg.provider === 'twilio_verify') {
+        const verification = await startTwilioVerifyWhatsappOtp(waDigits);
+        responseVerificationId = verification.sid;
+        expiresInSec = Math.floor(TWILIO_VERIFY_PENDING_TTL_MS / 1000);
+        upsertWhatsappOtp(db, {
+          phoneKey: canonicalMobile,
+          channel: 'driver',
+          code: '__twilio_verify__',
+          verificationId: verification.sid,
+          now,
+          ttlMs: TWILIO_VERIFY_PENDING_TTL_MS,
+        });
+      } else {
+        await sendWhatsappAuthenticationOtp(waDigits, code);
+        upsertWhatsappOtp(db, {
+          phoneKey: canonicalMobile,
+          channel: 'driver',
+          code,
+          verificationId: localVerificationId,
+          now,
+        });
+      }
     } catch (error) {
       const raw =
         error.response?.data?.error?.message ||
@@ -567,20 +594,12 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
       return res.status(502).json({ success: false, message: String(raw) });
     }
 
-    upsertWhatsappOtp(db, {
-      phoneKey: canonicalMobile,
-      channel: 'driver',
-      code,
-      verificationId,
-      now,
-    });
-
     return res.status(200).json({
       success: true,
       message: 'OTP sent via WhatsApp',
       data: {
-        verificationId,
-        expiresIn: Math.floor(WHATSAPP_OTP_TTL_MS / 1000),
+        verificationId: responseVerificationId,
+        expiresIn: expiresInSec,
         mobile: canonicalMobile,
         channel: 'whatsapp',
       },
@@ -622,9 +641,23 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
         message: 'Invalid verificationId. Use the value returned by whatsapp/send-otp.',
       });
     }
-    const otpNorm = normalizeOtpDigits(otpCode);
-    if (otpNorm.length !== 6 || otpNorm !== String(pending.code)) {
-      return res.status(401).json({ success: false, message: 'Invalid OTP code' });
+    const waDigitsLogin = jordanKeyToWhatsAppDigits(canonicalMobile);
+    if (isTwilioVerifyVerificationId(pending.verificationId) && waDigitsLogin) {
+      let approved = false;
+      try {
+        approved = await checkTwilioVerifyWhatsappOtp(waDigitsLogin, otpCode);
+      } catch (err) {
+        console.error('driver/whatsapp/login (Twilio Verify) error:', err?.message || err);
+        return res.status(502).json({ success: false, message: err.message || 'Verification check failed' });
+      }
+      if (!approved) {
+        return res.status(401).json({ success: false, message: 'Invalid OTP code' });
+      }
+    } else {
+      const otpNorm = normalizeOtpDigits(otpCode);
+      if (otpNorm.length !== 6 || otpNorm !== String(pending.code)) {
+        return res.status(401).json({ success: false, message: 'Invalid OTP code' });
+      }
     }
     deleteWhatsappOtp(db, canonicalMobile, 'driver');
 

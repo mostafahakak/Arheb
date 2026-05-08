@@ -54,7 +54,19 @@ JOFOTARA_SELLER_NAME=your-company-name
 # Pause new Arheb Box orders (quote, POST /api/arheb-box, card initiate). Values: true | 1 | yes (case-insensitive). Omit or set false to allow orders.
 # ARHEB_BOX_PAUSED=true
 
-# WhatsApp OTP login (customer + driver): Meta Cloud API Authentication template. Omit WHATSAPP_ACCESS_TOKEN or WHATSAPP_PHONE_NUMBER_ID to disable.
+# WhatsApp OTP login (customer + driver): prefer Twilio when all Twilio vars are set; else Meta Cloud API.
+# Preferred: Twilio Verify WhatsApp — create a Verify service in Console; enable WhatsApp on the service.
+# TWILIO_ACCOUNT_SID=
+# TWILIO_AUTH_TOKEN=
+# TWILIO_VERIFY_SERVICE_SID=VAxxxxxxxx
+# Optional: TWILIO_VERIFY_PENDING_TTL_MS=600000 (stored pending row TTL, default 10 min)
+#
+# Or Twilio Programmable Messaging (Content template + sender):
+# TWILIO_WHATSAPP_FROM=whatsapp:+14155238886
+# TWILIO_WHATSAPP_OTP_CONTENT_SID=HXxxxxxxxx
+# Optional: TWILIO_WHATSAPP_OTP_CODE_VAR=1; TWILIO_WHATSAPP_OTP_CONTENT_VARIABLES_EXTRAS_JSON={"2":"Arheb"}
+#
+# Or Meta (if Twilio Verify + Twilio Messaging both incomplete):
 # WHATSAPP_ACCESS_TOKEN=
 # WHATSAPP_PHONE_NUMBER_ID=
 # WHATSAPP_OTP_TEMPLATE_NAME=arheb_login_otp_ar
@@ -404,9 +416,13 @@ if (data.success) {
 
 ### WhatsApp OTP login (customer)
 
-Alternative to Firebase phone OTP: sends a **6-digit code** via WhatsApp using a Meta **Authentication** template (Arabic by default). Codes are short-lived (about **2 minutes**); resend cooldown applies.
+Alternative to Firebase phone OTP: sends a **6-digit code** via WhatsApp. Codes are short-lived (about **2 minutes**); resend cooldown applies.
 
-**Configure:** set **`WHATSAPP_ACCESS_TOKEN`**, **`WHATSAPP_PHONE_NUMBER_ID`**, and optionally **`WHATSAPP_OTP_TEMPLATE_NAME`** (default `arheb_login_otp_ar`), **`WHATSAPP_OTP_LANG`** (default `ar`). If the token or phone number ID is missing, both endpoints return **503** (“not configured”).
+**Configure (Twilio Verify WhatsApp — preferred if set):** **`TWILIO_ACCOUNT_SID`**, **`TWILIO_AUTH_TOKEN`**, **`TWILIO_VERIFY_SERVICE_SID`** (`VA…` from [Verify Services](https://console.twilio.com/us1/verify/services)). In the Twilio Console, create a Verify service and add **WhatsApp** as a channel; Twilio sends branded OTPs (no separate Content template or `TWILIO_WHATSAPP_FROM` required for this path). See [Verify WhatsApp](https://www.twilio.com/docs/verify/whatsapp).
+
+**Or (Twilio Messaging + Content template):** **`TWILIO_WHATSAPP_FROM`**, **`TWILIO_WHATSAPP_OTP_CONTENT_SID`**, plus Account SID and Auth Token — [WhatsApp quickstart](https://www.twilio.com/docs/whatsapp/quickstart).
+
+**Or (Meta Cloud API):** **`WHATSAPP_ACCESS_TOKEN`**, **`WHATSAPP_PHONE_NUMBER_ID`**, and optional template/language vars. If no provider is fully configured, endpoints return **503**.
 
 **Send code —** `POST /api/auth/whatsapp/send-code`
 
