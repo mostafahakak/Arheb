@@ -8,11 +8,21 @@ const axios = require('axios');
  */
 function parseLatLongFromGoogleMapsUrl(url) {
   if (!url || typeof url !== 'string') return null;
-  const text = url.trim();
+  let text = url.trim();
+  try {
+    text = decodeURIComponent(text);
+  } catch {
+    /* keep raw */
+  }
   const patterns = [
-    /[?&]q=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
-    /[?&]query=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
-    /@(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
+    /[?&]q=(-?\d+(?:\.\d+)?),\s*\+?(-?\d+(?:\.\d+)?)/i,
+    /[?&]query=(-?\d+(?:\.\d+)?),\s*\+?(-?\d+(?:\.\d+)?)/i,
+    /@(-?\d+(?:\.\d+)?),\s*\+?(-?\d+(?:\.\d+)?)/i,
+    /** Short links often expand to `.../maps/search/29.53,+35.01?...` (no @ or q=). */
+    /\/maps\/search\/(-?\d+(?:\.\d+)?),\s*\+?(-?\d+(?:\.\d+)?)/i,
+    /\/search\/(-?\d+(?:\.\d+)?),\s*\+?(-?\d+(?:\.\d+)?)/i,
+    /** Encoded place payload fragments e.g. !3d29.5!4d35.0 */
+    /!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/i,
   ];
   for (const re of patterns) {
     const m = text.match(re);
@@ -57,7 +67,8 @@ async function resolveStorePickupLocation(store) {
   }
   if (store.mapsUrl && typeof store.mapsUrl === 'string') {
     const expanded = await resolveFinalMapsUrl(store.mapsUrl);
-    const parsed = parseLatLongFromGoogleMapsUrl(expanded);
+    const parsed =
+      parseLatLongFromGoogleMapsUrl(expanded) || parseLatLongFromGoogleMapsUrl(store.mapsUrl);
     if (parsed) return parsed;
   }
   return null;

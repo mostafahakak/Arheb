@@ -114,6 +114,14 @@ function ensureJsonFile(filePath, defaultData) {
   }
 }
 
+/** Dashboard / JSON may send booleans as strings; `Boolean('false')` is wrongly true. */
+function coercePatchBoolean(v) {
+  if (typeof v === 'boolean') return v;
+  if (v === 'true' || v === 1 || v === '1') return true;
+  if (v === 'false' || v === 0 || v === '0' || v === '' || v === null) return false;
+  return Boolean(v);
+}
+
 function loadStores() {
   try {
     ensureJsonFile(storesResponsePath, { success: true, message: 'Stores listing', data: { stores: [] } });
@@ -1268,10 +1276,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       req.admin.role === ROLES.STORE_ADMIN
     ) {
       if (body.checkoutDeliveryFeeZero !== undefined) {
-        stores[idx].checkoutDeliveryFeeZero = Boolean(body.checkoutDeliveryFeeZero);
+        stores[idx].checkoutDeliveryFeeZero = coercePatchBoolean(body.checkoutDeliveryFeeZero);
       }
       if (body.checkoutServiceFeeDisabled !== undefined) {
-        stores[idx].checkoutServiceFeeDisabled = Boolean(body.checkoutServiceFeeDisabled);
+        stores[idx].checkoutServiceFeeDisabled = coercePatchBoolean(body.checkoutServiceFeeDisabled);
       }
       if (body.checkoutServiceFeeJod !== undefined) {
         if (body.checkoutServiceFeeJod === null || body.checkoutServiceFeeJod === '') {
@@ -1412,10 +1420,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         delete stores[idx].checkoutDeliveryFeeAboveJod;
       } else {
         if (body.checkoutDeliveryFeeZero !== undefined) {
-          stores[idx].checkoutDeliveryFeeZero = Boolean(body.checkoutDeliveryFeeZero);
+          stores[idx].checkoutDeliveryFeeZero = coercePatchBoolean(body.checkoutDeliveryFeeZero);
         }
         if (body.checkoutServiceFeeDisabled !== undefined) {
-          stores[idx].checkoutServiceFeeDisabled = Boolean(body.checkoutServiceFeeDisabled);
+          stores[idx].checkoutServiceFeeDisabled = coercePatchBoolean(body.checkoutServiceFeeDisabled);
         }
         if (body.checkoutServiceFeeJod !== undefined) {
           if (body.checkoutServiceFeeJod === null || body.checkoutServiceFeeJod === '') {
