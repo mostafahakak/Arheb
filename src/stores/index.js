@@ -225,6 +225,36 @@ function filterStoresForCustomerBrowse(stores) {
   return (stores || []).filter((s) => isStoreListedForCustomerBrowse(s));
 }
 
+function hasDiscount(p) {
+  const d = p.discount;
+  if (d == null || d === '') return false;
+  if (typeof d === 'number') return d > 0;
+  const n = parseFloat(String(d).replace(/%/g, ''), 10);
+  return !Number.isNaN(n) && n > 0;
+}
+
+function buildStoreIdsWithOffers() {
+  try {
+    const productsPath = getJsonPath('products_listing_response.json');
+    const raw = fs.readFileSync(productsPath, 'utf-8');
+    const allProducts = JSON.parse(raw)?.data?.products ?? [];
+    const ids = new Set();
+    for (const p of allProducts) {
+      if (p.isAvailable !== false && hasDiscount(p) && p.store?.id != null) {
+        ids.add(String(p.store.id));
+      }
+    }
+    return ids;
+  } catch {
+    return new Set();
+  }
+}
+
+function enrichStoresWithOffers(stores) {
+  const offerStoreIds = buildStoreIdsWithOffers();
+  return stores.map((s) => ({ ...s, hasOffers: offerStoreIds.has(String(s.id)) }));
+}
+
 module.exports = function attachStoresRoutes(app, db) {
   seedStoresTable(db, storesListForSeed);
   if (storesListForSeed.length === 0) {
@@ -233,9 +263,8 @@ module.exports = function attachStoresRoutes(app, db) {
 
   app.get('/api/stores', (req, res) => {
     const storesResponse = loadStoresResponse();
-    // When file is missing (e.g. deploy), return empty list so test client / app do not get 500
     const raw = storesResponse?.data?.stores ?? [];
-    const stores = sortStoresOpenFirst(filterStoresForCustomerBrowse(raw).map(toPublicStore));
+    const stores = enrichStoresWithOffers(sortStoresOpenFirst(filterStoresForCustomerBrowse(raw).map(toPublicStore)));
     return res.status(200).json({
       success: true,
       message: 'Stores listing retrieved successfully',
@@ -276,7 +305,7 @@ module.exports = function attachStoresRoutes(app, db) {
       filterStoresForCustomerBrowse(storesResponse?.data?.stores ?? []).map(toPublicStore),
     );
     const exclusive = storesList.filter((store) => store.isExclusive === true);
-    const result = limit ? exclusive.slice(0, limit) : exclusive;
+    const result = enrichStoresWithOffers(limit ? exclusive.slice(0, limit) : exclusive);
     return { stores: result, count: result.length, limit: limit || 'all' };
   }
 
@@ -285,7 +314,7 @@ module.exports = function attachStoresRoutes(app, db) {
       filterStoresForCustomerBrowse(storesResponse?.data?.stores ?? []).map(toPublicStore),
     );
     const premium = storesList.filter((store) => store.isPremium === true);
-    const result = limit ? premium.slice(0, limit) : premium;
+    const result = enrichStoresWithOffers(limit ? premium.slice(0, limit) : premium);
     return { stores: result, count: result.length, limit: limit || 'all' };
   }
 
@@ -342,10 +371,10 @@ module.exports = function attachStoresRoutes(app, db) {
       });
     };
 
-    const storesByCategory = storesList.filter(store =>
+    const storesByCategory = enrichStoresWithOffers(storesList.filter(store =>
       matches(store.category) || matches(store.categoryAr) || matches(store.categoryEn) ||
       storeMatchesSubCategories(store)
-    );
+    ));
     return res.status(200).json({
       success: true,
       message: 'Stores by category retrieved successfully',

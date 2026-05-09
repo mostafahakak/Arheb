@@ -60,8 +60,24 @@ function storeSortBucket(store) {
   return getAdminStoreDashboardBucket(store);
 }
 
-/** Comparator: open → paused → closed, then name (EN/name/id). */
+/**
+ * Tier weight: exclusive = 0, premium = 1, regular = 2.
+ * Used as the primary sort key so exclusive/premium float to the top by default.
+ */
+function storeTierWeight(store) {
+  if (store.isExclusive === true) return 0;
+  if (store.isPremium === true) return 1;
+  return 2;
+}
+
+/** Comparator: displayOrder → tier → open/paused/closed → name. */
 function compareStoresOpenFirstThenName(a, b) {
+  const da = typeof a.displayOrder === 'number' ? a.displayOrder : Infinity;
+  const db_ = typeof b.displayOrder === 'number' ? b.displayOrder : Infinity;
+  if (da !== db_) return da - db_;
+  const ta = storeTierWeight(a);
+  const tb = storeTierWeight(b);
+  if (ta !== tb) return ta - tb;
   const ba = storeSortBucket(a);
   const bb = storeSortBucket(b);
   const oa = STORE_BUCKET_ORDER[ba] ?? 9;

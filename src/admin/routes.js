@@ -943,7 +943,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     }
 
     const bucketOrder = { open: 0, paused: 1, closed: 2 };
+    const tierWeight = (s) => (s.isExclusive === true ? 0 : s.isPremium === true ? 1 : 2);
     list.sort((a, b) => {
+      const da = typeof a.displayOrder === 'number' ? a.displayOrder : Infinity;
+      const db_ = typeof b.displayOrder === 'number' ? b.displayOrder : Infinity;
+      if (da !== db_) return da - db_;
+      const ta = tierWeight(a);
+      const tb = tierWeight(b);
+      if (ta !== tb) return ta - tb;
       const ba = bucket(a);
       const bb = bucket(b);
       if (bucketOrder[ba] !== bucketOrder[bb]) return bucketOrder[ba] - bucketOrder[bb];
@@ -1241,6 +1248,12 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       }
       stores[idx].isExclusive = Boolean(body.isExclusive);
     }
+    if (body.displayOrder !== undefined) {
+      if (req.admin.role === ROLES.STORE_ADMIN) {
+        return res.status(403).json({ success: false, message: 'Only Admin or SuperAdmin can set display order' });
+      }
+      stores[idx].displayOrder = body.displayOrder === null || body.displayOrder === '' ? undefined : Number(body.displayOrder);
+    }
     if (body.hiddenFromCustomers !== undefined) {
       if (req.admin.role !== ROLES.SUPERADMIN && req.admin.role !== ROLES.ADMIN) {
         return res.status(403).json({ success: false, message: 'Only Admin or SuperAdmin can hide a store from customers' });
@@ -1376,6 +1389,37 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       success: true,
       data: { store: patched },
     });
+  });
+
+  /** Bulk set displayOrder for stores (Admin / SuperAdmin). Body: { order: [{ id, displayOrder }] } */
+  app.post('/api/admin/stores/reorder', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      const items = req.body?.order;
+      if (!Array.isArray(items) || items.length === 0) {
+        return res.status(400).json({ success: false, message: 'Provide { order: [{ id, displayOrder }] }' });
+      }
+      const stores = loadStores();
+      let changed = 0;
+      for (const item of items) {
+        const idx = stores.findIndex((s) => String(s.id) === String(item.id));
+        if (idx === -1) continue;
+        const val = item.displayOrder === null || item.displayOrder === '' ? undefined : Number(item.displayOrder);
+        stores[idx].displayOrder = val;
+        changed++;
+      }
+      saveStores(stores);
+      logActivity(db, req, {
+        action: 'edit',
+        resourceType: 'store',
+        resourceId: 'bulk',
+        storeScopeId: null,
+        summary: `Reordered ${changed} store(s) display order`,
+      });
+      return res.status(200).json({ success: true, data: { changed } });
+    } catch (e) {
+      console.error('Stores reorder error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to reorder stores' });
+    }
   });
 
   /** Apply checkout delivery/service fee flags to many stores (Admin / SuperAdmin). */
