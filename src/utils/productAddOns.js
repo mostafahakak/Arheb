@@ -17,6 +17,7 @@ function sanitizeAddOnGroups(input) {
               if (!oid) return null;
               const base = {
                 id: oid,
+                name: o.name != null ? String(o.name) : '',
                 nameAr: o.nameAr != null ? String(o.nameAr) : '',
                 nameEn: o.nameEn != null ? String(o.nameEn) : '',
               };
@@ -30,6 +31,7 @@ function sanitizeAddOnGroups(input) {
         : [];
       return {
         id,
+        name: g.name != null ? String(g.name) : '',
         nameAr: g.nameAr != null ? String(g.nameAr) : '',
         nameEn: g.nameEn != null ? String(g.nameEn) : '',
         required: Boolean(g.required),
@@ -73,12 +75,18 @@ function validateSelectedAddOnsAgainstProduct(product, selectedRaw) {
       return { ok: false, message: `Missing selection for add-on group: ${g.nameEn || g.nameAr || g.id}` };
     }
     if (!hasVal) continue;
-    const optId = String(val);
-    const opt = (g.options || []).find((o) => o.id === optId);
+    const selected = String(val).trim();
+    const selectedLower = selected.toLowerCase();
+    const opt = (g.options || []).find((o) => {
+      const candidates = [o.id, o.name, o.nameAr, o.nameEn]
+        .filter((x) => x != null && x !== '')
+        .map((x) => String(x).trim());
+      return candidates.some((x) => x === selected || x.toLowerCase() === selectedLower);
+    });
     if (!opt) {
       return { ok: false, message: `Invalid option for add-on group ${g.id}` };
     }
-    normalized[g.id] = optId;
+    normalized[g.id] = String(opt.id);
   }
   return { ok: true, normalized };
 }

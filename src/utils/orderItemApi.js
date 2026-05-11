@@ -14,11 +14,11 @@ function resolveSelectedAddOnsDisplay(product, selectedAddOns) {
     const optId = String(optIdRaw ?? '').trim();
     if (!optId) continue;
     const g = byGroupId.get(String(gid));
-    const gLabel = String(g ? g.nameEn || g.nameAr || g.id : gid).trim() || String(gid);
+    const gLabel = String(g ? g.nameEn || g.nameAr || g.name || g.id : gid).trim() || String(gid);
     let optLabel = optId;
     if (g && Array.isArray(g.options)) {
       const o = g.options.find((x) => String(x.id) === optId);
-      if (o) optLabel = String(o.nameEn || o.nameAr || o.id || optId).trim() || optId;
+      if (o) optLabel = String(o.nameEn || o.nameAr || o.name || o.id || optId).trim() || optId;
     }
     out[gLabel] = optLabel;
   }
