@@ -10,11 +10,29 @@ function resolveSelectedAddOnsDisplay(product, selectedAddOns) {
   const groups = Array.isArray(product.addOnGroups) ? product.addOnGroups : [];
   const byGroupId = new Map(groups.map((g) => [String(g.id), g]));
   const out = {};
+  const usedLabels = new Set();
+  const uniqueLabel = (label, fallback) => {
+    const base = String(label || fallback || 'Add-on').trim() || 'Add-on';
+    if (!usedLabels.has(base)) {
+      usedLabels.add(base);
+      return base;
+    }
+    const withId = `${base} (${fallback})`;
+    if (!usedLabels.has(withId)) {
+      usedLabels.add(withId);
+      return withId;
+    }
+    let i = 2;
+    while (usedLabels.has(`${withId} #${i}`)) i++;
+    const next = `${withId} #${i}`;
+    usedLabels.add(next);
+    return next;
+  };
   for (const [gid, optIdRaw] of Object.entries(selectedAddOns)) {
     const optId = String(optIdRaw ?? '').trim();
     if (!optId) continue;
     const g = byGroupId.get(String(gid));
-    const gLabel = String(g ? g.nameEn || g.nameAr || g.name || g.id : gid).trim() || String(gid);
+    const gLabel = uniqueLabel(g ? g.nameEn || g.nameAr || g.name || g.id : gid, gid);
     let optLabel = optId;
     if (g && Array.isArray(g.options)) {
       const o = g.options.find((x) => String(x.id) === optId);

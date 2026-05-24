@@ -1677,6 +1677,8 @@ The same response also includes **`arhebBoxRequests`**: all **Arheb Box** reques
 
 **`combinedOrders`** merges **store** rows and **Arheb Box** rows in one list, sorted by **`createdAt`** (newest first). Each item is the usual store order or box object with an extra **`orderType`**: `"store"` or `"arheb_box"`. Use this for a single “My orders” screen; **`orders`** and **`arhebBoxRequests`** remain for clients that already consume them separately. **`combinedCount`** is `combinedOrders.length`.
 
+Store order items may include **`selectedAddOns`** (stored group/option ids) and **`selectedAddOnsDisplay`** (human-readable group/option labels when the catalog product is still available). Checkout accepts add-on selections by option id or by option label (`name`, `nameAr`, `nameEn`) and normalizes stored values back to option ids. If a product has duplicate group labels, display labels are de-duplicated (for example `Choose From` and `Choose From (3)`) so all selected groups are visible in admin/driver responses.
+
 Store rows are loaded when **`orders.userId`** or **`orders.phoneNumber`** matches the authenticated user (covers legacy rows that only stored phone).
 
 **Success Response (200):**
@@ -2853,9 +2855,9 @@ console.log(data.data.popup);
 
 **“Coming soon” flag (for the app UI, not hardcoded):** **`GET /api/contact`** returns **`data.arhebBox`**: `{ comingSoon, paused, acceptingNewOrders }`. **`comingSoon`** is **`true`** if **`ARHEB_BOX_COMING_SOON`** is set on the server **or** **`arhebBoxComingSoon`** is enabled in **`PATCH /api/admin/info`** (stored in **`contact_us`**). Use it to show a badge or hide entry points; it does **not** block APIs by itself (use **`ARHEB_BOX_PAUSED`** for that).
 
-Requests are stored in `arheb_box_requests` with **sender/receiver** contacts, pickup & dropoff (lat/lng + address + `mapsUrl`), **payment** (`paymentMethod`, `whoPays`: `sender` | `receiver`), **trip amount** (`amount` in JOD), **distance** and **minimum price** (`distanceKm`, `minAmountJod`). **Arheb Box pricing is separate from store orders:** minimum parcel amount / delivery fee basis is **1 JOD for the first km + 0.5 JOD per additional km** (no cap). **`minAmountJod`** from **`POST /api/arheb-box/quote`** matches that formula. The client must call **quote** first, then send an `amount` ≥ `minAmountJod`. After a driver is assigned, **customer** `GET /api/arheb-box/:id` and list/detail responses include **`driverPhone`**. Order objects and Arheb Box rows may include **`createdAtJordan`** (human-readable **Asia/Amman** time) alongside UTC `createdAt`.
+Requests are stored in `arheb_box_requests` with **sender/receiver** contacts, pickup & dropoff (lat/lng + address + `mapsUrl`), **payment** (`paymentMethod`, `whoPays`: `sender` | `receiver`), **trip amount** (`amount` in JOD), **distance** and **minimum price** (`distanceKm`, `minAmountJod`). **Arheb Box pricing is separate from store orders:** minimum parcel amount / delivery fee basis is configured by SuperAdmin via **`GET/PATCH /api/admin/settings/checkout-fees`** fields **`arhebBoxFirstKmJod`**, **`arhebBoxPerKmJod`**, and optional **`arhebBoxMaxJod`**. Defaults remain **1 JOD first km + 0.5 JOD per extra km, no cap**. **`minAmountJod`** from **`POST /api/arheb-box/quote`** matches the active Arheb Box delivery-fee formula. The client must call **quote** first, then send an `amount` ≥ `minAmountJod`. After a driver is assigned, **customer** `GET /api/arheb-box/:id` and list/detail responses include **`driverPhone`**. Order objects and Arheb Box rows may include **`createdAtJordan`** (human-readable **Asia/Amman** time) alongside UTC `createdAt`.
 
-**Store vs Arheb Box (backend rules):** **Delivery fee** — store orders use configurable platform tiers (and overrides) in `src/utils/deliveryFees.js`. Arheb Box uses **1 JOD first km + 0.5 JOD per extra km, no cap** (`arhebBoxDeliveryFeeFromDistanceJod`). **Service fee** — store checkout uses the platform default or per-store override; **Arheb Box uses `serviceFee` 0** at quote and checkout (no 0.65 platform line). The **`arhebBoxServiceFeeJod`** field on App info is legacy and does not change Arheb Box pricing. **Checkout fees VAT** — store order and Arheb Box quote/checkout use **`feesTaxRate` 0** on fees. JoFotara XML tax behavior is separate (see `src/jofotara.js`). Admin unified **`GET /api/admin/orders`** uses **`totalAmount`** = cart subtotal for stores and **parcel `amount`** for Arheb Box rows; **`deliveryFee` / `serviceFee` / `feesTax` / `invoice`** on each row reflect the stored row.
+**Store vs Arheb Box (backend rules):** **Delivery fee** — store orders use configurable platform tiers (and overrides) in `src/utils/deliveryFees.js`; Arheb Box uses its own SuperAdmin-configured distance tiers. **Special-far desert pins** use a fixed fee configured by **`specialFarDeliveryFeeJod`** (default **10 JOD**) before dashboard fixed circular zones / remote pins / distance tiers. **Service fee** — store checkout uses the platform default or per-store override; **Arheb Box uses `arhebBoxServiceFeeJod`** from App info (editable on the same dashboard info screen). **Checkout fees VAT** — store order and Arheb Box quote/checkout use **`feesTaxRate` 0** on fees. JoFotara XML tax behavior is separate (see `src/jofotara.js`). Admin unified **`GET /api/admin/orders`** uses **`totalAmount`** = cart subtotal for stores and **parcel `amount`** for Arheb Box rows; **`deliveryFee` / `serviceFee` / `feesTax` / `invoice`** on each row reflect the stored row.
 
 ### Arheb Box quote (distance, minimum amount, delivery fee & tax)
 
@@ -2864,7 +2866,7 @@ Requests are stored in `arheb_box_requests` with **sender/receiver** contacts, p
 
 **Body:** same `pickup` / `dropoff` shape as submit (each with `latitude`, `longitude`). Optional **`weightKg`** (number, ≥ 0) for parity with submit; delivery fee is currently **distance-only** (same as create).
 
-**Response:** `distanceKm`, `minAmountJod`, **`deliveryFee`**, **`feesTax`** (0 with current **`feesTaxRate`**), **`serviceFee`** (always **0**), **`invoice`** (`deliveryFee`, `serviceFee`, `feesTax`, `feesTaxRate`, `total`), `currency: "JOD"`, `pricingNote`. `minAmountJod` is the minimum **parcel amount** (JOD) for the route, matching the delivery-fee formula **1 + 0.5×(km−1)** (no maximum).
+**Response:** `distanceKm`, `minAmountJod`, **`deliveryFee`**, **`feesTax`** (0 with current **`feesTaxRate`**), **`serviceFee`**, **`invoice`** (`deliveryFee`, `serviceFee`, `feesTax`, `feesTaxRate`, `total`), `currency: "JOD"`, `pricingNote`. `minAmountJod` is the minimum **parcel amount** (JOD) for the route, matching the active Arheb Box delivery-fee formula from **`GET /api/admin/settings/checkout-fees`**.
 
 ### Get Arheb Box request by ID (customer)
 
@@ -3210,8 +3212,8 @@ Single reference for every **`/api/admin/*`** route (mirrors `src/admin/routes.j
 |--------|----------|--------|-------|
 | GET | `/api/admin/settings/driver-commission` | A/S | Global commission defaults. |
 | PATCH | `/api/admin/settings/driver-commission` | A/S | Update defaults. |
-| GET | `/api/admin/settings/checkout-fees` | A/S | Platform checkout tiers. |
-| PATCH | `/api/admin/settings/checkout-fees` | Sup | Update platform fees. |
+| GET | `/api/admin/settings/checkout-fees` | A/S | Store checkout tiers + Arheb Box delivery tiers + special-far fixed fee. |
+| PATCH | `/api/admin/settings/checkout-fees` | Sup | Update store / Arheb Box / special-far fee settings. |
 | GET | `/api/admin/settings/delivery-fixed-zones` | A/S | Fixed delivery zones. |
 | PUT | `/api/admin/settings/delivery-fixed-zones` | Sup | Replace zones list. |
 
@@ -3606,14 +3608,16 @@ Same backing row as public contact info, plus **default driver delivery percent*
 
 **Access:** SuperAdmin and Admin can **read**; only **SuperAdmin** can **update** (`PATCH`).
 
-Platform-wide defaults for **store checkout** delivery (distance tiers), optional **flat** delivery fee, default **service fee**, and optional **delivery when cart ≥ threshold** (charge a fixed delivery amount when the items subtotal meets or exceeds a JOD threshold). Per-store overrides on **`PATCH /api/admin/stores/:id`** still apply (see below).
+Platform-wide defaults for **store checkout** delivery (distance tiers), optional **flat** delivery fee, default **service fee**, optional **delivery when cart ≥ threshold** (charge a fixed delivery amount when the items subtotal meets or exceeds a JOD threshold), **Arheb Box** delivery tiers, and the **special-far** fixed delivery fee. Per-store overrides on **`PATCH /api/admin/stores/:id`** still apply to store checkout only (see below).
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/admin/settings/checkout-fees` | Returns `firstKmJod`, `perKmJod`, `maxJod`, `defaultServiceFeeJod`, `flatDeliveryFeeJod`, `deliveryOverCartThresholdJod`, `deliveryFeeAboveJod`, and a short **`note`**. |
-| PATCH | `/api/admin/settings/checkout-fees` | **SuperAdmin.** Body: any of `firstKmJod`, `perKmJod`, `maxJod`, `defaultServiceFeeJod`, `flatDeliveryFeeJod`, `deliveryOverCartThresholdJod`, `deliveryFeeAboveJod`. **`deliveryOverCartThresholdJod`** and **`deliveryFeeAboveJod`** must be set together or both omitted (validated server-side). |
+| GET | `/api/admin/settings/checkout-fees` | Returns store checkout fields `firstKmJod`, `perKmJod`, `maxJod`, `defaultServiceFeeJod`, `flatDeliveryFeeJod`, `deliveryOverCartThresholdJod`, `deliveryFeeAboveJod`, plus Arheb Box fields **`arhebBoxFirstKmJod`**, **`arhebBoxPerKmJod`**, **`arhebBoxMaxJod`** (nullable), **`specialFarDeliveryFeeJod`**, and a short **`note`**. |
+| PATCH | `/api/admin/settings/checkout-fees` | **SuperAdmin.** Body: any of `firstKmJod`, `perKmJod`, `maxJod`, `defaultServiceFeeJod`, `flatDeliveryFeeJod`, `deliveryOverCartThresholdJod`, `deliveryFeeAboveJod`, **`arhebBoxFirstKmJod`**, **`arhebBoxPerKmJod`**, **`arhebBoxMaxJod`** (send `null` / empty to clear cap), **`specialFarDeliveryFeeJod`**. **`deliveryOverCartThresholdJod`** and **`deliveryFeeAboveJod`** must be set together or both omitted (validated server-side). |
 
 **Per-store overrides** (on **`PATCH /api/admin/stores/:id`** and bulk checkout policy): `checkoutDeliveryFeeZero`, `checkoutDeliveryFeeJod`, `checkoutServiceFeeDisabled`, `checkoutServiceFeeJod`, **`checkoutDeliveryOverCartThresholdJod`**, **`checkoutDeliveryFeeAboveJod`** (per-store cart threshold delivery; takes precedence over the platform threshold when applicable). Precedence among delivery rules is implemented in `src/utils/deliveryFees.js` (special zones and fixed overrides still win as documented in code).
+
+**Arheb Box delivery fields:** defaults are **`arhebBoxFirstKmJod: 1`**, **`arhebBoxPerKmJod: 0.5`**, **`arhebBoxMaxJod: null`** (no cap), and **`specialFarDeliveryFeeJod: 10`**. Arheb Box quote/create first checks special-far pins, then dashboard fixed zones, then remote pins, then these distance tiers. Store checkout also uses **`specialFarDeliveryFeeJod`** for special-far pins.
 
 ### Admin Home Banners & Offers
 
@@ -3830,6 +3834,8 @@ Returns the driver's home dashboard: profile, stats (**today/total profit** = dr
         "products": [],
         "totalPrice": 50.0,
         "deliveryFee": 2.0,
+        "serviceFee": 0.75,
+        "feesTax": 0,
         "profitJod": 1.3,
         "customerName": "Sara",
         "address": "123 Main St",
@@ -3860,6 +3866,7 @@ Returns the driver's home dashboard: profile, stats (**today/total profit** = dr
 - **`todayProfit` / `totalProfit`**: sum of **`driverEarnings`** (or computed share) on **Delivered** orders (today vs all time).
 - **`todayDeliveryFees` / `totalDeliveryFees`**: sum of **`deliveryFee`** on those same sets (informational).
 - **`todayEarnings` / `totalEarnings`**: aliases for **`todayProfit` / `totalProfit`** (backward compatible).
+- Driver-facing store order payloads in **`currentOrder`**, **`availableOrders`**, **`driverToPickOrders`**, and **`inProgressOrders`** include **`deliveryFee`**, **`serviceFee`**, and **`feesTax`**.
 
 ---
 
@@ -4177,6 +4184,8 @@ On other driver endpoints (`GET /api/driver/home`, **`filter=available`** / **`i
 | **`customerName`** | Customer display name from the order. |
 | **`customerPhone`** | Customer phone on the order. |
 | **`deliveryFee`** | Delivery fee for the order (**JOD**, 2 decimal places). |
+| **`serviceFee`** | Store order service fee (**JOD**, 2 decimal places). Present on driver-facing store order payloads including **`currentOrder`**. |
+| **`feesTax`** | Tax on delivery + service fees (**JOD**, currently `0` with `feesTaxRate` 0). Present on driver-facing store order payloads including **`currentOrder`**. |
 | **`profitJod`** | Driver’s earnings for this order (**JOD**) — duplicate of **`driverShare.earningsJod`** for convenience in the UI (`null` only if commission could not be resolved). |
 | **`orderDate`**, **`createdAt`** | Order creation time (same value; ISO string from DB). |
 | **`driverShare`** | Commission breakdown (see below). |

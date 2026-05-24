@@ -5146,8 +5146,12 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           flatDeliveryFeeJod: tiers.flatDeliveryFeeJod,
           deliveryOverCartThresholdJod: tiers.deliveryOverCartThresholdJod,
           deliveryFeeAboveJod: tiers.deliveryFeeAboveJod,
+          arhebBoxFirstKmJod: tiers.arhebBoxFirstKmJod,
+          arhebBoxPerKmJod: tiers.arhebBoxPerKmJod,
+          arhebBoxMaxJod: tiers.arhebBoxMaxJod,
+          specialFarDeliveryFeeJod: tiers.specialFarDeliveryFeeJod,
           note:
-            'SuperAdmin: tiers, optional flatDeliveryFeeJod (e.g. 1 = 1 JOD delivery everywhere except special-far, dashboard fixed zones, remote pins), and optional deliveryOverCartThresholdJod + deliveryFeeAboveJod (when cart total >= threshold, charge feeAbove). Per-store overrides: checkoutDeliveryFeeZero, checkoutDeliveryFeeJod, checkoutServiceFeeDisabled, checkoutServiceFeeJod, checkoutDeliveryOverCartThresholdJod, checkoutDeliveryFeeAboveJod.',
+            'SuperAdmin: store tiers, optional flatDeliveryFeeJod (normal store delivery), cart-threshold delivery fee, Arheb Box distance tiers, and special-far fixed fee (default 10 JOD). Per-store overrides apply to store checkout only.',
         },
       });
     } catch (e) {
@@ -5173,6 +5177,18 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       }
       if (Object.prototype.hasOwnProperty.call(body, 'deliveryFeeAboveJod')) {
         patch.deliveryFeeAboveJod = body.deliveryFeeAboveJod;
+      }
+      if (Object.prototype.hasOwnProperty.call(body, 'arhebBoxFirstKmJod')) {
+        patch.arhebBoxFirstKmJod = body.arhebBoxFirstKmJod;
+      }
+      if (Object.prototype.hasOwnProperty.call(body, 'arhebBoxPerKmJod')) {
+        patch.arhebBoxPerKmJod = body.arhebBoxPerKmJod;
+      }
+      if (Object.prototype.hasOwnProperty.call(body, 'arhebBoxMaxJod')) {
+        patch.arhebBoxMaxJod = body.arhebBoxMaxJod;
+      }
+      if (Object.prototype.hasOwnProperty.call(body, 'specialFarDeliveryFeeJod')) {
+        patch.specialFarDeliveryFeeJod = body.specialFarDeliveryFeeJod;
       }
       const tiers = setPlatformCheckoutFeeTiers(db, patch);
       logActivity(db, req, {
