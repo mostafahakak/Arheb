@@ -308,6 +308,13 @@ function arhebBoxDeliveryFeeFromDistanceJod(distanceKm, dropoffLat, dropoffLng, 
   const beyondFirst = Math.max(0, d - 1);
   const remote = remoteDeliveryZoneFixedFeeJod(dropoffLat, dropoffLng);
   if (remote != null) return remote;
+  const flatRaw = tiers?.arhebBoxFlatDeliveryFeeJod;
+  if (flatRaw != null && String(flatRaw).trim() !== '') {
+    const fv = Number(flatRaw);
+    if (Number.isFinite(fv) && fv >= 0) {
+      return round2(fv);
+    }
+  }
   const firstKm = nonNegativeNumberOrNull(tiers?.arhebBoxFirstKmJod) ?? 1;
   const perKm = nonNegativeNumberOrNull(tiers?.arhebBoxPerKmJod) ?? 0.5;
   const maxJod = nonNegativeNumberOrNull(tiers?.arhebBoxMaxJod);

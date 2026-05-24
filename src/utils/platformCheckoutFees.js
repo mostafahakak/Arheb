@@ -11,6 +11,7 @@ const DEFAULT_ROW = {
   arhebBoxFirstKmJod: 1,
   arhebBoxPerKmJod: 0.5,
   arhebBoxMaxJod: null,
+  arhebBoxFlatDeliveryFeeJod: null,
   specialFarDeliveryFeeJod: 10,
 };
 
@@ -62,6 +63,11 @@ function ensurePlatformCheckoutFeesTable(db) {
   } catch (e) {
     /* exists */
   }
+  try {
+    db.exec(`ALTER TABLE platform_checkout_fees ADD COLUMN arhebBoxFlatDeliveryFeeJod REAL`);
+  } catch (e) {
+    /* exists */
+  }
   const row = db.prepare('SELECT id FROM platform_checkout_fees WHERE id = 1').get();
   if (!row) {
     db.prepare(
@@ -88,7 +94,8 @@ function getPlatformCheckoutFeeTiers(db) {
   const r = db.prepare(
     `SELECT firstKmJod, perKmJod, maxJod, defaultServiceFeeJod, flatDeliveryFeeJod,
       deliveryOverCartThresholdJod, deliveryFeeAboveJod,
-      arhebBoxFirstKmJod, arhebBoxPerKmJod, arhebBoxMaxJod, specialFarDeliveryFeeJod
+      arhebBoxFirstKmJod, arhebBoxPerKmJod, arhebBoxMaxJod, arhebBoxFlatDeliveryFeeJod,
+      specialFarDeliveryFeeJod
      FROM platform_checkout_fees WHERE id = 1`,
   ).get();
   let flat = null;
@@ -110,6 +117,11 @@ function getPlatformCheckoutFeeTiers(db) {
   if (r?.arhebBoxMaxJod != null && String(r.arhebBoxMaxJod).trim() !== '') {
     const m = Number(r.arhebBoxMaxJod);
     if (Number.isFinite(m) && m >= 0) arhebBoxMax = m;
+  }
+  let arhebBoxFlat = null;
+  if (r?.arhebBoxFlatDeliveryFeeJod != null && String(r.arhebBoxFlatDeliveryFeeJod).trim() !== '') {
+    const f = Number(r.arhebBoxFlatDeliveryFeeJod);
+    if (Number.isFinite(f) && f >= 0) arhebBoxFlat = f;
   }
   return {
     firstKmJod: r?.firstKmJod != null ? Number(r.firstKmJod) : DEFAULT_ROW.firstKmJod,
@@ -156,6 +168,7 @@ function setPlatformCheckoutFeeTiers(db, patch) {
   const overThresholdNext = nullableNonNegative('deliveryOverCartThresholdJod');
   const feeAboveNext = nullableNonNegative('deliveryFeeAboveJod');
   const arhebBoxMaxNext = nullableNonNegative('arhebBoxMaxJod');
+  const arhebBoxFlatNext = nullableNonNegative('arhebBoxFlatDeliveryFeeJod');
 
   if ((overThresholdNext == null) !== (feeAboveNext == null)) {
     const err = new Error(
@@ -179,6 +192,7 @@ function setPlatformCheckoutFeeTiers(db, patch) {
     arhebBoxPerKmJod:
       patch.arhebBoxPerKmJod != null ? Number(patch.arhebBoxPerKmJod) : cur.arhebBoxPerKmJod,
     arhebBoxMaxJod: arhebBoxMaxNext,
+    arhebBoxFlatDeliveryFeeJod: arhebBoxFlatNext,
     specialFarDeliveryFeeJod:
       patch.specialFarDeliveryFeeJod != null ? Number(patch.specialFarDeliveryFeeJod) : cur.specialFarDeliveryFeeJod,
   };
@@ -202,7 +216,7 @@ function setPlatformCheckoutFeeTiers(db, patch) {
      SET firstKmJod = ?, perKmJod = ?, maxJod = ?, defaultServiceFeeJod = ?,
        flatDeliveryFeeJod = ?, deliveryOverCartThresholdJod = ?, deliveryFeeAboveJod = ?,
        arhebBoxFirstKmJod = ?, arhebBoxPerKmJod = ?, arhebBoxMaxJod = ?,
-       specialFarDeliveryFeeJod = ?, updatedAt = datetime('now')
+       arhebBoxFlatDeliveryFeeJod = ?, specialFarDeliveryFeeJod = ?, updatedAt = datetime('now')
      WHERE id = 1`,
   ).run(
     next.firstKmJod,
@@ -215,6 +229,7 @@ function setPlatformCheckoutFeeTiers(db, patch) {
     next.arhebBoxFirstKmJod,
     next.arhebBoxPerKmJod,
     next.arhebBoxMaxJod,
+    next.arhebBoxFlatDeliveryFeeJod,
     next.specialFarDeliveryFeeJod,
   );
   return getPlatformCheckoutFeeTiers(db);

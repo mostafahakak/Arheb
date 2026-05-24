@@ -5149,9 +5149,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           arhebBoxFirstKmJod: tiers.arhebBoxFirstKmJod,
           arhebBoxPerKmJod: tiers.arhebBoxPerKmJod,
           arhebBoxMaxJod: tiers.arhebBoxMaxJod,
+          arhebBoxFlatDeliveryFeeJod: tiers.arhebBoxFlatDeliveryFeeJod,
           specialFarDeliveryFeeJod: tiers.specialFarDeliveryFeeJod,
           note:
-            'SuperAdmin: store tiers, optional flatDeliveryFeeJod (normal store delivery), cart-threshold delivery fee, Arheb Box distance tiers, and special-far fixed fee (default 10 JOD). Per-store overrides apply to store checkout only.',
+            'SuperAdmin: store tiers, optional flatDeliveryFeeJod (normal store delivery), cart-threshold delivery fee, Arheb Box distance tiers, optional arhebBoxFlatDeliveryFeeJod (normal Arheb Box delivery), and special-far fixed fee (default 10 JOD). Per-store overrides apply to store checkout only.',
         },
       });
     } catch (e) {
@@ -5186,6 +5187,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       }
       if (Object.prototype.hasOwnProperty.call(body, 'arhebBoxMaxJod')) {
         patch.arhebBoxMaxJod = body.arhebBoxMaxJod;
+      }
+      if (Object.prototype.hasOwnProperty.call(body, 'arhebBoxFlatDeliveryFeeJod')) {
+        patch.arhebBoxFlatDeliveryFeeJod = body.arhebBoxFlatDeliveryFeeJod;
       }
       if (Object.prototype.hasOwnProperty.call(body, 'specialFarDeliveryFeeJod')) {
         patch.specialFarDeliveryFeeJod = body.specialFarDeliveryFeeJod;
