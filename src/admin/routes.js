@@ -68,7 +68,12 @@ const {
   assignDriverToOrder,
 } = require('../utils/driverCommission');
 const { getStoreFcmToken } = require('../storeFcm');
-const { enrichWithJordanTime, jordanCalendarDateYmd } = require('../utils/jordanTime');
+const {
+  enrichWithJordanTime,
+  jordanCalendarDateYmd,
+  appendLooseSqlCreatedAtDateRange,
+  filterRowsByJordanCreatedAtRange,
+} = require('../utils/jordanTime');
 const { normalizeHomeContentLinkArray } = require('../utils/homeContentLinks');
 const {
   parseLatLongFromGoogleMapsUrl,
@@ -2227,47 +2232,50 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         }
       }
     }
-    if (!range.allDates && range.dateFrom) {
-      conditions.push('date(createdAt) >= date(?)');
-      params.push(range.dateFrom);
-    }
-    if (!range.allDates && range.dateTo) {
-      conditions.push('date(createdAt) <= date(?)');
-      params.push(range.dateTo);
+    if (!range.allDates) {
+      appendLooseSqlCreatedAtDateRange(conditions, params, range.dateFrom, range.dateTo);
     }
     const wherePrefix = conditions.length ? ' WHERE ' + conditions.join(' AND ') + ' AND ' : ' WHERE ';
-    const activeSql = 'SELECT COUNT(*) AS n FROM orders' + wherePrefix + "(status IS NULL OR status NOT IN ('Delivered', 'Cancelled'))";
-    const deliveredSql = "SELECT COUNT(*) AS n FROM orders" + wherePrefix + "status = 'Delivered'";
-    const cancelledSql = "SELECT COUNT(*) AS n FROM orders" + wherePrefix + "status = 'Cancelled'";
-    let active = db.prepare(activeSql).get(...params)?.n ?? 0;
-    let delivered = db.prepare(deliveredSql).get(...params)?.n ?? 0;
-    let cancelled = db.prepare(cancelledSql).get(...params)?.n ?? 0;
+    const activeSql = 'SELECT createdAt, status FROM orders' + wherePrefix + "(status IS NULL OR status NOT IN ('Delivered', 'Cancelled'))";
+    const deliveredSql = "SELECT createdAt, status FROM orders" + wherePrefix + "status = 'Delivered'";
+    const cancelledSql = "SELECT createdAt, status FROM orders" + wherePrefix + "status = 'Cancelled'";
+    let activeRows = db.prepare(activeSql).all(...params);
+    let deliveredRows = db.prepare(deliveredSql).all(...params);
+    let cancelledRows = db.prepare(cancelledSql).all(...params);
+    if (!range.allDates) {
+      activeRows = filterRowsByJordanCreatedAtRange(activeRows, range.dateFrom, range.dateTo);
+      deliveredRows = filterRowsByJordanCreatedAtRange(deliveredRows, range.dateFrom, range.dateTo);
+      cancelledRows = filterRowsByJordanCreatedAtRange(cancelledRows, range.dateFrom, range.dateTo);
+    }
+    let active = activeRows.length;
+    let delivered = deliveredRows.length;
+    let cancelled = cancelledRows.length;
 
     if (req.admin.role !== ROLES.STORE_ADMIN) {
       try {
         const boxConds = [];
         const boxParams = [];
-        if (!range.allDates && range.dateFrom) {
-          boxConds.push('date(createdAt) >= date(?)');
-          boxParams.push(range.dateFrom);
-        }
-        if (!range.allDates && range.dateTo) {
-          boxConds.push('date(createdAt) <= date(?)');
-          boxParams.push(range.dateTo);
+        if (!range.allDates) {
+          appendLooseSqlCreatedAtDateRange(boxConds, boxParams, range.dateFrom, range.dateTo);
         }
         const boxPrefix = boxConds.length ? boxConds.join(' AND ') + ' AND ' : '';
-        const boxActive = db
-          .prepare('SELECT COUNT(*) AS n FROM arheb_box_requests WHERE ' + boxPrefix + "status NOT IN ('delivered', 'cancelled')")
-          .get(...boxParams)?.n ?? 0;
-        const boxDelivered = db
-          .prepare('SELECT COUNT(*) AS n FROM arheb_box_requests WHERE ' + boxPrefix + "status = 'delivered'")
-          .get(...boxParams)?.n ?? 0;
-        const boxCancelled = db
-          .prepare('SELECT COUNT(*) AS n FROM arheb_box_requests WHERE ' + boxPrefix + "status = 'cancelled'")
-          .get(...boxParams)?.n ?? 0;
-        active += boxActive;
-        delivered += boxDelivered;
-        cancelled += boxCancelled;
+        let boxActiveRows = db
+          .prepare('SELECT createdAt, status FROM arheb_box_requests WHERE ' + boxPrefix + "status NOT IN ('delivered', 'cancelled')")
+          .all(...boxParams);
+        let boxDeliveredRows = db
+          .prepare('SELECT createdAt, status FROM arheb_box_requests WHERE ' + boxPrefix + "status = 'delivered'")
+          .all(...boxParams);
+        let boxCancelledRows = db
+          .prepare('SELECT createdAt, status FROM arheb_box_requests WHERE ' + boxPrefix + "status = 'cancelled'")
+          .all(...boxParams);
+        if (!range.allDates) {
+          boxActiveRows = filterRowsByJordanCreatedAtRange(boxActiveRows, range.dateFrom, range.dateTo);
+          boxDeliveredRows = filterRowsByJordanCreatedAtRange(boxDeliveredRows, range.dateFrom, range.dateTo);
+          boxCancelledRows = filterRowsByJordanCreatedAtRange(boxCancelledRows, range.dateFrom, range.dateTo);
+        }
+        active += boxActiveRows.length;
+        delivered += boxDeliveredRows.length;
+        cancelled += boxCancelledRows.length;
       } catch (e) { /* table may not exist */ }
     }
 
@@ -2368,8 +2376,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         conditions.push('id = ?');
         params.push(orderIdNum);
       } else {
-        if (!range.allDates && range.dateFrom) { conditions.push("date(createdAt) >= date(?)"); params.push(range.dateFrom); }
-        if (!range.allDates && range.dateTo) { conditions.push("date(createdAt) <= date(?)"); params.push(range.dateTo); }
+        if (!range.allDates) {
+          appendLooseSqlCreatedAtDateRange(conditions, params, range.dateFrom, range.dateTo);
+        }
       }
       if (statusFilter === 'active') {
         conditions.push("(status IS NULL OR status NOT IN ('Delivered', 'Cancelled'))");
@@ -2452,8 +2461,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           boxCond.push('id = ?');
           boxParams.push(orderIdNum);
         } else {
-          if (!range.allDates && range.dateFrom) { boxCond.push("date(createdAt) >= date(?)"); boxParams.push(range.dateFrom); }
-          if (!range.allDates && range.dateTo) { boxCond.push("date(createdAt) <= date(?)"); boxParams.push(range.dateTo); }
+          if (!range.allDates) {
+            appendLooseSqlCreatedAtDateRange(boxCond, boxParams, range.dateFrom, range.dateTo);
+          }
         }
         if (status && String(status).trim()) { boxCond.push('status = ?'); boxParams.push(String(status).trim()); }
         if (statusFilter === 'active') {
@@ -2529,13 +2539,17 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     }
 
     const merged = [...storeOrders, ...boxOrders];
-    merged.sort((a, b) => {
+    const dateFiltered =
+      !range.allDates && !filterByOrderId
+        ? filterRowsByJordanCreatedAtRange(merged, range.dateFrom, range.dateTo)
+        : merged;
+    dateFiltered.sort((a, b) => {
       const da = new Date(a.createdAt || 0).getTime();
       const db2 = new Date(b.createdAt || 0).getTime();
       if (db2 !== da) return db2 - da;
       return (b.id || 0) - (a.id || 0);
     });
-    return { orders: merged, dateRange: range };
+    return { orders: dateFiltered, dateRange: range };
   }
 
   app.get('/api/admin/orders', auth, (req, res) => {
@@ -3585,32 +3599,28 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       storeConds.push('(CAST(storeId AS TEXT) = ? OR storeId IS NULL)');
       storeParams.push(String(req.admin.storeId));
     }
-    if (!range.allDates && range.dateFrom) {
-      storeConds.push('date(createdAt) >= date(?)');
-      storeParams.push(range.dateFrom);
-    }
-    if (!range.allDates && range.dateTo) {
-      storeConds.push('date(createdAt) <= date(?)');
-      storeParams.push(range.dateTo);
+    if (!range.allDates) {
+      appendLooseSqlCreatedAtDateRange(storeConds, storeParams, range.dateFrom, range.dateTo);
     }
     const storeWhere = storeConds.length ? ' WHERE ' + storeConds.join(' AND ') : '';
-    const orders = db.prepare('SELECT * FROM orders' + storeWhere).all(...storeParams);
+    let orders = db.prepare('SELECT * FROM orders' + storeWhere).all(...storeParams);
+    if (!range.allDates) {
+      orders = filterRowsByJordanCreatedAtRange(orders, range.dateFrom, range.dateTo);
+    }
 
     let boxRows = [];
     if (req.admin.role === ROLES.ADMIN || req.admin.role === ROLES.SUPERADMIN) {
       try {
         const bc = [];
         const bp = [];
-        if (!range.allDates && range.dateFrom) {
-          bc.push('date(createdAt) >= date(?)');
-          bp.push(range.dateFrom);
-        }
-        if (!range.allDates && range.dateTo) {
-          bc.push('date(createdAt) <= date(?)');
-          bp.push(range.dateTo);
+        if (!range.allDates) {
+          appendLooseSqlCreatedAtDateRange(bc, bp, range.dateFrom, range.dateTo);
         }
         const bw = bc.length ? ' WHERE ' + bc.join(' AND ') : '';
         boxRows = db.prepare('SELECT * FROM arheb_box_requests' + bw).all(...bp);
+        if (!range.allDates) {
+          boxRows = filterRowsByJordanCreatedAtRange(boxRows, range.dateFrom, range.dateTo);
+        }
       } catch (e) {
         boxRows = [];
       }

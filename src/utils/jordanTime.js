@@ -115,7 +115,7 @@ function nowOrderCreatedAtForDb(date = new Date()) {
   return `${y}-${mo}-${da}T${h}:${mi}:${se}.${ms}${offset}`;
 }
 
-/** Calendar date YYYY-MM-DD in Asia/Amman (for SQL date(createdAt) filters). */
+/** Calendar date YYYY-MM-DD in Asia/Amman. */
 function jordanCalendarDateYmd(date = new Date()) {
   const d = date instanceof Date ? date : new Date(date);
   const base = isNaN(d.getTime()) ? new Date() : d;
@@ -129,6 +129,50 @@ function jordanCalendarDateYmd(date = new Date()) {
   return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
+/** Shift a YYYY-MM-DD calendar string by N days (UTC date math on components). */
+function addDaysToYmd(ymd, deltaDays) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd || '').trim());
+  if (!m) return String(ymd || '').trim();
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + Number(deltaDays), 12));
+  return d.toISOString().slice(0, 10);
+}
+
+/** Jordan calendar YYYY-MM-DD for a stored order timestamp (UTC, offset, or naive UTC). */
+function jordanYmdFromStoredInstant(value) {
+  const d = parseInstantForJordan(value);
+  if (!d) return null;
+  return jordanCalendarDateYmd(d);
+}
+
+function isJordanYmdInRange(ymd, dateFrom, dateTo) {
+  if (!ymd) return false;
+  if (dateFrom && ymd < dateFrom) return false;
+  if (dateTo && ymd > dateTo) return false;
+  return true;
+}
+
+/**
+ * Widen SQL `date(createdAt)` pre-filter by ±1 day so mixed UTC/Jordan strings are not missed;
+ * apply {@link filterRowsByJordanCreatedAtRange} afterward for the exact Jordan calendar range.
+ */
+function appendLooseSqlCreatedAtDateRange(conditions, params, dateFrom, dateTo) {
+  if (dateFrom) {
+    conditions.push('date(createdAt) >= date(?)');
+    params.push(addDaysToYmd(dateFrom, -1));
+  }
+  if (dateTo) {
+    conditions.push('date(createdAt) <= date(?)');
+    params.push(addDaysToYmd(dateTo, 1));
+  }
+}
+
+function filterRowsByJordanCreatedAtRange(rows, dateFrom, dateTo, key = 'createdAt') {
+  if (!dateFrom && !dateTo) return rows;
+  return rows.filter((row) =>
+    isJordanYmdInRange(jordanYmdFromStoredInstant(row?.[key]), dateFrom, dateTo),
+  );
+}
+
 module.exports = {
   JORDAN_IANA_TIMEZONE,
   parseInstantForJordan,
@@ -136,4 +180,9 @@ module.exports = {
   enrichWithJordanTime,
   nowOrderCreatedAtForDb,
   jordanCalendarDateYmd,
+  addDaysToYmd,
+  jordanYmdFromStoredInstant,
+  isJordanYmdInRange,
+  appendLooseSqlCreatedAtDateRange,
+  filterRowsByJordanCreatedAtRange,
 };
