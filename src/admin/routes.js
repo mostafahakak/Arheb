@@ -383,7 +383,24 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
 
   /** JSON/catalog store ids may be number or string; DB TEXT may differ — compare as strings. */
   function sameStoreId(a, b) {
-    return String(a ?? '') === String(b ?? '');
+    return String(a ?? '').trim() === String(b ?? '').trim();
+  }
+
+  /** Prefer live DB storeId (JWT may be stale after admin reassignment). */
+  function resolveStoreAdminStoreId(req) {
+    if (req.admin.role !== ROLES.STORE_ADMIN) return null;
+    const row = findAdminById.get(req.admin.adminId);
+    const sid = row?.storeId ?? req.admin.storeId;
+    return sid != null && String(sid).trim() !== '' ? String(sid).trim() : null;
+  }
+
+  /** Match list filter: store admin sees own store orders and legacy rows with null storeId. */
+  function storeAdminMayAccessOrder(order, req) {
+    if (req.admin.role !== ROLES.STORE_ADMIN) return true;
+    if (order.storeId == null || String(order.storeId).trim() === '') return true;
+    const adminStoreId = resolveStoreAdminStoreId(req);
+    if (!adminStoreId) return false;
+    return sameStoreId(order.storeId, adminStoreId);
   }
 
   const auth = authenticateAdmin(JWT_SECRET);
@@ -2220,8 +2237,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     const conditions = [];
     const params = [];
     if (req.admin.role === ROLES.STORE_ADMIN) {
+      const adminStoreId = resolveStoreAdminStoreId(req);
       conditions.push('(CAST(storeId AS TEXT) = ? OR storeId IS NULL)');
-      params.push(String(req.admin.storeId));
+      params.push(adminStoreId != null ? adminStoreId : '__no_store__');
     } else if (req.admin.role === ROLES.ADMIN || req.admin.role === ROLES.SUPERADMIN) {
       const storeIdsRaw = req.query.storeIds || req.query.storeId;
       if (storeIdsRaw) {
@@ -2360,8 +2378,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       const params = [];
 
       if (req.admin.role === ROLES.STORE_ADMIN) {
+        const adminStoreId = resolveStoreAdminStoreId(req);
         conditions.push('(CAST(storeId AS TEXT) = ? OR storeId IS NULL)');
-        params.push(String(req.admin.storeId));
+        params.push(adminStoreId != null ? adminStoreId : '__no_store__');
       } else if (req.admin.role === ROLES.ADMIN || req.admin.role === ROLES.SUPERADMIN) {
         const storeIdsRaw = storeIds || storeId;
         if (storeIdsRaw) {
@@ -2611,7 +2630,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
 
     const order = findOrderById.get(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && !sameStoreId(order.storeId, req.admin.storeId)) {
+    if (!storeAdminMayAccessOrder(order, req)) {
       return res.status(403).json({ success: false, message: 'Access denied to this order' });
     }
     const items = findOrderItems.all(orderId);
@@ -2643,7 +2662,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && !sameStoreId(order.storeId, req.admin.storeId)) {
+    if (!storeAdminMayAccessOrder(order, req)) {
       return res.status(403).json({ success: false, message: 'Access denied to this order' });
     }
     const currentStatusLower = String(order.status || '').trim().toLowerCase();
@@ -2758,7 +2777,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (req.admin.role === ROLES.STORE_ADMIN && (order.storeId == null || !sameStoreId(order.storeId, req.admin.storeId))) {
+    if (!storeAdminMayAccessOrder(order, req)) {
       return res.status(403).json({ success: false, message: 'Access denied to this order' });
     }
     if (req.admin.role === ROLES.STORE_ADMIN) {
@@ -2843,7 +2862,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && !sameStoreId(order.storeId, req.admin.storeId)) {
+    if (!storeAdminMayAccessOrder(order, req)) {
       return res.status(403).json({ success: false, message: 'Access denied to this order' });
     }
     let drivers = [];
@@ -2871,7 +2890,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && !sameStoreId(order.storeId, req.admin.storeId)) {
+    if (!storeAdminMayAccessOrder(order, req)) {
       return res.status(403).json({ success: false, message: 'Access denied to this order' });
     }
     let drivers = [];
@@ -3005,7 +3024,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && !sameStoreId(order.storeId, req.admin.storeId)) {
+    if (!storeAdminMayAccessOrder(order, req)) {
       return res.status(403).json({ success: false, message: 'Access denied to this order' });
     }
     const statusLower = (order.status || '').toLowerCase();
@@ -3253,7 +3272,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
 
     const order = findOrderById.get(paramId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && !sameStoreId(order.storeId, req.admin.storeId)) {
+    if (!storeAdminMayAccessOrder(order, req)) {
       return res.status(403).json({ success: false, message: 'Access denied to this order' });
     }
     let getOrderTrackingState;
@@ -3290,7 +3309,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (req.admin.role === ROLES.STORE_ADMIN && order.storeId != null && !sameStoreId(order.storeId, req.admin.storeId)) {
+    if (!storeAdminMayAccessOrder(order, req)) {
       return res.status(403).json({ success: false, message: 'Access denied to this order' });
     }
     const storesList = loadStores();
@@ -3596,8 +3615,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     const storeConds = [];
     const storeParams = [];
     if (req.admin.role === ROLES.STORE_ADMIN) {
+      const adminStoreId = resolveStoreAdminStoreId(req);
       storeConds.push('(CAST(storeId AS TEXT) = ? OR storeId IS NULL)');
-      storeParams.push(String(req.admin.storeId));
+      storeParams.push(adminStoreId != null ? adminStoreId : '__no_store__');
     }
     if (!range.allDates) {
       appendLooseSqlCreatedAtDateRange(storeConds, storeParams, range.dateFrom, range.dateTo);
