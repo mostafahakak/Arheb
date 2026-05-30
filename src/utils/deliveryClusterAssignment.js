@@ -5,7 +5,7 @@
  * - Otherwise each cluster takes the next nearest-to-store online driver (no per-driver order cap).
  */
 
-const { haversineKm } = require('../driverPresence');
+const { haversineKm, broadcastDriverOrdersUpdated } = require('../driverPresence');
 const { assignDriverToOrder } = require('./driverCommission');
 const fcm = require('../fcm');
 const { emitDriverDeliveryRequest } = require('../driverPresence');
@@ -70,18 +70,19 @@ function findExistingDriverForCluster(db, cluster, storeIdStr, onlineSorted, max
     const driverId = d.driverId;
     let existing;
     try {
+      const activeStatuses = "('Preparing', 'In progress', 'Being prepared', 'Driver to pick', 'On the way')";
       if (storeIdStr == null) {
         existing = db
           .prepare(
             `SELECT addressLat, addressLong FROM orders
-             WHERE driverId = ? AND status = 'Preparing' AND storeId IS NULL`,
+             WHERE driverId = ? AND status IN ${activeStatuses} AND storeId IS NULL`,
           )
           .all(driverId);
       } else {
         existing = db
           .prepare(
             `SELECT addressLat, addressLong FROM orders
-             WHERE driverId = ? AND status = 'Preparing' AND CAST(storeId AS TEXT) = ?`,
+             WHERE driverId = ? AND status IN ${activeStatuses} AND CAST(storeId AS TEXT) = ?`,
           )
           .all(driverId, storeIdStr);
       }
@@ -255,6 +256,32 @@ function runDeliveryClusterAutoAssign(db, io, storeId, ctx, options = {}) {
       const full = db.prepare('SELECT * FROM orders WHERE id = ?').get(o.id);
       notifyDriverAssigned(db, io, o.id, full, driverId, store);
       emitOrderStatus(o.id, full?.status || 'In progress');
+      if (full?.phoneNumber) {
+        fcm
+          .sendToUserByPhone(
+            db,
+            full.phoneNumber,
+            'Driver assigned',
+            `A driver has been assigned to Order #${o.id}.`,
+            null,
+            {
+              orderId: String(o.id),
+              status: String(full?.status || 'In progress'),
+              type: 'order_tracking',
+              screen: 'order_details',
+              deepLink: `arheb://orders/${o.id}`,
+              click_action: 'FLUTTER_NOTIFICATION_CLICK',
+            },
+          )
+          .catch(() => {});
+      }
+      if (io) {
+        try {
+          broadcastDriverOrdersUpdated(io, { type: 'order_accepted', orderId: o.id, driverId });
+        } catch (e) {
+          /* ignore */
+        }
+      }
       assigned.push({ orderId: o.id, driverId });
     }
   }

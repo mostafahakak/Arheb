@@ -2721,16 +2721,27 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     const items = findOrderItems.all(orderId);
     notifyCustomerOrderStatusChange(db, order, orderId, nextStatus);
 
-    // One driver at a time (nearest online → FCM); 20s timeout advances to next nearest (see sequentialDriverOffer).
-    if (nextKey === 'preparing' && updated.driverId == null && io) {
+    // Nearest online driver auto-assign (cluster); if none online, sequential FCM invites (see sequentialDriverOffer).
+    if (nextKey === 'preparing' && updated.driverId == null) {
       try {
-        const next = offerNextSequentialDriver(db, io, orderId, updated, offerCtx);
-        if (next) {
-          const { broadcastDriverOrdersUpdated } = require('../driverPresence');
-          broadcastDriverOrdersUpdated(io, { type: 'new_request', orderId });
+        clearStoreOrderOfferTimeout(orderId);
+        rejectAllPendingDriverRequestsForStoreOrder(db, orderId);
+        const autoAssignResult = runDeliveryClusterAutoAssign(db, io, updated.storeId, offerCtx);
+        const hit = autoAssignResult.assigned.find((x) => x.orderId === orderId);
+        updated = findOrderById.get(orderId);
+        if (!hit && io && updated?.driverId == null) {
+          const next = offerNextSequentialDriver(db, io, orderId, updated, offerCtx);
+          if (next) {
+            try {
+              const { broadcastDriverOrdersUpdated } = require('../driverPresence');
+              broadcastDriverOrdersUpdated(io, { type: 'new_request', orderId });
+            } catch (e) {
+              /* ignore */
+            }
+          }
         }
       } catch (e) {
-        /* ignore */
+        console.error('[admin] driver assign on Preparing:', e?.message || e);
       }
     }
 

@@ -4,7 +4,7 @@
  */
 
 const fcm = require('../fcm');
-const { emitDriverDeliveryRequest } = require('../driverPresence');
+const { emitDriverDeliveryRequest, haversineKm } = require('../driverPresence');
 
 function arhebDebugLog(tag, payload) {
   const v = process.env.ARHEB_DEBUG;
@@ -115,6 +115,51 @@ function countPendingDriverRequests(db, orderId) {
   } catch (e) {
     return 0;
   }
+}
+
+/**
+ * Sort driver candidates nearest-to-store first. Uses live /driver-presence when available,
+ * otherwise falls back to last-known coordinates on the drivers row.
+ */
+function sortDriverCandidatesByStoreDistance(db, candidateIds, storeLat, storeLong, withDistanceOnline = []) {
+  const onlineById = new Map(withDistanceOnline.map((d) => [Number(d.driverId), d]));
+  const rows = [];
+  let findDriverCoords;
+  try {
+    findDriverCoords = db.prepare('SELECT latitude, longitude FROM drivers WHERE id = ?');
+  } catch (e) {
+    findDriverCoords = null;
+  }
+  for (const id of candidateIds) {
+    const driverId = Number(id);
+    if (!Number.isFinite(driverId)) continue;
+    const online = onlineById.get(driverId);
+    if (online) {
+      rows.push(online);
+      continue;
+    }
+    let lat;
+    let lon;
+    if (findDriverCoords) {
+      try {
+        const row = findDriverCoords.get(driverId);
+        lat = Number(row?.latitude);
+        lon = Number(row?.longitude);
+      } catch (e) {
+        lat = NaN;
+        lon = NaN;
+      }
+    }
+    let distanceKm;
+    if (storeLat != null && storeLong != null && Number.isFinite(lat) && Number.isFinite(lon)) {
+      distanceKm = haversineKm(lat, lon, storeLat, storeLong);
+    }
+    rows.push({ driverId, distanceKm });
+  }
+  if (storeLat != null && storeLong != null) {
+    rows.sort((a, b) => (a.distanceKm ?? Infinity) - (b.distanceKm ?? Infinity));
+  }
+  return rows;
 }
 
 /** One pending invite at a time; if no accept/reject in this window, offer passes to the next nearest driver. */
@@ -239,11 +284,12 @@ function offerNextSequentialDriver(db, io, orderId, order, ctx) {
   }
   const rejected = new Set(rejectedRows.map((x) => x.driverId));
 
-  let toTry = withDistance;
-  if (!toTry.length && candidateIds.length) {
-    toTry = candidateIds.map((driverId) => ({ driverId, distanceKm: undefined }));
+  let toTry = withDistance.length
+    ? withDistance
+    : sortDriverCandidatesByStoreDistance(db, candidateIds, storeLat, storeLong, withDistance);
+  if (!withDistance.length && candidateIds.length) {
     console.log(
-      `[driver-notify] order #${orderId}: no drivers on /driver-presence — falling back to FCM for candidates (one at a time)`,
+      `[driver-notify] order #${orderId}: no drivers on /driver-presence — falling back to nearest-by-DB-location FCM (one at a time)`,
     );
   }
 
@@ -631,6 +677,7 @@ module.exports = {
   SEQUENTIAL_DRIVER_OFFER_TIMEOUT_MS,
   getStoreForOrder,
   getStoreLatLong,
+  sortDriverCandidatesByStoreDistance,
   fcmPayloadForDriverRequest,
   parseLatLongFromGoogleMapsUrl,
   notifyDriverArhebBoxRequest,
