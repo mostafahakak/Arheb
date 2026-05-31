@@ -4329,30 +4329,57 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     try {
       ensureDriverRatingsTable(db);
       ensureDriverCommissionPercentColumn(db);
+      ensureDriverCommissionRuleColumns(db);
       ensureContactUsDriverDeliveryPercentColumn(db);
-      const defaultPct = getDriverDeliveryDefaultPercent(db);
-      const rows = db.prepare(
-        'SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, photo, latitude, longitude, rating, ratingCount, isVerified, isBlocked, createdAt, commissionPercent FROM drivers ORDER BY id'
-      ).all();
-      const drivers = rows.map((r) => ({
-        id: r.id,
-        name: r.name,
-        mobile: r.mobile,
-        email: r.email,
-        vehicleType: r.vehicleType,
-        vehicleNumber: r.vehicleNumber,
-        licenseNumber: r.licenseNumber,
-        photo: r.photo,
-        latitude: r.latitude,
-        longitude: r.longitude,
-        rating: r.rating ?? 5,
-        ratingCount: r.ratingCount != null ? Number(r.ratingCount) : 0,
-        isVerified: Boolean(r.isVerified),
-        isBlocked: Boolean(r.isBlocked),
-        commissionPercent: normalizeDriverCommissionPercent(r.commissionPercent, defaultPct),
-        createdAt: r.createdAt,
-      }));
-      return res.status(200).json({ success: true, data: { drivers } });
+      const appDefaultRule = getDriverDefaultCommissionRule(db);
+      const rows = db
+        .prepare(
+          'SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, photo, latitude, longitude, rating, ratingCount, isVerified, isBlocked, createdAt, commissionPercent, commissionType, commissionValue FROM drivers ORDER BY id',
+        )
+        .all();
+      const drivers = rows.map((r) => {
+        const effective = resolveDriverCommissionRule(db, r.id);
+        const useAppDefault = !driverRowHasCustomCommission(r);
+        return {
+          id: r.id,
+          name: r.name,
+          mobile: r.mobile,
+          email: r.email,
+          vehicleType: r.vehicleType,
+          vehicleNumber: r.vehicleNumber,
+          licenseNumber: r.licenseNumber,
+          photo: r.photo,
+          latitude: r.latitude,
+          longitude: r.longitude,
+          rating: r.rating ?? 5,
+          ratingCount: r.ratingCount != null ? Number(r.ratingCount) : 0,
+          isVerified: Boolean(r.isVerified),
+          isBlocked: Boolean(r.isBlocked),
+          useAppDefaultCommission: useAppDefault,
+          effectiveCommissionType: effective.type,
+          effectiveCommissionValue: effective.value,
+          commissionTypeStored:
+            r.commissionType != null && String(r.commissionType).trim() !== '' ? String(r.commissionType).trim() : null,
+          commissionValueStored:
+            r.commissionValue != null && String(r.commissionValue).trim() !== ''
+              ? Number(r.commissionValue)
+              : r.commissionPercent != null
+                ? Number(r.commissionPercent)
+                : null,
+          commissionPercent: effective.type === 'percent' ? effective.value : null,
+          createdAt: r.createdAt,
+        };
+      });
+      return res.status(200).json({
+        success: true,
+        data: {
+          appDefaultCommission: {
+            commissionType: appDefaultRule.type,
+            commissionValue: appDefaultRule.value,
+          },
+          drivers,
+        },
+      });
     } catch (e) {
       if (e.message && e.message.includes('no such table')) {
         return res.status(200).json({ success: true, data: { drivers: [] } });
