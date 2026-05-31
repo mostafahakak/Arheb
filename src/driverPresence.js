@@ -13,6 +13,16 @@ const fcm = require('./fcm');
 // driverId -> { socketId, latitude, longitude, lastSeen }
 const activeDrivers = new Map();
 
+/** Reject null island (0,0) and other placeholder coords apps/DB sometimes send before a real GPS fix. */
+function isValidDriverGps(lat, lon) {
+  const la = Number(lat);
+  const lo = Number(lon);
+  if (!Number.isFinite(la) || !Number.isFinite(lo)) return false;
+  if (la < -90 || la > 90 || lo < -180 || lo > 180) return false;
+  if (Math.abs(la) < 1e-6 && Math.abs(lo) < 1e-6) return false;
+  return true;
+}
+
 function haversineKm(lat1, lon1, lat2, lon2) {
   const R = 6371;
   const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -32,7 +42,7 @@ function haversineKm(lat1, lon1, lat2, lon2) {
  */
 function distanceFromStore(driverId, storeLat, storeLong) {
   const d = activeDrivers.get(Number(driverId));
-  if (!d || d.latitude == null || d.longitude == null) return null;
+  if (!d || !isValidDriverGps(d.latitude, d.longitude)) return null;
   return haversineKm(d.latitude, d.longitude, storeLat, storeLong);
 }
 
@@ -49,8 +59,8 @@ function getActiveDriversWithLocation() {
     list.push({
       driverId: parseInt(driverId, 10),
       socketId: v.socketId,
-      latitude: v.latitude,
-      longitude: v.longitude,
+      latitude: isValidDriverGps(v.latitude, v.longitude) ? v.latitude : null,
+      longitude: isValidDriverGps(v.latitude, v.longitude) ? v.longitude : null,
       lastSeen: v.lastSeen,
     });
   }
@@ -76,14 +86,15 @@ function getActiveFromListWithDistance(driverIds, storeLat, storeLong) {
     if (now - new Date(lastSeen).getTime() > 5 * 60 * 1000) continue;
     const lat = d.latitude;
     const lon = d.longitude;
+    const hasGps = isValidDriverGps(lat, lon);
     let distanceKm = null;
-    if (storeLat != null && storeLong != null && lat != null && lon != null) {
+    if (storeLat != null && storeLong != null && hasGps) {
       distanceKm = haversineKm(lat, lon, storeLat, storeLong);
     }
     list.push({
       driverId: nid,
-      latitude: lat,
-      longitude: lon,
+      latitude: hasGps ? lat : null,
+      longitude: hasGps ? lon : null,
       lastSeen,
       distanceKm: distanceKm ?? undefined,
     });
@@ -173,7 +184,7 @@ module.exports = function attachDriverPresence(io, db, JWT_SECRET) {
       if (row) {
         const la = Number(row.latitude);
         const lo = Number(row.longitude);
-        if (Number.isFinite(la) && Number.isFinite(lo) && la >= -90 && la <= 90 && lo >= -180 && lo <= 180) {
+        if (Number.isFinite(la) && Number.isFinite(lo) && isValidDriverGps(la, lo)) {
           seedLat = la;
           seedLon = lo;
         }
@@ -192,12 +203,8 @@ module.exports = function attachDriverPresence(io, db, JWT_SECRET) {
     function applyPresenceLocation(data) {
       const lat = Number(data?.latitude ?? data?.lat);
       const lon = Number(data?.longitude ?? data?.lng ?? data?.long);
-      if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-        socket.emit('error', { message: 'Invalid latitude/longitude' });
-        return;
-      }
-      if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
-        socket.emit('error', { message: 'Invalid latitude/longitude' });
+      if (!isValidDriverGps(lat, lon)) {
+        socket.emit('error', { message: 'Invalid latitude/longitude (GPS fix required)' });
         return;
       }
       const cur = activeDrivers.get(driverId);
@@ -205,6 +212,11 @@ module.exports = function attachDriverPresence(io, db, JWT_SECRET) {
         cur.latitude = lat;
         cur.longitude = lon;
         cur.lastSeen = new Date().toISOString();
+      }
+      try {
+        db.prepare('UPDATE drivers SET latitude = ?, longitude = ? WHERE id = ?').run(lat, lon, driverId);
+      } catch (e) {
+        /* ignore if columns missing */
       }
       try {
         const { broadcastDriverPresenceLocation } = require('./order');
@@ -313,6 +325,7 @@ module.exports = function attachDriverPresence(io, db, JWT_SECRET) {
 
 module.exports.getActiveDriversWithLocation = getActiveDriversWithLocation;
 module.exports.getActiveFromListWithDistance = getActiveFromListWithDistance;
+module.exports.isValidDriverGps = isValidDriverGps;
 module.exports.emitDriverDeliveryRequest = emitDriverDeliveryRequest;
 module.exports.broadcastDriverOrdersUpdated = broadcastDriverOrdersUpdated;
 module.exports.emitDriverPresenceEvent = emitDriverPresenceEvent;

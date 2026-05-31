@@ -9,8 +9,8 @@ const { haversineKm, broadcastDriverOrdersUpdated } = require('../driverPresence
 const { assignDriverToOrder } = require('./driverCommission');
 const fcm = require('../fcm');
 const { emitDriverDeliveryRequest } = require('../driverPresence');
-const { getStoreLatLong, parseLatLongFromGoogleMapsUrl } = require('./sequentialDriverOffer');
-const { resolveStorePickupLocation } = require('./mapsUrlResolve');
+const { getStoreLatLong, sortDriverCandidatesByStoreDistance } = require('./sequentialDriverOffer');
+const { resolveStoreCoordsForDriverMatching } = require('./mapsUrlResolve');
 
 const DEFAULT_MAX_CHAIN_KM = 1;
 
@@ -330,13 +330,13 @@ async function autoAssignNearestDriverForStoreOrder(db, io, order, ctx) {
     store = loadStores().find((s) => String(s.id) === String(order.storeId)) || null;
     if (store) {
       try {
-        const loc = await resolveStorePickupLocation(store);
-        if (loc) {
-          storeLat = loc.latitude;
-          storeLong = loc.longitude;
-        }
+        const coords = await resolveStoreCoordsForDriverMatching(store);
+        storeLat = coords.storeLat;
+        storeLong = coords.storeLong;
       } catch (e) {
-        /* ignore — will fall back to unsorted */
+        const sync = getStoreLatLong(store);
+        storeLat = sync.storeLat;
+        storeLong = sync.storeLong;
       }
     }
   }
@@ -350,12 +350,42 @@ async function autoAssignNearestDriverForStoreOrder(db, io, order, ctx) {
   const candidateIds = drivers.map((d) => d.id);
   const nameById = new Map(drivers.map((d) => [d.id, d.name]));
 
-  const online = getActiveFromListWithDistance(candidateIds, storeLat, storeLong);
+  const onlinePresence = getActiveFromListWithDistance(candidateIds, storeLat, storeLong);
+  const onlineIds = new Set(onlinePresence.map((d) => d.driverId));
+  const rankedOnline = sortDriverCandidatesByStoreDistance(
+    db,
+    candidateIds,
+    storeLat,
+    storeLong,
+    onlinePresence,
+  ).filter((d) => onlineIds.has(d.driverId));
 
-  if (!online.length) {
+  if (process.env.ARHEB_DEBUG === '1' || String(process.env.ARHEB_DEBUG).toLowerCase() === 'true') {
+    console.log(
+      '[driver-assign]',
+      JSON.stringify({
+        orderId,
+        storeId: order.storeId,
+        storeLat,
+        storeLong,
+        onlineCount: rankedOnline.length,
+        ranked: rankedOnline.slice(0, 5).map((d) => ({
+          driverId: d.driverId,
+          distanceKm: d.distanceKm ?? null,
+          busy: driverHasActiveOrder(db, d.driverId),
+        })),
+      }),
+    );
+  }
+
+  if (!rankedOnline.length) {
     try {
       const { offerNextSequentialDriver } = require('./sequentialDriverOffer');
-      const next = offerNextSequentialDriver(db, io, orderId, order, ctx);
+      const next = offerNextSequentialDriver(db, io, orderId, order, {
+        ...ctx,
+        storeLat,
+        storeLong,
+      });
       if (next && io) {
         try {
           broadcastDriverOrdersUpdated(io, { type: 'new_request', orderId });
@@ -369,8 +399,8 @@ async function autoAssignNearestDriverForStoreOrder(db, io, order, ctx) {
     }
   }
 
-  const freeFirst = online.filter((d) => !driverHasActiveOrder(db, d.driverId));
-  const pick = freeFirst[0] || online[0];
+  const freeRanked = rankedOnline.filter((d) => !driverHasActiveOrder(db, d.driverId));
+  const pick = freeRanked[0] || rankedOnline[0];
   if (!pick) return { assigned: false, reason: 'no_driver_online' };
 
   const driverId = pick.driverId;
@@ -420,6 +450,11 @@ async function autoAssignNearestDriverForStoreOrder(db, io, order, ctx) {
       /* ignore */
     }
   }
+  console.log(
+    `[driver-assign] order #${orderId} → driver #${driverId}` +
+      (pick.distanceKm != null ? ` (${Number(pick.distanceKm).toFixed(2)} km from store)` : '') +
+      (freeRanked[0] ? '' : ' (nearest online; driver had active order)'),
+  );
   return { assigned: true, driverId, distanceKm: pick.distanceKm ?? null };
 }
 

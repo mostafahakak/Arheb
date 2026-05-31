@@ -23,7 +23,7 @@ const { ensureActivityLogTable, logActivity, handleActivityLogList } = require('
 const { syncCategoriesToDb } = require('../categories');
 const { getJsonPath } = require('../config/jsonPaths');
 const fcm = require('../fcm');
-const { getActiveFromListWithDistance, getActiveDriversWithLocation } = require('../driverPresence');
+const { getActiveFromListWithDistance, getActiveDriversWithLocation, isValidDriverGps } = require('../driverPresence');
 const enrichArhebBoxRow = require('../arhebBox').enrichArhebBoxRow;
 const { getArhebBoxPublicFlags } = require('../arhebBox/flags');
 const { mapOrderItemsRows, formatOrderItemAddOnsSummary } = require('../utils/orderItemApi');
@@ -50,9 +50,14 @@ const {
   ensureOrderDriverShareColumns,
   ensureDriverRatingsTable,
   ensureDriverCommissionPercentColumn,
+  ensureDriverCommissionRuleColumns,
   parseDriverCommissionPercentForStorage,
+  parseDriverCommissionRuleForStorage,
   normalizeDriverCommissionPercent,
   getDriverDeliveryDefaultPercent,
+  getDriverDefaultCommissionRule,
+  resolveDriverCommissionRule,
+  driverRowHasCustomCommission,
   ensureContactUsDriverDeliveryPercentColumn,
   ensureContactUsArhebBoxComingSoonColumn,
   ensureContactUsArhebBoxServiceFeeJodColumn,
@@ -77,6 +82,7 @@ const {
 const { normalizeHomeContentLinkArray } = require('../utils/homeContentLinks');
 const {
   parseLatLongFromGoogleMapsUrl,
+  findNearestStoreForCoords,
   notifyDriverDeliveryRequest,
   offerNextSequentialDriver,
   offerNextSequentialArhebBoxDriver,
@@ -3395,6 +3401,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   app.get('/api/admin/drivers/active-map', auth, requireAdminOrSuper, (req, res) => {
     try {
       const active = getActiveDriversWithLocation();
+      const stores = loadStores();
       let driversMeta = [];
       try {
         driversMeta = db.prepare('SELECT id, name, mobile, vehicleType, vehicleNumber FROM drivers WHERE isBlocked = 0').all();
@@ -3420,13 +3427,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       const drivers = active.map((d) => {
         const latNum = d.latitude != null ? Number(d.latitude) : NaN;
         const lonNum = d.longitude != null ? Number(d.longitude) : NaN;
-        const hasLocation =
-          Number.isFinite(latNum) &&
-          Number.isFinite(lonNum) &&
-          latNum >= -90 &&
-          latNum <= 90 &&
-          lonNum >= -180 &&
-          lonNum <= 180;
+        const hasLocation = isValidDriverGps(latNum, lonNum);
         let currentStoreOrderId = null;
         let currentArhebBoxRequestId = null;
         let currentStoreOrderIds = [];
@@ -3445,6 +3446,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             /* ignore */
           }
         }
+        const nearestStore =
+          hasLocation ? findNearestStoreForCoords(latNum, lonNum, stores, parseLatLongFromGoogleMapsUrl) : null;
         return {
           id: d.driverId,
           name: metaById[d.driverId]?.name || null,
@@ -3458,7 +3461,15 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           currentStoreOrderId,
           currentStoreOrderIds,
           currentArhebBoxRequestId,
+          nearestStore,
         };
+      });
+      drivers.sort((a, b) => {
+        const da = a.nearestStore?.distanceKm ?? Infinity;
+        const db = b.nearestStore?.distanceKm ?? Infinity;
+        if (da !== db) return da - db;
+        if (a.hasLocation !== b.hasLocation) return a.hasLocation ? -1 : 1;
+        return Number(a.id) - Number(b.id);
       });
       return res.status(200).json({
         success: true,
@@ -3467,6 +3478,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           center: { latitude: 29.5321, longitude: 35.0063 },
           activeDriversCount: drivers.length,
           driversWithLocationCount: drivers.filter((x) => x.hasLocation).length,
+          storesCount: stores.length,
           drivers,
         },
       });
@@ -4358,9 +4370,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       ensureOrderDriverShareColumns(db);
       ensureDriverRatingsTable(db);
       ensureDriverCommissionPercentColumn(db);
+      ensureDriverCommissionRuleColumns(db);
       const driver = db
         .prepare(
-          'SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, createdAt, rating, ratingCount, commissionPercent FROM drivers WHERE id = ?'
+          'SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, createdAt, rating, ratingCount, commissionPercent, commissionType, commissionValue FROM drivers WHERE id = ?'
         )
         .get(id);
       if (!driver) return res.status(404).json({ success: false, message: 'Driver not found' });
@@ -4448,8 +4461,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         .all(id);
 
       const commission = getDriverCommissionSettings(db);
-      const appDefaultPct = getDriverDeliveryDefaultPercent(db);
-      const effectivePct = normalizeDriverCommissionPercent(driver.commissionPercent, appDefaultPct);
+      const appDefaultRule = getDriverDefaultCommissionRule(db);
+      const effectiveRule = resolveDriverCommissionRule(db, id);
+      const useAppDefault = !driverRowHasCustomCommission(driver);
+      const effectivePct = effectiveRule.type === 'percent' ? effectiveRule.value : null;
 
       return res.status(200).json({
         success: true,
@@ -4467,15 +4482,54 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             rating: driver.rating ?? 5,
             ratingCount: driver.ratingCount != null ? Number(driver.ratingCount) : 0,
             commissionPercentStored: driver.commissionPercent != null ? Number(driver.commissionPercent) : null,
+            commissionTypeStored:
+              driver.commissionType != null && String(driver.commissionType).trim() !== ''
+                ? String(driver.commissionType).trim()
+                : null,
+            commissionValueStored:
+              driver.commissionValue != null && String(driver.commissionValue).trim() !== ''
+                ? Number(driver.commissionValue)
+                : null,
             commissionPercent: effectivePct,
+            useAppDefaultCommission: useAppDefault,
+            effectiveCommissionType: effectiveRule.type,
+            effectiveCommissionValue: effectiveRule.value,
+          },
+          commission: {
+            useAppDefault,
+            appDefault: {
+              commissionType: appDefaultRule.type,
+              commissionValue: appDefaultRule.value,
+              source: appDefaultRule.source,
+            },
+            effective: {
+              commissionType: effectiveRule.type,
+              commissionValue: effectiveRule.value,
+              isCustom: effectiveRule.isCustom,
+            },
+            stored:
+              useAppDefault
+                ? null
+                : {
+                    commissionType:
+                      driver.commissionType != null && String(driver.commissionType).trim() !== ''
+                        ? String(driver.commissionType).trim()
+                        : 'percent',
+                    commissionValue:
+                      driver.commissionValue != null
+                        ? Number(driver.commissionValue)
+                        : driver.commissionPercent != null
+                          ? Number(driver.commissionPercent)
+                          : null,
+                  },
           },
           globalCommission: {
             commissionType: commission.type,
             commissionValue: commission.value,
             note:
-              'Legacy global settings. Effective default when a driver has no rate is App info driverDeliveryPercent (GET/PATCH /api/admin/info), then this value if app info is unset.',
+              'Global settings on App info page. Per-driver override falls back to App info driverDeliveryPercent when set, otherwise these global settings.',
           },
-          appInfoDriverDeliveryPercent: appDefaultPct,
+          appInfoDriverDeliveryPercent: appDefaultRule.type === 'percent' ? appDefaultRule.value : getDriverDeliveryDefaultPercent(db),
           stats: {
             delivered: counts.delivered || 0,
             active: counts.active || 0,
@@ -4506,7 +4560,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   app.post('/api/admin/drivers', auth, requireAdminOrSuper, (req, res) => {
-    const { name, mobile, email, vehicleType, vehicleNumber, licenseNumber, commissionPercent } = req.body || {};
+    const { name, mobile, email, vehicleType, vehicleNumber, licenseNumber, commissionPercent, commissionType, commissionValue } = req.body || {};
     if (!name || !String(name).trim() || !mobile || !String(mobile).trim()) {
       return res.status(400).json({ success: false, message: 'name and mobile are required' });
     }
@@ -4514,9 +4568,25 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     try {
       ensureDriverCommissionSettingsTable(db);
       ensureDriverCommissionPercentColumn(db);
+      ensureDriverCommissionRuleColumns(db);
       ensureContactUsDriverDeliveryPercentColumn(db);
-      let pctToStore = getDriverDeliveryDefaultPercent(db);
-      if (commissionPercent !== undefined) {
+      let pctToStore = null;
+      let typeToStore = null;
+      let valueToStore = null;
+      if (commissionType !== undefined || commissionValue !== undefined) {
+        try {
+          const rule = parseDriverCommissionRuleForStorage({ commissionType, commissionValue });
+          if (rule && !rule.clear) {
+            typeToStore = rule.type;
+            valueToStore = rule.value;
+          }
+        } catch (err) {
+          if (err.code === 'VALIDATION') {
+            return res.status(400).json({ success: false, message: err.message });
+          }
+          throw err;
+        }
+      } else if (commissionPercent !== undefined) {
         try {
           const p = parseDriverCommissionPercentForStorage(commissionPercent);
           if (p !== undefined) pctToStore = p;
@@ -4532,8 +4602,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         return res.status(400).json({ success: false, message: 'Driver with this mobile already exists' });
       }
       db.prepare(`
-        INSERT INTO drivers (name, mobile, email, vehicleType, vehicleNumber, licenseNumber, photo, latitude, longitude, rating, isVerified, isBlocked, commissionPercent)
-        VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 5, 0, 0, ?)
+        INSERT INTO drivers (name, mobile, email, vehicleType, vehicleNumber, licenseNumber, photo, latitude, longitude, rating, isVerified, isBlocked, commissionPercent, commissionType, commissionValue)
+        VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 5, 0, 0, ?, ?, ?)
       `).run(
         String(name).trim(),
         normalizedMobile,
@@ -4542,9 +4612,11 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         vehicleNumber ? String(vehicleNumber).trim() : null,
         licenseNumber ? String(licenseNumber).trim() : null,
         pctToStore,
+        typeToStore,
+        valueToStore,
       );
       const driver = db
-        .prepare('SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, createdAt, commissionPercent FROM drivers WHERE mobile = ?')
+        .prepare('SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, createdAt, commissionPercent, commissionType, commissionValue FROM drivers WHERE mobile = ?')
         .get(normalizedMobile);
       logActivity(db, req, {
         action: 'add',
@@ -4553,6 +4625,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         storeScopeId: null,
         summary: `Added driver ${driver.name} (${driver.mobile})`,
       });
+      const effectiveRule = resolveDriverCommissionRule(db, driver.id);
       return res.status(201).json({
         success: true,
         message: 'Driver added successfully',
@@ -4567,7 +4640,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             licenseNumber: driver.licenseNumber,
             isBlocked: Boolean(driver.isBlocked),
             createdAt: driver.createdAt,
-            commissionPercent: normalizeDriverCommissionPercent(driver.commissionPercent, getDriverDeliveryDefaultPercent(db)),
+            useAppDefaultCommission: !driverRowHasCustomCommission(driver),
+            effectiveCommissionType: effectiveRule.type,
+            effectiveCommissionValue: effectiveRule.value,
+            commissionPercent: effectiveRule.type === 'percent' ? effectiveRule.value : null,
           },
         },
       });
@@ -4583,8 +4659,21 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     const driver = db.prepare('SELECT * FROM drivers WHERE id = ?').get(id);
     if (!driver) return res.status(404).json({ success: false, message: 'Driver not found' });
     ensureDriverCommissionPercentColumn(db);
+    ensureDriverCommissionRuleColumns(db);
     ensureContactUsDriverDeliveryPercentColumn(db);
-    const { name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, commissionPercent } = req.body || {};
+    const {
+      name,
+      mobile,
+      email,
+      vehicleType,
+      vehicleNumber,
+      licenseNumber,
+      isBlocked,
+      commissionPercent,
+      commissionType,
+      commissionValue,
+      useAppDefaultCommission,
+    } = req.body || {};
     const updates = [];
     const values = [];
     if (name !== undefined) { updates.push('name = ?'); values.push(String(name).trim()); }
@@ -4594,11 +4683,39 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     if (vehicleNumber !== undefined) { updates.push('vehicleNumber = ?'); values.push(vehicleNumber ? String(vehicleNumber).trim() : null); }
     if (licenseNumber !== undefined) { updates.push('licenseNumber = ?'); values.push(licenseNumber ? String(licenseNumber).trim() : null); }
     if (isBlocked !== undefined) { updates.push('isBlocked = ?'); values.push(isBlocked ? 1 : 0); }
-    if (commissionPercent !== undefined) {
+    if (useAppDefaultCommission === true) {
+      updates.push('commissionPercent = ?');
+      values.push(null);
+      updates.push('commissionType = ?');
+      values.push(null);
+      updates.push('commissionValue = ?');
+      values.push(null);
+    } else if (commissionType !== undefined || commissionValue !== undefined) {
+      try {
+        const rule = parseDriverCommissionRuleForStorage({ commissionType, commissionValue });
+        if (rule && !rule.clear) {
+          updates.push('commissionType = ?');
+          values.push(rule.type);
+          updates.push('commissionValue = ?');
+          values.push(rule.value);
+          updates.push('commissionPercent = ?');
+          values.push(null);
+        }
+      } catch (err) {
+        if (err.code === 'VALIDATION') {
+          return res.status(400).json({ success: false, message: err.message });
+        }
+        throw err;
+      }
+    } else if (commissionPercent !== undefined) {
       try {
         const p = parseDriverCommissionPercentForStorage(commissionPercent);
         updates.push('commissionPercent = ?');
         values.push(p === undefined ? null : p);
+        updates.push('commissionType = ?');
+        values.push(null);
+        updates.push('commissionValue = ?');
+        values.push(null);
       } catch (err) {
         if (err.code === 'VALIDATION') {
           return res.status(400).json({ success: false, message: err.message });
@@ -4612,9 +4729,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     values.push(id);
     try {
       db.prepare(`UPDATE drivers SET ${updates.join(', ')} WHERE id = ?`).run(...values);
-      const defaultPct = getDriverDeliveryDefaultPercent(db);
+      const effectiveRule = resolveDriverCommissionRule(db, id);
       const updated = db
-        .prepare('SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, createdAt, commissionPercent FROM drivers WHERE id = ?')
+        .prepare('SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, createdAt, commissionPercent, commissionType, commissionValue FROM drivers WHERE id = ?')
         .get(id);
       logActivity(db, req, {
         action: 'edit',
@@ -4637,7 +4754,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             licenseNumber: updated.licenseNumber,
             isBlocked: Boolean(updated.isBlocked),
             createdAt: updated.createdAt,
-            commissionPercent: normalizeDriverCommissionPercent(updated.commissionPercent, defaultPct),
+            useAppDefaultCommission: !driverRowHasCustomCommission(updated),
+            effectiveCommissionType: effectiveRule.type,
+            effectiveCommissionValue: effectiveRule.value,
+            commissionPercent: effectiveRule.type === 'percent' ? effectiveRule.value : null,
           },
         },
       });

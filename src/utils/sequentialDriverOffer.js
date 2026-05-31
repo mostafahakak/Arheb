@@ -4,33 +4,13 @@
  */
 
 const fcm = require('../fcm');
-const { emitDriverDeliveryRequest, haversineKm } = require('../driverPresence');
+const { emitDriverDeliveryRequest, haversineKm, isValidDriverGps } = require('../driverPresence');
+const { parseLatLongFromGoogleMapsUrl } = require('./mapsUrlResolve');
 
 function arhebDebugLog(tag, payload) {
   const v = process.env.ARHEB_DEBUG;
   if (v !== '1' && String(v).toLowerCase() !== 'true') return;
   console.log('[arheb-debug]', tag, JSON.stringify({ ...payload, t: new Date().toISOString() }));
-}
-
-function parseLatLongFromGoogleMapsUrl(url) {
-  if (!url || typeof url !== 'string') return null;
-  const text = url.trim();
-  const patterns = [
-    /[?&]q=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
-    /[?&]query=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
-    /@(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i,
-  ];
-  for (const re of patterns) {
-    const m = text.match(re);
-    if (m) {
-      const latitude = Number(m[1]);
-      const longitude = Number(m[2]);
-      if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
-        return { latitude, longitude };
-      }
-    }
-  }
-  return null;
 }
 
 function getStoreForOrder(order, loadStores) {
@@ -135,7 +115,25 @@ function sortDriverCandidatesByStoreDistance(db, candidateIds, storeLat, storeLo
     if (!Number.isFinite(driverId)) continue;
     const online = onlineById.get(driverId);
     if (online) {
-      rows.push(online);
+      let distanceKm = online.distanceKm;
+      if (distanceKm == null && storeLat != null && storeLong != null && findDriverCoords) {
+        let lat = online.latitude;
+        let lon = online.longitude;
+        if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lon))) {
+          try {
+            const row = findDriverCoords.get(driverId);
+            lat = Number(row?.latitude);
+            lon = Number(row?.longitude);
+          } catch (e) {
+            lat = NaN;
+            lon = NaN;
+          }
+        }
+        if (Number.isFinite(lat) && Number.isFinite(lon) && isValidDriverGps(lat, lon)) {
+          distanceKm = haversineKm(lat, lon, storeLat, storeLong);
+        }
+      }
+      rows.push({ ...online, distanceKm });
       continue;
     }
     let lat;
@@ -151,13 +149,18 @@ function sortDriverCandidatesByStoreDistance(db, candidateIds, storeLat, storeLo
       }
     }
     let distanceKm;
-    if (storeLat != null && storeLong != null && Number.isFinite(lat) && Number.isFinite(lon)) {
+    if (storeLat != null && storeLong != null && isValidDriverGps(lat, lon)) {
       distanceKm = haversineKm(lat, lon, storeLat, storeLong);
     }
     rows.push({ driverId, distanceKm });
   }
   if (storeLat != null && storeLong != null) {
-    rows.sort((a, b) => (a.distanceKm ?? Infinity) - (b.distanceKm ?? Infinity));
+    rows.sort((a, b) => {
+      const da = a.distanceKm ?? Infinity;
+      const db = b.distanceKm ?? Infinity;
+      if (da !== db) return da - db;
+      return Number(a.driverId) - Number(b.driverId);
+    });
   }
   return rows;
 }
@@ -273,7 +276,13 @@ function offerNextSequentialDriver(db, io, orderId, order, ctx) {
   }
   const candidateIds = drivers.map((d) => d.id);
   const store = getStoreForOrder(order, loadStores);
-  const { storeLat, storeLong } = getStoreLatLong(store, parseLat);
+  let storeLat = ctx.storeLat != null ? Number(ctx.storeLat) : null;
+  let storeLong = ctx.storeLong != null ? Number(ctx.storeLong) : null;
+  if (!Number.isFinite(storeLat) || !Number.isFinite(storeLong)) {
+    const coords = getStoreLatLong(store, parseLat);
+    storeLat = coords.storeLat;
+    storeLong = coords.storeLong;
+  }
   const withDistance = getActiveFromListWithDistance(candidateIds, storeLat, storeLong);
 
   let rejectedRows = [];
@@ -666,6 +675,30 @@ function notifyAllOnlineDriversArhebBox(db, io, requestId, requestRow, ctx) {
   return firstNotified;
 }
 
+function findNearestStoreForCoords(lat, lng, stores, parseFn = parseLatLongFromGoogleMapsUrl) {
+  if (!isValidDriverGps(lat, lng) || !Array.isArray(stores) || stores.length === 0) {
+    return null;
+  }
+  let best = null;
+  let bestKm = Infinity;
+  for (const store of stores) {
+    const { storeLat, storeLong } = getStoreLatLong(store, parseFn);
+    if (storeLat == null || storeLong == null) continue;
+    const km = haversineKm(lat, lng, storeLat, storeLong);
+    if (km < bestKm) {
+      bestKm = km;
+      best = {
+        id: store.id,
+        name: String(store.nameEn || store.name || store.nameAr || '').trim() || `Store #${store.id}`,
+        distanceKm: Math.round((km + Number.EPSILON) * 100) / 100,
+        latitude: storeLat,
+        longitude: storeLong,
+      };
+    }
+  }
+  return best;
+}
+
 module.exports = {
   notifyDriverDeliveryRequest,
   notifyAllOnlineDrivers,
@@ -677,6 +710,7 @@ module.exports = {
   SEQUENTIAL_DRIVER_OFFER_TIMEOUT_MS,
   getStoreForOrder,
   getStoreLatLong,
+  findNearestStoreForCoords,
   sortDriverCandidatesByStoreDistance,
   fcmPayloadForDriverRequest,
   parseLatLongFromGoogleMapsUrl,

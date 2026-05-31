@@ -60,12 +60,14 @@ async function resolveFinalMapsUrl(url) {
  */
 async function resolveStorePickupLocation(store) {
   if (!store || typeof store !== 'object') return null;
-  const lat = Number(store.latitude);
-  const lng = Number(store.longitude);
+  const lat = Number(store.latitude ?? store.lat);
+  const lng = Number(store.longitude ?? store.long);
   if (Number.isFinite(lat) && Number.isFinite(lng)) {
     return { latitude: lat, longitude: lng };
   }
   if (store.mapsUrl && typeof store.mapsUrl === 'string') {
+    const sync = parseLatLongFromGoogleMapsUrl(store.mapsUrl);
+    if (sync) return sync;
     const expanded = await resolveFinalMapsUrl(store.mapsUrl);
     const parsed =
       parseLatLongFromGoogleMapsUrl(expanded) || parseLatLongFromGoogleMapsUrl(store.mapsUrl);
@@ -74,8 +76,27 @@ async function resolveStorePickupLocation(store) {
   return null;
 }
 
+/**
+ * Store pickup point for nearest-driver matching (sync parse first, then expand short Maps links).
+ * @returns {Promise<{ storeLat: number|null, storeLong: number|null }>}
+ */
+async function resolveStoreCoordsForDriverMatching(store) {
+  if (!store || typeof store !== 'object') return { storeLat: null, storeLong: null };
+  const lat = Number(store.latitude ?? store.lat);
+  const lng = Number(store.longitude ?? store.long);
+  if (Number.isFinite(lat) && Number.isFinite(lng)) {
+    return { storeLat: lat, storeLong: lng };
+  }
+  const sync = store.mapsUrl ? parseLatLongFromGoogleMapsUrl(store.mapsUrl) : null;
+  if (sync) return { storeLat: sync.latitude, storeLong: sync.longitude };
+  const loc = await resolveStorePickupLocation(store);
+  if (loc) return { storeLat: loc.latitude, storeLong: loc.longitude };
+  return { storeLat: null, storeLong: null };
+}
+
 module.exports = {
   parseLatLongFromGoogleMapsUrl,
   resolveFinalMapsUrl,
   resolveStorePickupLocation,
+  resolveStoreCoordsForDriverMatching,
 };
