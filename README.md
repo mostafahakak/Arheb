@@ -59,11 +59,13 @@ JOFOTARA_SELLER_NAME=your-company-name
 # TWILIO_ACCOUNT_SID=
 # TWILIO_AUTH_TOKEN=
 # TWILIO_VERIFY_SERVICE_SID=VAxxxxxxxx
-# Must be the Verify *Service* SID (starts with VA), not Account SID (AC).
-# Optional: TWILIO_VERIFY_CHANNEL=sms — send OTP by SMS instead of WhatsApp (no Meta WhatsApp needed).
+# Must be the Verify *Service* SID (starts with VA), not Account SID (AC) or Messaging Service (MG).
+# Live app login (POST /api/auth/register): TWILIO_REGISTER_OTP_CHANNEL=sms (default) or whatsapp
+# Optional: TWILIO_VERIFY_CHANNEL=sms — WhatsApp OTP endpoints (/api/auth/whatsapp/*)
 # Optional: TWILIO_VERIFY_PENDING_TTL_MS=600000 (stored pending row TTL, default 10 min)
 #
 # Or Twilio Programmable Messaging (Content template + sender):
+# TWILIO_MESSAGING_SERVICE_SID=MGxxxxxxxx
 # TWILIO_WHATSAPP_FROM=whatsapp:+14155238886
 # TWILIO_WHATSAPP_OTP_CONTENT_SID=HXxxxxxxxx
 # Optional: TWILIO_WHATSAPP_OTP_CODE_VAR=1; TWILIO_WHATSAPP_OTP_CONTENT_VARIABLES_EXTRAS_JSON={"2":"Arheb"}
@@ -307,11 +309,11 @@ Arheb Backend is a comprehensive REST API for an e-commerce platform built with 
 
 ## Authentication
 
-All authentication endpoints use Firebase Phone Authentication with OTP verification.
+Live customer login uses **Twilio Verify** on `POST /api/auth/register` and `POST /api/auth/verify-otp` (same URLs and JSON shape as before). Configure **`TWILIO_ACCOUNT_SID`**, **`TWILIO_AUTH_TOKEN`**, **`TWILIO_VERIFY_SERVICE_SID`** (`VA…` from Twilio Console → Verify → Services — **not** Messaging Service `MG…`). Set **`TWILIO_REGISTER_OTP_CHANNEL=sms`** for SMS OTP (default). Legacy Firebase SMS: **`POST /api/auth/firebase/register`** and **`POST /api/auth/firebase/verify-otp`** (requires **`FIREBASE_API_KEY`**).
 
 ### Register / Send OTP
 
-Sends an OTP code to the provided phone number.
+Sends an OTP code to the provided phone number via **Twilio Verify** (SMS or WhatsApp per server env).
 
 **Endpoint:** `POST /api/auth/register`
 
@@ -320,8 +322,7 @@ Sends an OTP code to the provided phone number.
 **Request Body:**
 ```json
 {
-  "phoneNumber": "+201500157920",
-  "recaptchaToken": "optional-recaptcha-token"
+  "phoneNumber": "+962791234567"
 }
 ```
 
@@ -331,14 +332,16 @@ Sends an OTP code to the provided phone number.
   "message": "OTP SENT SUCCESSFUL",
   "case": 1,
   "alreadyRegistered": false,
-  "sessionInfo": "AD8T5IuI4-lkeehNBSwKvmV8Hn98DpMamNshf5jcZL103db6jhtb765Lq5QM..."
+  "sessionInfo": "VEaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 }
 ```
 
-**Error Response (500):**
+(`sessionInfo` is Twilio Verify attempt SID or internal id — pass it to verify-otp.)
+
+**Error Response (502/503):**
 ```json
 {
-  "message": "Error message from Firebase",
+  "message": "OTP send failed or Twilio not configured",
   "case": 2
 }
 ```
@@ -348,10 +351,7 @@ Sends an OTP code to the provided phone number.
 const response = await fetch('https://arheb-backend.onrender.com/api/auth/register', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    phoneNumber: '+201500157920',
-    recaptchaToken: 'your-recaptcha-token' // optional
-  })
+  body: JSON.stringify({ phoneNumber: '+962791234567' }),
 });
 
 const data = await response.json();
@@ -371,9 +371,9 @@ Verifies the OTP code and returns authentication tokens.
 **Request Body:**
 ```json
 {
-  "phoneNumber": "+201500157920",
+  "phoneNumber": "+962791234567",
   "sessionInfo": "session-info-from-register-response",
-  "otp": "111111"
+  "otp": "123456"
 }
 ```
 
@@ -382,10 +382,13 @@ Verifies the OTP code and returns authentication tokens.
 {
   "success": true,
   "token": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "firebaseToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6IjA4MmU5NzVlMDdkZmE0OTYwYzdiN2I0ZmMxZDEwZjkxNmRjMmY1NWIiLCJ0eXAiOiJKV1QifQ...",
-  "phoneNumber": "+201500157920"
+  "firebaseToken": null,
+  "phoneNumber": "+962791234567",
+  "userId": "+962791234567"
 }
 ```
+
+(`firebaseToken` is null with Twilio login; use **`token`** for API calls.)
 
 **Error Response (401):**
 ```json

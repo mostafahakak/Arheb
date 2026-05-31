@@ -47,12 +47,14 @@ const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY;
 const JWT_SECRET = process.env.JWT_SECRET;
 const PORT = process.env.PORT || 4000;
 
-if (!FIREBASE_API_KEY) {
-  throw new Error('FIREBASE_API_KEY is required to send Firebase OTPs');
-}
-
 if (!JWT_SECRET) {
   throw new Error('JWT_SECRET is required to sign JWT tokens');
+}
+
+if (!FIREBASE_API_KEY) {
+  console.warn(
+    '[auth] FIREBASE_API_KEY not set — legacy Firebase SMS OTP (/api/auth/firebase/*) and some Identity Toolkit calls are disabled. Live login uses Twilio on /api/auth/register.',
+  );
 }
 
 const app = express();
@@ -254,6 +256,8 @@ const {
   checkResendCooldown,
   OTP_TTL_MS,
   TWILIO_VERIFY_PENDING_TTL_MS,
+  sendRegisterOtp,
+  verifyRegisterOtp,
 } = require('./utils/whatsappLoginOtp');
 
 function findUserByPhoneFlexible(phone) {
@@ -492,7 +496,12 @@ function finalizeFirebaseIdentitySession(decoded, verificationIdToken) {
   };
 }
 
-async function sendPhoneOtp(phoneNumber, options = {}) {
+async function sendFirebasePhoneOtp(phoneNumber, options = {}) {
+  if (!FIREBASE_API_KEY) {
+    const err = new Error('Firebase OTP is not configured (FIREBASE_API_KEY missing on server)');
+    err.code = 'FIREBASE_NOT_CONFIGURED';
+    throw err;
+  }
   const url = `https://identitytoolkit.googleapis.com/v1/accounts:sendVerificationCode?key=${FIREBASE_API_KEY}`;
   const payload = { phoneNumber };
   if (options.recaptchaToken) payload.recaptchaToken = options.recaptchaToken;
@@ -503,15 +512,66 @@ async function sendPhoneOtp(phoneNumber, options = {}) {
   return response.data.sessionInfo;
 }
 
-async function verifyPhoneOtp(sessionInfo, code) {
+async function verifyFirebasePhoneOtp(sessionInfo, code) {
+  if (!FIREBASE_API_KEY) {
+    const err = new Error('Firebase OTP is not configured (FIREBASE_API_KEY missing on server)');
+    err.code = 'FIREBASE_NOT_CONFIGURED';
+    throw err;
+  }
   const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPhoneNumber?key=${FIREBASE_API_KEY}`;
   const response = await axios.post(url, { sessionInfo, code }, { timeout: 15000 });
   return response.data;
 }
 
+/** Live app: Twilio OTP (same request/response as before; sessionInfo replaces Firebase sessionInfo). */
 app.post('/api/auth/register', async (req, res) => {
+  const { phoneNumber } = req.body || {};
+  console.log('auth/register hit (Twilio)', {
+    phoneNumber: maskPhoneForLog(phoneNumber),
+  });
+  if (!phoneNumber || !String(phoneNumber).trim()) {
+    return res.status(400).json({ message: 'phoneNumber is required', case: 2 });
+  }
+
+  const phoneKey = normalizeJordanMobileKey(phoneNumber);
+  if (!phoneKey || phoneKey.replace(/\D/g, '').length < 9) {
+    return res.status(400).json({ message: 'Invalid phone number', case: 2 });
+  }
+
+  const existingUser = findUserByPhoneFlexible(phoneKey);
+  if (existingUser && existingUser.isBlocked) {
+    return res.status(403).json({ message: 'User is blocked', case: 2 });
+  }
+
+  try {
+    const { sessionInfo } = await sendRegisterOtp(db, phoneNumber, phoneKey);
+    return res.status(200).json({
+      message: 'OTP SENT SUCCESSFUL',
+      case: 1,
+      alreadyRegistered: Boolean(existingUser && !existingUser.deleted),
+      sessionInfo,
+    });
+  } catch (error) {
+    if (error.code === 'RATE_LIMIT') {
+      return res.status(429).json({
+        message: error.message,
+        case: 2,
+        retryAfterSec: error.retryAfterSec,
+      });
+    }
+    if (error.code === 'OTP_NOT_CONFIGURED') {
+      return res.status(503).json({ message: error.message, case: 2 });
+    }
+    const raw = error.response?.data?.error?.message || error.message || 'OTP send failed';
+    console.error('auth/register error:', raw);
+    return res.status(502).json({ message: String(raw), case: 2 });
+  }
+});
+
+/** Legacy Firebase SMS OTP (moved off /api/auth/register). */
+app.post('/api/auth/firebase/register', async (req, res) => {
   const { phoneNumber, recaptchaToken, captchaResponse, clientType } = req.body || {};
-  console.log('auth/register hit', {
+  console.log('auth/firebase/register hit', {
     phoneNumber: maskPhoneForLog(phoneNumber),
     hasRecaptchaToken: Boolean(recaptchaToken),
     hasCaptchaResponse: Boolean(captchaResponse),
@@ -524,7 +584,7 @@ app.post('/api/auth/register', async (req, res) => {
   try {
     const normalizedPhone = phoneNumber.trim();
     const existingUser = findUserByPhoneFlexible(normalizedPhone);
-    const sessionInfo = await sendPhoneOtp(normalizedPhone, {
+    const sessionInfo = await sendFirebasePhoneOtp(normalizedPhone, {
       recaptchaToken,
       captchaResponse,
       clientType,
@@ -536,9 +596,12 @@ app.post('/api/auth/register', async (req, res) => {
       sessionInfo,
     });
   } catch (error) {
+    if (error.code === 'FIREBASE_NOT_CONFIGURED') {
+      return res.status(503).json({ message: error.message, case: 2 });
+    }
     const raw = extractFirebaseError(error);
     const hint = hintForSendVerificationError(raw);
-    console.error('auth/register error:', raw);
+    console.error('auth/firebase/register error:', raw);
     return res.status(500).json({
       message: hint ? `${raw}. ${hint}` : raw,
       case: 2,
@@ -784,9 +847,50 @@ app.post('/api/auth/whatsapp/verify-code', async (req, res) => {
   }
 });
 
+/** Live app: Twilio OTP verify (same body as before: phoneNumber, sessionInfo, otp). */
 app.post('/api/auth/verify-otp', async (req, res) => {
+  const { phoneNumber, sessionInfo, otp } = req.body || {};
+  console.log('auth/verify-otp hit (Twilio)', {
+    phoneNumber: maskPhoneForLog(phoneNumber),
+    hasSessionInfo: Boolean(sessionInfo),
+    otpLength: String(otp ?? '').length,
+  });
+  if (!phoneNumber || !sessionInfo || otp === undefined || otp === null || otp === '') {
+    return res.status(400).json({
+      success: false,
+      message: 'phoneNumber, sessionInfo, and otp are required',
+    });
+  }
+
+  const phoneKey = normalizeJordanMobileKey(phoneNumber);
+  if (!phoneKey) {
+    return res.status(400).json({ success: false, message: 'Invalid phone number' });
+  }
+
+  try {
+    await verifyRegisterOtp(db, phoneNumber, phoneKey, sessionInfo, otp);
+    const body = finalizePhoneAuthSession(phoneKey, `twilio:${phoneKey}`, null);
+    const withDriver = attachDriverClaimsToSession(body, phoneKey, null);
+    return res.status(200).json(withDriver);
+  } catch (error) {
+    if (error.statusCode === 403) {
+      return res.status(403).json({ success: false, message: error.message });
+    }
+    if (error.code === 'INVALID_SESSION' || error.code === 'INVALID_OTP') {
+      return res.status(401).json({ success: false, message: error.message });
+    }
+    console.error('auth/verify-otp error:', error?.message || error);
+    return res.status(502).json({
+      success: false,
+      message: error.message || 'Verification failed',
+    });
+  }
+});
+
+/** Legacy Firebase SMS verify (moved off /api/auth/verify-otp). */
+app.post('/api/auth/firebase/verify-otp', async (req, res) => {
   const { phoneNumber, sessionInfo, otp } = req.body;
-  console.log('auth/verify-otp hit', {
+  console.log('auth/firebase/verify-otp hit', {
     phoneNumber: maskPhoneForLog(phoneNumber),
     hasSessionInfo: Boolean(sessionInfo),
     otpLength: String(otp ?? '').length,
@@ -799,13 +903,16 @@ app.post('/api/auth/verify-otp', async (req, res) => {
   }
 
   try {
-    const verification = await verifyPhoneOtp(sessionInfo, otp);
+    const verification = await verifyFirebasePhoneOtp(sessionInfo, otp);
     const firebasePhone = verification.phoneNumber || phoneNumber;
     const firebaseUid = verification.localId || verification?.userId || null;
     const body = finalizePhoneAuthSession(firebasePhone, firebaseUid, verification.idToken ?? null);
     return res.status(200).json(body);
   } catch (error) {
-    console.error('verify-otp error:', extractFirebaseError(error));
+    if (error.code === 'FIREBASE_NOT_CONFIGURED') {
+      return res.status(503).json({ success: false, message: error.message });
+    }
+    console.error('auth/firebase/verify-otp error:', extractFirebaseError(error));
     if (error.statusCode === 403) {
       return res.status(403).json({
         success: false,
@@ -820,6 +927,9 @@ app.post('/api/auth/verify-otp', async (req, res) => {
 });
 
 async function deleteFirebaseUser(firebaseIdToken) {
+  if (!FIREBASE_API_KEY) {
+    throw new Error('Firebase is not configured (FIREBASE_API_KEY missing on server)');
+  }
   const url = `https://identitytoolkit.googleapis.com/v1/accounts:delete?key=${FIREBASE_API_KEY}`;
   await axios.post(url, { idToken: firebaseIdToken });
 }

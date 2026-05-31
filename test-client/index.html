@@ -486,12 +486,27 @@
         <!-- Authentication Section -->
         <section id="auth" class="section active">
           <h2>Authentication <span class="badge public">Public</span></h2>
+          <div class="card" style="margin-bottom: 1rem; background: #ebf8ff; border: 1px solid #90cdf4;">
+            <h3 style="margin-top: 0;">Live app login (Twilio OTP)</h3>
+            <p style="font-size: 0.85rem; color: #2c5282; margin: 0 0 0.5rem 0;">
+              <code>POST /api/auth/register</code> and <code>POST /api/auth/verify-otp</code> use <strong>Twilio Verify</strong> on the server (same URLs as the production app). No Firebase SMS on these endpoints anymore.
+            </p>
+            <ul style="font-size: 0.8rem; color: #2b6cb0; margin: 0; padding-left: 1.2rem;">
+              <li><strong>Required on Render:</strong> <code>TWILIO_ACCOUNT_SID</code> (AC…), <code>TWILIO_AUTH_TOKEN</code>, <code>TWILIO_VERIFY_SERVICE_SID</code> (<strong>VA…</strong> from Twilio Console → Verify → Services).</li>
+              <li><strong>Not the same as Messaging Service:</strong> <code>MG…</code> is <code>TWILIO_MESSAGING_SERVICE_SID</code> (optional template WhatsApp fallback only).</li>
+              <li><strong>SMS OTP (like old Firebase):</strong> <code>TWILIO_REGISTER_OTP_CHANNEL=sms</code> on the server.</li>
+            </ul>
+            <p style="font-size: 0.8rem; color: #718096; margin: 0.75rem 0 0 0;">
+              After <strong>Request OTP</strong>, <code>sessionInfo</code> is filled automatically. If it starts with <code>VE…</code>, Twilio Verify sent the code (SMS or WhatsApp per server config).
+            </p>
+          </div>
           
           <div class="card">
-            <h3>Register / Send OTP</h3>
+            <h3>Register / Send OTP <span class="badge public">Twilio</span></h3>
+            <p style="font-size: 0.8rem; color: #718096;">POST <code>/api/auth/register</code> — body: <code>{ "phoneNumber": "+962…" }</code></p>
             <div class="form-group">
               <label for="phoneInput">Phone Number</label>
-              <input id="phoneInput" type="tel" value="+201500157920" placeholder="+201500157920" />
+              <input id="phoneInput" type="tel" value="+962791234567" placeholder="+962791234567" />
             </div>
             <button id="sendOtpBtn">Request OTP</button>
             <div id="registerStatus" class="status info" style="display: none;"></div>
@@ -500,13 +515,14 @@
 
           <div class="card">
             <h3>Verify OTP</h3>
+            <p style="font-size: 0.8rem; color: #718096;">POST <code>/api/auth/verify-otp</code> — returns <code>token</code> (Bearer JWT). <code>firebaseToken</code> may be null with Twilio.</p>
             <div class="form-group">
               <label for="sessionInfoInput">Session Info</label>
-              <textarea id="sessionInfoInput" rows="3" placeholder="Paste sessionInfo from register response"></textarea>
+              <textarea id="sessionInfoInput" rows="3" placeholder="Filled from register response (sessionInfo)"></textarea>
             </div>
             <div class="form-group">
               <label for="otpInput">OTP Code</label>
-              <input id="otpInput" type="text" value="111111" placeholder="111111" />
+              <input id="otpInput" type="text" value="" placeholder="6-digit code from SMS/WhatsApp" />
             </div>
             <button id="verifyOtpBtn" class="secondary">Verify OTP</button>
             <div id="verifyStatus" class="status info" style="display: none;"></div>
@@ -514,7 +530,17 @@
           </div>
 
           <div class="card">
+            <h3>Legacy Firebase SMS OTP</h3>
+            <p style="font-size: 0.8rem; color: #718096;">POST <code>/api/auth/firebase/register</code> + <code>/api/auth/firebase/verify-otp</code> — requires <code>FIREBASE_API_KEY</code> on server and reCAPTCHA below.</p>
+            <button id="firebaseSendOtpBtn" class="secondary">Firebase: Request OTP</button>
+            <button id="firebaseVerifyOtpBtn" class="secondary">Firebase: Verify OTP</button>
+            <div id="firebaseAuthStatus" class="status info" style="display: none;"></div>
+            <div id="firebaseAuthOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
             <h3>Delete User <span class="badge auth">Auth Required</span></h3>
+            <p style="font-size: 0.8rem; color: #718096;">Uses Bearer token from verify step only (soft delete).</p>
             <button id="deleteUserBtn" class="danger">Delete User</button>
             <div id="deleteOutput" class="output" style="display: none;"></div>
           </div>
@@ -531,8 +557,10 @@
               Set the <strong>API base URL</strong> in the header. This page calls the same production endpoints as your apps.
             </p>
             <ul style="font-size: 0.8rem; color: #2f855a; margin: 0; padding-left: 1.2rem;">
-              <li><strong>Twilio Verify (WhatsApp):</strong> <code>TWILIO_ACCOUNT_SID</code>, <code>TWILIO_AUTH_TOKEN</code>, <code>TWILIO_VERIFY_SERVICE_SID</code> (<strong>must start with VA</strong> from Verify → Services — not AC). Enable WhatsApp on the service if using WhatsApp.</li>
-              <li><strong>Twilio Verify (SMS, no WhatsApp):</strong> same three vars + <code>TWILIO_VERIFY_CHANNEL=sms</code> on the server.</li>
+              <li><strong>Live app (same as Authentication tab):</strong> <code>POST /api/auth/register</code> + <code>/api/auth/verify-otp</code> — Twilio Verify; set <code>TWILIO_VERIFY_SERVICE_SID</code> (<strong>VA…</strong>, not MG…).</li>
+              <li><strong>Twilio Verify (WhatsApp):</strong> <code>TWILIO_ACCOUNT_SID</code>, <code>TWILIO_AUTH_TOKEN</code>, <code>TWILIO_VERIFY_SERVICE_SID</code> (<strong>must start with VA</strong> from Verify → Services — not AC, not MG). Enable WhatsApp on the service if using WhatsApp.</li>
+              <li><strong>Twilio Verify (SMS, no WhatsApp):</strong> same three vars + <code>TWILIO_REGISTER_OTP_CHANNEL=sms</code> (or <code>TWILIO_VERIFY_CHANNEL=sms</code>) on the server.</li>
+              <li><strong>Twilio Messaging Service (MG…):</strong> optional <code>TWILIO_MESSAGING_SERVICE_SID</code> — only for Content-template WhatsApp fallback, not for Verify OTP.</li>
               <li><strong>Twilio Messaging (template):</strong> above + <code>TWILIO_WHATSAPP_FROM</code>, <code>TWILIO_WHATSAPP_OTP_CONTENT_SID</code>.</li>
               <li><strong>Meta Cloud API:</strong> <code>WHATSAPP_ACCESS_TOKEN</code>, <code>WHATSAPP_PHONE_NUMBER_ID</code>, template env vars.</li>
             </ul>
@@ -1575,28 +1603,35 @@
         verifier.render().catch(console.error);
       }
 
-      // Authentication
+      // Authentication — live app: Twilio on /api/auth/register (no reCAPTCHA)
       document.getElementById('sendOtpBtn').addEventListener('click', async () => {
         const phone = document.getElementById('phoneInput').value.trim();
-        showStatus('registerStatus', 'Preparing reCAPTCHA...', 'info');
+        if (!phone) {
+          showStatus('registerStatus', 'Enter phone number', 'error');
+          return;
+        }
+        showStatus('registerStatus', 'Sending OTP via Twilio…', 'info');
         try {
-          const recaptchaToken = await verifier.verify();
-          showStatus('registerStatus', 'Sending request...', 'info');
           const res = await fetch(`${getBackendBase()}/api/auth/register`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ phoneNumber: phone, recaptchaToken }),
+            body: JSON.stringify({ phoneNumber: phone }),
           });
           const data = await res.json();
           showOutput('registerOutput', data);
           if (data.sessionInfo) {
             document.getElementById('sessionInfoInput').value = data.sessionInfo;
           }
-          showStatus('registerStatus', res.ok ? 'OTP sent successfully!' : 'Failed to send OTP', res.ok ? 'success' : 'error');
+          const hint = String(data.sessionInfo || '').startsWith('VE')
+            ? 'Twilio Verify — check SMS/WhatsApp for the code.'
+            : (res.ok ? 'OTP sent — check your phone.' : '');
+          showStatus(
+            'registerStatus',
+            res.ok ? (hint || 'OTP sent successfully!') : (data.message || 'Failed to send OTP'),
+            res.ok ? 'success' : 'error',
+          );
         } catch (error) {
           showStatus('registerStatus', `Error: ${error.message}`, 'error');
-        } finally {
-          setupVerifier();
         }
       });
 
@@ -1617,28 +1652,84 @@
           });
           const data = await res.json();
           showOutput('verifyOutput', data);
-          if (data.success) {
+          if (data.success || data.token) {
             lastAppToken = data.token;
             lastFirebaseToken = data.firebaseToken || '';
             showStatus('verifyStatus', 'Logged in successfully! Token saved.', 'success');
           } else {
-            showStatus('verifyStatus', 'Verification failed', 'error');
+            showStatus('verifyStatus', data.message || 'Verification failed', 'error');
           }
         } catch (error) {
           showStatus('verifyStatus', `Error: ${error.message}`, 'error');
         }
       });
 
+      document.getElementById('firebaseSendOtpBtn').addEventListener('click', async () => {
+        const phone = document.getElementById('phoneInput').value.trim();
+        showStatus('firebaseAuthStatus', 'Preparing reCAPTCHA…', 'info');
+        try {
+          const recaptchaToken = await verifier.verify();
+          showStatus('firebaseAuthStatus', 'Sending Firebase OTP…', 'info');
+          const res = await fetch(`${getBackendBase()}/api/auth/firebase/register`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phoneNumber: phone, recaptchaToken }),
+          });
+          const data = await res.json();
+          showOutput('firebaseAuthOutput', data);
+          if (data.sessionInfo) {
+            document.getElementById('sessionInfoInput').value = data.sessionInfo;
+          }
+          showStatus(
+            'firebaseAuthStatus',
+            res.ok ? 'Firebase OTP sent (legacy).' : (data.message || 'Failed'),
+            res.ok ? 'success' : 'error',
+          );
+        } catch (error) {
+          showStatus('firebaseAuthStatus', `Error: ${error.message}`, 'error');
+        } finally {
+          setupVerifier();
+        }
+      });
+
+      document.getElementById('firebaseVerifyOtpBtn').addEventListener('click', async () => {
+        const sessionInfo = document.getElementById('sessionInfoInput').value.trim();
+        const otp = document.getElementById('otpInput').value.trim();
+        const phone = document.getElementById('phoneInput').value.trim();
+        if (!sessionInfo || !otp) {
+          showStatus('firebaseAuthStatus', 'Need sessionInfo and OTP', 'error');
+          return;
+        }
+        showStatus('firebaseAuthStatus', 'Verifying via Firebase…', 'info');
+        try {
+          const res = await fetch(`${getBackendBase()}/api/auth/firebase/verify-otp`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phoneNumber: phone, sessionInfo, otp }),
+          });
+          const data = await res.json();
+          showOutput('firebaseAuthOutput', data);
+          if (data.success || data.token) {
+            lastAppToken = data.token;
+            lastFirebaseToken = data.firebaseToken || '';
+            showStatus('firebaseAuthStatus', 'Firebase login OK. Token saved.', 'success');
+          } else {
+            showStatus('firebaseAuthStatus', data.message || 'Verification failed', 'error');
+          }
+        } catch (error) {
+          showStatus('firebaseAuthStatus', `Error: ${error.message}`, 'error');
+        }
+      });
+
       document.getElementById('deleteUserBtn').addEventListener('click', async () => {
-        if (!lastAppToken || !lastFirebaseToken) {
-          showOutput('deleteOutput', { error: 'Please verify OTP first' });
+        if (!lastAppToken) {
+          showOutput('deleteOutput', { error: 'Please verify OTP first (token required)' });
           return;
         }
         try {
           const res = await fetch(`${getBackendBase()}/api/auth/user`, {
             method: 'DELETE',
-            headers: { 'Content-Type': 'application/json', 'Authorization': lastAppToken },
-            body: JSON.stringify({ firebaseIdToken: lastFirebaseToken }),
+            headers: { 'Content-Type': 'application/json', Authorization: lastAppToken },
           });
           const data = await res.json();
           showOutput('deleteOutput', data);

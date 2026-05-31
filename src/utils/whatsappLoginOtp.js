@@ -63,11 +63,23 @@ function resolveOtpDestination(phoneNumber, phoneKey) {
   return null;
 }
 
+/** DB channel for live app register/verify-otp (Twilio). */
+const REGISTER_OTP_CHANNEL = 'register';
+
 /** Twilio Verify delivery: `whatsapp` (default) or `sms` (no WhatsApp Business needed). */
 function getTwilioVerifyChannel() {
   const c = (process.env.TWILIO_VERIFY_CHANNEL || 'whatsapp').trim().toLowerCase();
   if (c === 'sms' || c === 'text') return 'sms';
   return 'whatsapp';
+}
+
+/** Live POST /api/auth/register — defaults to SMS (same UX as old Firebase Phone OTP). */
+function getRegisterOtpChannel() {
+  const specific = process.env.TWILIO_REGISTER_OTP_CHANNEL?.trim().toLowerCase();
+  if (specific === 'sms' || specific === 'text') return 'sms';
+  if (specific === 'whatsapp') return 'whatsapp';
+  if (process.env.TWILIO_VERIFY_CHANNEL?.trim()) return getTwilioVerifyChannel();
+  return 'sms';
 }
 
 /**
@@ -309,12 +321,19 @@ async function sendTwilioWhatsappAuthenticationOtp(toDigits, otpCode) {
   const client = twilioSdk(t.accountSid, t.authToken);
   const to = jordanDigitsToTwilioWhatsAppTo(toDigits);
   const contentVariables = buildTwilioOtpContentVariables(otpCode);
-  const message = await client.messages.create({
-    from: t.from,
+  /** Optional Messaging Service (MG…); when set, Twilio picks the sender from the pool. */
+  const messagingServiceSid = process.env.TWILIO_MESSAGING_SERVICE_SID?.trim();
+  const createPayload = {
     to,
     contentSid: t.contentSid,
     contentVariables,
-  });
+  };
+  if (messagingServiceSid && messagingServiceSid.startsWith('MG')) {
+    createPayload.messagingServiceSid = messagingServiceSid;
+  } else {
+    createPayload.from = t.from;
+  }
+  const message = await client.messages.create(createPayload);
   return { sid: message.sid, status: message.status, provider: 'twilio' };
 }
 
@@ -437,7 +456,112 @@ function checkResendCooldown(pending, now) {
   return { ok: true };
 }
 
+/**
+ * Send OTP for live POST /api/auth/register (Twilio Verify preferred, else Messaging/Meta).
+ * Returns sessionInfo string for verify-otp (same contract as legacy Firebase sessionInfo).
+ */
+async function sendRegisterOtp(db, phoneNumber, phoneKey) {
+  const cfg = getWhatsappConfig();
+  if (!cfg.configured) {
+    const err = new Error(getWhatsappOtpNotConfiguredHint());
+    err.code = 'OTP_NOT_CONFIGURED';
+    throw err;
+  }
+  const dest = resolveOtpDestination(phoneNumber, phoneKey);
+  if (!dest) {
+    const err = new Error('Could not format phone for OTP');
+    err.code = 'INVALID_PHONE';
+    throw err;
+  }
+
+  const now = Date.now();
+  const pending = getPendingWhatsappOtp(db, phoneKey, REGISTER_OTP_CHANNEL);
+  const cooldown = checkResendCooldown(pending, now);
+  if (!cooldown.ok) {
+    const err = new Error(`Wait ${cooldown.waitSec}s before requesting another code`);
+    err.code = 'RATE_LIMIT';
+    err.retryAfterSec = cooldown.waitSec;
+    throw err;
+  }
+
+  const localVerificationId = generateVerificationId();
+  let sessionInfo = localVerificationId;
+  let ttlMs = OTP_TTL_MS;
+
+  if (cfg.provider === 'twilio_verify') {
+    const channel = getRegisterOtpChannel();
+    const verification = await startTwilioVerifyOtp(dest.digits, channel);
+    sessionInfo = verification.sid;
+    ttlMs = TWILIO_VERIFY_PENDING_TTL_MS;
+    upsertWhatsappOtp(db, {
+      phoneKey,
+      channel: REGISTER_OTP_CHANNEL,
+      code: '__twilio_verify__',
+      verificationId: verification.sid,
+      now,
+      ttlMs,
+    });
+  } else {
+    const code = generateOtpCode();
+    await sendWhatsappAuthenticationOtp(dest.digits, code);
+    upsertWhatsappOtp(db, {
+      phoneKey,
+      channel: REGISTER_OTP_CHANNEL,
+      code,
+      verificationId: localVerificationId,
+      now,
+      ttlMs,
+    });
+  }
+
+  return { sessionInfo, channel: cfg.provider === 'twilio_verify' ? getRegisterOtpChannel() : 'whatsapp' };
+}
+
+/**
+ * Verify OTP for live POST /api/auth/verify-otp.
+ * @returns {{ phoneKey: string }}
+ */
+async function verifyRegisterOtp(db, phoneNumber, phoneKey, sessionInfo, otp) {
+  const pending = getPendingWhatsappOtp(db, phoneKey, REGISTER_OTP_CHANNEL);
+  if (!pending || String(pending.verificationId) !== String(sessionInfo)) {
+    const err = new Error('Invalid or expired OTP. Request a new code.');
+    err.code = 'INVALID_SESSION';
+    throw err;
+  }
+
+  const dest = resolveOtpDestination(phoneNumber, phoneKey);
+  const otpDigits = dest ? dest.digits : '';
+
+  if (isTwilioVerifyVerificationId(pending.verificationId) && otpDigits) {
+    let approved = false;
+    try {
+      approved = await checkTwilioVerifyWhatsappOtp(otpDigits, otp);
+    } catch (e) {
+      const err = new Error(e.message || 'Verification check failed');
+      err.code = e.code || 'VERIFY_FAILED';
+      throw err;
+    }
+    if (!approved) {
+      const err = new Error('Invalid OTP code');
+      err.code = 'INVALID_OTP';
+      throw err;
+    }
+  } else {
+    const { normalizeOtpDigits } = require('./jordanMobile');
+    const otpNorm = normalizeOtpDigits(otp);
+    if (otpNorm.length !== 6 || otpNorm !== String(pending.code)) {
+      const err = new Error('Invalid OTP code');
+      err.code = 'INVALID_OTP';
+      throw err;
+    }
+  }
+
+  deleteWhatsappOtp(db, phoneKey, REGISTER_OTP_CHANNEL);
+  return { phoneKey };
+}
+
 module.exports = {
+  REGISTER_OTP_CHANNEL,
   OTP_TTL_MS,
   TWILIO_VERIFY_PENDING_TTL_MS,
   MIN_RESEND_INTERVAL_MS,
@@ -448,6 +572,7 @@ module.exports = {
   jordanKeyToWhatsAppDigits,
   resolveOtpDestination,
   getTwilioVerifyChannel,
+  getRegisterOtpChannel,
   getWhatsappOtpNotConfiguredHint,
   getWhatsappConfig,
   getTwilioVerifyConfig,
@@ -463,4 +588,6 @@ module.exports = {
   getPendingWhatsappOtp,
   deleteWhatsappOtp,
   checkResendCooldown,
+  sendRegisterOtp,
+  verifyRegisterOtp,
 };
