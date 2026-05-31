@@ -10,8 +10,24 @@ const { assignDriverToOrder } = require('./driverCommission');
 const fcm = require('../fcm');
 const { emitDriverDeliveryRequest } = require('../driverPresence');
 const { getStoreLatLong, parseLatLongFromGoogleMapsUrl } = require('./sequentialDriverOffer');
+const { resolveStorePickupLocation } = require('./mapsUrlResolve');
 
 const DEFAULT_MAX_CHAIN_KM = 1;
+
+/** Order statuses where a driver is still actively handling the order (so they are "busy"). */
+const ACTIVE_DRIVER_ORDER_STATUSES = "('Preparing', 'In progress', 'Being prepared', 'Driver to pick', 'On the way')";
+
+/** True if the driver currently has at least one active (not delivered/cancelled) store order. */
+function driverHasActiveOrder(db, driverId) {
+  try {
+    const row = db
+      .prepare(`SELECT COUNT(*) AS n FROM orders WHERE driverId = ? AND status IN ${ACTIVE_DRIVER_ORDER_STATUSES}`)
+      .get(driverId);
+    return (row?.n ?? 0) > 0;
+  } catch (e) {
+    return false;
+  }
+}
 
 function getOrderDeliveryCoords(order) {
   const lat = Number(order.addressLat);
@@ -289,6 +305,124 @@ function runDeliveryClusterAutoAssign(db, io, storeId, ctx, options = {}) {
   return { assigned, noDriver };
 }
 
+/**
+ * Assign the single nearest available driver to one store order (used when the order enters Preparing,
+ * or via the manual auto-assign button).
+ *
+ * - Resolves store coordinates robustly (expands Google Maps short links — same resolver as checkout),
+ *   so the "nearest" sort is reliable instead of falling back to arbitrary order.
+ * - Picks the nearest ONLINE driver (only online drivers can deliver right now).
+ * - Prefers a driver with NO active order, so consecutive orders spread to the nearest *free* driver
+ *   instead of piling onto whoever is closest to the store.
+ * - If no driver is online, falls back to the sequential FCM offer (nearest by last-known location).
+ *
+ * @returns {Promise<{ assigned: boolean, driverId?: number, distanceKm?: number, reason?: string }>}
+ */
+async function autoAssignNearestDriverForStoreOrder(db, io, order, ctx) {
+  const { loadStores, getActiveFromListWithDistance } = ctx;
+  if (!order || order.driverId != null) return { assigned: false, reason: 'already_assigned' };
+  const orderId = order.id;
+
+  let storeLat = null;
+  let storeLong = null;
+  let store = null;
+  if (order.storeId != null) {
+    store = loadStores().find((s) => String(s.id) === String(order.storeId)) || null;
+    if (store) {
+      try {
+        const loc = await resolveStorePickupLocation(store);
+        if (loc) {
+          storeLat = loc.latitude;
+          storeLong = loc.longitude;
+        }
+      } catch (e) {
+        /* ignore — will fall back to unsorted */
+      }
+    }
+  }
+
+  let drivers = [];
+  try {
+    drivers = db.prepare('SELECT id, name FROM drivers WHERE isBlocked = 0').all();
+  } catch (e) {
+    if (!e.message || !e.message.includes('no such table')) throw e;
+  }
+  const candidateIds = drivers.map((d) => d.id);
+  const nameById = new Map(drivers.map((d) => [d.id, d.name]));
+
+  const online = getActiveFromListWithDistance(candidateIds, storeLat, storeLong);
+
+  if (!online.length) {
+    try {
+      const { offerNextSequentialDriver } = require('./sequentialDriverOffer');
+      const next = offerNextSequentialDriver(db, io, orderId, order, ctx);
+      if (next && io) {
+        try {
+          broadcastDriverOrdersUpdated(io, { type: 'new_request', orderId });
+        } catch (e) {
+          /* ignore */
+        }
+      }
+      return { assigned: false, reason: next ? 'offered' : 'no_driver_online' };
+    } catch (e) {
+      return { assigned: false, reason: 'no_driver_online' };
+    }
+  }
+
+  const freeFirst = online.filter((d) => !driverHasActiveOrder(db, d.driverId));
+  const pick = freeFirst[0] || online[0];
+  if (!pick) return { assigned: false, reason: 'no_driver_online' };
+
+  const driverId = pick.driverId;
+  const driverName = nameById.get(driverId) || null;
+
+  try {
+    const { clearStoreOrderOfferTimeout, rejectAllPendingDriverRequestsForStoreOrder } = require('./sequentialDriverOffer');
+    clearStoreOrderOfferTimeout(orderId);
+    rejectAllPendingDriverRequestsForStoreOrder(db, orderId);
+  } catch (e) {
+    /* ignore */
+  }
+
+  assignDriverToOrder(db, orderId, driverId, driverName, 'In progress');
+  try {
+    db.prepare(`UPDATE orders SET driverAssignmentStatus = NULL WHERE id = ?`).run(orderId);
+  } catch (e) {
+    /* ignore */
+  }
+
+  const full = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
+  notifyDriverAssigned(db, io, orderId, full, driverId, store);
+  emitOrderStatus(orderId, full?.status || 'In progress');
+  if (full?.phoneNumber) {
+    fcm
+      .sendToUserByPhone(
+        db,
+        full.phoneNumber,
+        'Driver assigned',
+        `A driver has been assigned to Order #${orderId}.`,
+        null,
+        {
+          orderId: String(orderId),
+          status: String(full?.status || 'In progress'),
+          type: 'order_tracking',
+          screen: 'order_details',
+          deepLink: `arheb://orders/${orderId}`,
+          click_action: 'FLUTTER_NOTIFICATION_CLICK',
+        },
+      )
+      .catch(() => {});
+  }
+  if (io) {
+    try {
+      broadcastDriverOrdersUpdated(io, { type: 'order_accepted', orderId, driverId });
+    } catch (e) {
+      /* ignore */
+    }
+  }
+  return { assigned: true, driverId, distanceKm: pick.distanceKm ?? null };
+}
+
 function ensureOrderAssignmentColumns(db) {
   try {
     db.exec(`ALTER TABLE orders ADD COLUMN driverAssignmentStatus TEXT`);
@@ -305,6 +439,8 @@ function ensureOrderAssignmentColumns(db) {
 module.exports = {
   clusterOrdersByDeliveryChain,
   runDeliveryClusterAutoAssign,
+  autoAssignNearestDriverForStoreOrder,
+  driverHasActiveOrder,
   ensureOrderAssignmentColumns,
   getOrderDeliveryCoords,
   DEFAULT_MAX_CHAIN_KM,

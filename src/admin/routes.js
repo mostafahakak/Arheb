@@ -88,7 +88,7 @@ const {
   fcmPayloadForArhebBoxRequest,
 } = require('../utils/sequentialDriverOffer');
 const {
-  runDeliveryClusterAutoAssign,
+  autoAssignNearestDriverForStoreOrder,
   ensureOrderAssignmentColumns,
   notifyDriverAssigned,
 } = require('../utils/deliveryClusterAssignment');
@@ -2721,28 +2721,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     const items = findOrderItems.all(orderId);
     notifyCustomerOrderStatusChange(db, order, orderId, nextStatus);
 
-    // Nearest online driver auto-assign (cluster); if none online, sequential FCM invites (see sequentialDriverOffer).
+    // Assign the nearest available driver to the store when the order enters Preparing.
+    // Runs in the background (store-location resolution may expand a Maps short link); the result
+    // is pushed to the dashboard/driver apps via socket + FCM, so the status response is not delayed.
     if (nextKey === 'preparing' && updated.driverId == null) {
-      try {
-        clearStoreOrderOfferTimeout(orderId);
-        rejectAllPendingDriverRequestsForStoreOrder(db, orderId);
-        const autoAssignResult = runDeliveryClusterAutoAssign(db, io, updated.storeId, offerCtx);
-        const hit = autoAssignResult.assigned.find((x) => x.orderId === orderId);
-        updated = findOrderById.get(orderId);
-        if (!hit && io && updated?.driverId == null) {
-          const next = offerNextSequentialDriver(db, io, orderId, updated, offerCtx);
-          if (next) {
-            try {
-              const { broadcastDriverOrdersUpdated } = require('../driverPresence');
-              broadcastDriverOrdersUpdated(io, { type: 'new_request', orderId });
-            } catch (e) {
-              /* ignore */
-            }
-          }
-        }
-      } catch (e) {
+      autoAssignNearestDriverForStoreOrder(db, io, updated, offerCtx).catch((e) => {
         console.error('[admin] driver assign on Preparing:', e?.message || e);
-      }
+      });
     }
 
     if (nextStatus.toLowerCase() === 'delivered') {
@@ -3029,8 +3014,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     });
   });
 
-  // ——— Auto-assign: nearest online driver first (Admin / SuperAdmin only for manual trigger) ———
-  app.post('/api/admin/orders/:orderId/auto-assign', auth, requireAdminOrSuper, (req, res) => {
+  // ——— Auto-assign: nearest available driver to the store (Admin / SuperAdmin only for manual trigger) ———
+  app.post('/api/admin/orders/:orderId/auto-assign', auth, requireAdminOrSuper, async (req, res) => {
     const orderId = parseInt(req.params.orderId, 10);
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
@@ -3045,25 +3030,32 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     if (order.driverId != null) {
       return res.status(400).json({ success: false, message: 'Order already has a driver assigned' });
     }
-    const autoAssignResult = runDeliveryClusterAutoAssign(db, io, order.storeId, offerCtx);
-    const hit = autoAssignResult.assigned.find((x) => x.orderId === orderId);
-    if (!hit) {
+    const result = await autoAssignNearestDriverForStoreOrder(db, io, order, offerCtx);
+    if (!result.assigned) {
       const still = findOrderById.get(orderId);
-      const reason = still?.driverAssignmentStatus === 'no_driver_online' ? 'no_driver_online' : 'no_match';
+      const reason = result.reason === 'no_driver_online' ? 'no_driver_online' : result.reason || 'no_match';
+      if (reason === 'offered') {
+        return res.status(200).json({
+          success: true,
+          message:
+            'No idle driver online — sent a request to the nearest available driver. The next nearest is tried if they do not accept.',
+          data: { orderId, offered: true },
+        });
+      }
       return res.status(404).json({
         success: false,
         message:
           reason === 'no_driver_online'
             ? 'No online drivers available for this store. Drivers must connect to the app and share location.'
             : 'Could not assign a driver (check delivery coordinates and driver availability).',
-        data: { orderId, autoAssign: autoAssignResult, driverAssignmentStatus: still?.driverAssignmentStatus ?? null },
+        data: { orderId, result, driverAssignmentStatus: still?.driverAssignmentStatus ?? null },
       });
     }
     const updated = findOrderById.get(orderId);
     return res.status(200).json({
       success: true,
-      message: 'Driver assigned automatically (clustered by delivery distance, max 1 km between consecutive stops).',
-      data: { orderId, driverId: hit.driverId, order: updated, autoAssign: autoAssignResult },
+      message: 'Driver assigned automatically (nearest available driver to the store).',
+      data: { orderId, driverId: result.driverId, distanceKm: result.distanceKm ?? null, order: updated },
     });
   });
 
