@@ -2687,6 +2687,7 @@
       });
 
       // ——— Driver ———
+      let lastDriverVerificationId = '';
       document.getElementById('driverSendOtpBtn').addEventListener('click', async () => {
         try {
           const mobile = document.getElementById('driverMobileOtp').value.trim();
@@ -2697,6 +2698,9 @@
           });
           const data = await res.json();
           showOutput('driverSendOtpOutput', data);
+          if (data.success && data.data) {
+            lastDriverVerificationId = data.data.verificationId || data.data.sessionInfo || '';
+          }
         } catch (e) {
           showOutput('driverSendOtpOutput', { error: e.message });
         }
@@ -2708,7 +2712,12 @@
           const res = await fetch(`${getBackendBase()}/api/driver/login`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mobile, otpCode }),
+            body: JSON.stringify({
+              mobile,
+              otpCode,
+              verificationId: lastDriverVerificationId,
+              sessionInfo: lastDriverVerificationId,
+            }),
           });
           const data = await res.json();
           showOutput('driverLoginOutput', data);

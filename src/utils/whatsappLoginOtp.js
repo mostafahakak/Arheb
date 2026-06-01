@@ -67,6 +67,22 @@ function resolveOtpDestination(phoneNumber, phoneKey) {
 const REGISTER_OTP_CHANNEL = 'register';
 /** DB channel for POST /api/driver/send-otp + /api/driver/login (Twilio). */
 const DRIVER_LOGIN_OTP_CHANNEL = 'driver_login';
+/** DB channel for POST /api/auth/whatsapp/send-code + verify-code. */
+const CUSTOMER_WHATSAPP_OTP_CHANNEL = 'customer';
+/** DB channel for POST /api/driver/whatsapp/send-otp + login. */
+const DRIVER_WHATSAPP_OTP_CHANNEL = 'driver';
+
+function isTwilioOtpConfigured() {
+  return getTwilioVerifyConfig().complete;
+}
+
+/** SMS vs WhatsApp for Twilio Verify — register/driver SMS routes vs WhatsApp login routes. */
+function getTwilioDeliveryChannelFor(dbChannel) {
+  if (dbChannel === CUSTOMER_WHATSAPP_OTP_CHANNEL || dbChannel === DRIVER_WHATSAPP_OTP_CHANNEL) {
+    return getTwilioVerifyChannel();
+  }
+  return getRegisterOtpChannel();
+}
 
 /** Twilio Verify delivery: `whatsapp` (default) or `sms` (no WhatsApp Business needed). */
 function getTwilioVerifyChannel() {
@@ -493,7 +509,7 @@ async function sendPhoneLoginOtp(db, phoneNumber, phoneKey, channel) {
   let deliveryChannel = 'whatsapp';
 
   if (cfg.provider === 'twilio_verify') {
-    deliveryChannel = getRegisterOtpChannel();
+    deliveryChannel = getTwilioDeliveryChannelFor(channel);
     const verification = await startTwilioVerifyOtp(dest.digits, deliveryChannel);
     sessionInfo = verification.sid;
     ttlMs = TWILIO_VERIFY_PENDING_TTL_MS;
@@ -593,9 +609,28 @@ async function verifyDriverLoginOtp(db, phoneNumber, phoneKey, verificationId, o
   return verifyPhoneLoginOtp(db, phoneNumber, phoneKey, verificationId, otp, DRIVER_LOGIN_OTP_CHANNEL);
 }
 
+async function sendCustomerWhatsappLoginOtp(db, phoneNumber, phoneKey) {
+  return sendPhoneLoginOtp(db, phoneNumber, phoneKey, CUSTOMER_WHATSAPP_OTP_CHANNEL);
+}
+
+async function verifyCustomerWhatsappLoginOtp(db, phoneNumber, phoneKey, verificationId, otp) {
+  return verifyPhoneLoginOtp(db, phoneNumber, phoneKey, verificationId, otp, CUSTOMER_WHATSAPP_OTP_CHANNEL);
+}
+
+async function sendDriverWhatsappLoginOtp(db, phoneNumber, phoneKey) {
+  return sendPhoneLoginOtp(db, phoneNumber, phoneKey, DRIVER_WHATSAPP_OTP_CHANNEL);
+}
+
+async function verifyDriverWhatsappLoginOtp(db, phoneNumber, phoneKey, verificationId, otp) {
+  return verifyPhoneLoginOtp(db, phoneNumber, phoneKey, verificationId, otp, DRIVER_WHATSAPP_OTP_CHANNEL);
+}
+
 module.exports = {
   REGISTER_OTP_CHANNEL,
   DRIVER_LOGIN_OTP_CHANNEL,
+  CUSTOMER_WHATSAPP_OTP_CHANNEL,
+  DRIVER_WHATSAPP_OTP_CHANNEL,
+  isTwilioOtpConfigured,
   OTP_TTL_MS,
   TWILIO_VERIFY_PENDING_TTL_MS,
   MIN_RESEND_INTERVAL_MS,
@@ -628,4 +663,8 @@ module.exports = {
   verifyPhoneLoginOtp,
   sendDriverLoginOtp,
   verifyDriverLoginOtp,
+  sendCustomerWhatsappLoginOtp,
+  verifyCustomerWhatsappLoginOtp,
+  sendDriverWhatsappLoginOtp,
+  verifyDriverWhatsappLoginOtp,
 };
