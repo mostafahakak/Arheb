@@ -1,6 +1,6 @@
 /**
  * Dashboard-configurable fixed delivery fees for circular zones (WGS84 haversine km — “real” km, not road routing).
- * Default seed: جامعة العقبة للتكنولوجيا & تالا باي — 3 km radius, 2 JOD each.
+ * Zones are configured only via the dashboard (App Info). No automatic seed on empty table.
  */
 
 function round2(n) {
@@ -68,8 +68,13 @@ function ensureDeliveryFixedZonesTable(db) {
 function seedDeliveryFixedZonesIfEmpty(db) {
   ensureDeliveryFixedZonesTable(db);
   migrateLegacyDeliveryPinCoordinates(db);
+}
+
+function seedDefaultDeliveryFixedZonesIfEmpty(db) {
+  ensureDeliveryFixedZonesTable(db);
+  migrateLegacyDeliveryPinCoordinates(db);
   const row = db.prepare('SELECT COUNT(*) AS c FROM delivery_fixed_zones').get();
-  if (!row || row.c > 0) return;
+  if (!row || row.c > 0) return false;
   const ins = db.prepare(
     `INSERT INTO delivery_fixed_zones (sortOrder, label, centerLat, centerLon, radiusKm, feeJod, enabled, updatedAt)
      VALUES (?, ?, ?, ?, ?, ?, 1, datetime('now'))`,
@@ -77,6 +82,7 @@ function seedDeliveryFixedZonesIfEmpty(db) {
   for (const z of DEFAULT_ZONES) {
     ins.run(z.sortOrder, z.label, z.centerLat, z.centerLon, z.radiusKm, z.feeJod);
   }
+  return true;
 }
 
 /**
@@ -188,6 +194,7 @@ function replaceDeliveryFixedZones(db, zones) {
 module.exports = {
   ensureDeliveryFixedZonesTable,
   seedDeliveryFixedZonesIfEmpty,
+  seedDefaultDeliveryFixedZonesIfEmpty,
   matchFixedDeliveryZoneFeeJod,
   dropoffInDashboardFixedDeliveryZone,
   listDeliveryFixedZones,

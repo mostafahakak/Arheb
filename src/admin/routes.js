@@ -5418,7 +5418,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         data: {
           zones,
           note:
-            'Circular zones around pins (WGS84 haversine distance — straight-line km, not driving distance). Default seed: جامعة العقبة للتكنولوجيا & تالا باي — 3 km, 2 JOD each.',
+            'Circular zones around pins (WGS84 haversine km). Store bulk checkoutDeliveryFeeJod overrides these zones when set. Zones are not auto-created on checkout.',
         },
       });
     } catch (e) {
