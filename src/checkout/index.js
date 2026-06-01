@@ -3,7 +3,7 @@ const path = require('path');
 const { enrichArhebBoxRow, calcArhebBoxDeliveryFeeJod } = require('../arhebBox');
 const { quoteFromPickupDropoff } = require('../arhebBox/pricing');
 const {
-  storeOrderDeliveryFeeFromDistanceTiers,
+  storeOrderDeliveryFeeDistanceOnly,
   STORE_ORDER_SERVICE_FEE_JOD,
   resolveStoreOrderServiceFeeJod,
   resolveStoreOrderDeliveryFeeJod,
@@ -580,24 +580,18 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
               db,
             );
             if (qOrder) {
-              computedDeliveryFee = storeOrderDeliveryFeeFromDistanceTiers(
-                qOrder.distanceKm,
-                addressLat,
-                addressLong,
-                platformTiers,
-                db,
-              );
+              computedDeliveryFee = storeOrderDeliveryFeeDistanceOnly(qOrder.distanceKm, platformTiers);
             } else {
-              computedDeliveryFee = storeOrderDeliveryFeeFromDistanceTiers(0, addressLat, addressLong, platformTiers, db);
+              computedDeliveryFee = storeOrderDeliveryFeeDistanceOnly(0, platformTiers);
             }
           } else {
-            computedDeliveryFee = storeOrderDeliveryFeeFromDistanceTiers(0, addressLat, addressLong, platformTiers, db);
+            computedDeliveryFee = storeOrderDeliveryFeeDistanceOnly(0, platformTiers);
           }
         } else {
-          computedDeliveryFee = storeOrderDeliveryFeeFromDistanceTiers(0, addressLat, addressLong, platformTiers, db);
+          computedDeliveryFee = storeOrderDeliveryFeeDistanceOnly(0, platformTiers);
         }
       } else {
-        computedDeliveryFee = storeOrderDeliveryFeeFromDistanceTiers(0, undefined, undefined, platformTiers, db);
+        computedDeliveryFee = storeOrderDeliveryFeeDistanceOnly(0, platformTiers);
       }
     }
     computedDeliveryFee = resolveStoreOrderDeliveryFeeJod(
@@ -779,13 +773,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       }
       const weightKgNum = Math.max(0, safeNumber(weightKg, 0));
       const platformTiers = getPlatformCheckoutFeeTiers(db);
-      const distanceFee = storeOrderDeliveryFeeFromDistanceTiers(
-        q.distanceKm,
-        deliveryLocation.latitude,
-        deliveryLocation.longitude,
-        platformTiers,
-        db,
-      );
+      const distanceFee = storeOrderDeliveryFeeDistanceOnly(q.distanceKm, platformTiers);
       const deliveryFee = resolveStoreOrderDeliveryFeeJod(
         store,
         distanceFee,

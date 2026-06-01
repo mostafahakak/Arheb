@@ -19,7 +19,6 @@
 
 const {
   matchFixedDeliveryZoneFeeJod,
-  dropoffInDashboardFixedDeliveryZone,
 } = require('./deliveryFixedZones');
 
 function round2(n) {
@@ -186,6 +185,17 @@ function storeOrderDeliveryFeeFromDistanceTiers(distanceKm, deliveryLat, deliver
   return round2(Math.min(maxJod, fee));
 }
 
+/** Pure distance tiers only (no special/remote/dashboard zones, no platform flat). Used as resolve fallback. */
+function storeOrderDeliveryFeeDistanceOnly(distanceKm, tiers) {
+  const firstKm = tiers?.firstKmJod != null && Number.isFinite(Number(tiers.firstKmJod)) ? Number(tiers.firstKmJod) : 1;
+  const perKm = tiers?.perKmJod != null && Number.isFinite(Number(tiers.perKmJod)) ? Number(tiers.perKmJod) : 0.1;
+  const maxJod = tiers?.maxJod != null && Number.isFinite(Number(tiers.maxJod)) ? Number(tiers.maxJod) : STORE_MAX_JOD;
+  const d = typeof distanceKm === 'number' && Number.isFinite(distanceKm) ? Math.max(0, distanceKm) : 0;
+  const beyondFirst = Math.max(0, d - 1);
+  const fee = firstKm + perKm * beyondFirst;
+  return round2(Math.min(maxJod, fee));
+}
+
 function storeOrderDeliveryFeeJod(distanceKm, deliveryLat, deliveryLng, db) {
   return storeOrderDeliveryFeeFromDistanceTiers(distanceKm, deliveryLat, deliveryLng, {}, db);
 }
@@ -211,12 +221,13 @@ function resolveStoreOrderServiceFeeJod(storeJson, platformDefaultServiceFeeJod)
 /**
  * Checkout delivery order of precedence (first match wins):
  *   1. Special-far desert pins → fixed 10 JOD (never overridden).
- *   2. Per-store cart threshold (`checkoutDeliveryOverCartThresholdJod` + `checkoutDeliveryFeeAboveJod`).
- *   3. Platform-wide cart threshold (`platformTiers.deliveryOverCartThresholdJod` + `deliveryFeeAboveJod`).
- *   4. Per-store fixed fee (`checkoutDeliveryFeeJod`) from store settings / bulk checkout policy — skipped inside dashboard fixed zones.
- *   5. Per-store free delivery (`checkoutDeliveryFeeZero`) from store settings / bulk checkout policy — skipped inside dashboard fixed zones.
- *   6. Dashboard fixed circular zones (`delivery_fixed_zones`) — special pinned areas from App Info (e.g. 2 JOD).
- *   7. Distance-based `computedFromDistanceJod` (tiers / platform flatDeliveryFeeJod).
+ *   2. Remote delivery zone pins → fixed fee (default 8 JOD).
+ *   3. Dashboard fixed circular zones (`delivery_fixed_zones`) — pinned App Info areas (e.g. 2 JOD).
+ *   4. Per-store bulk checkout (`checkoutDeliveryFeeJod` / `checkoutDeliveryFeeZero`) — normal areas only.
+ *   5. Platform flat delivery from App Info (`flatDeliveryFeeJod`).
+ *   6. Per-store cart threshold (`checkoutDeliveryOverCartThresholdJod` + `checkoutDeliveryFeeAboveJod`).
+ *   7. Platform-wide cart threshold (`platformTiers.deliveryOverCartThresholdJod` + `deliveryFeeAboveJod`).
+ *   8. Distance-based `computedFromDistanceJod` (first km + per km, capped at max).
  *
  * @param {object | null} storeJson
  * @param {number} computedFromDistanceJod
@@ -225,14 +236,34 @@ function resolveStoreOrderServiceFeeJod(storeJson, platformDefaultServiceFeeJod)
  * @param {{ cartAmountJod?: number | null, platformTiers?: { deliveryOverCartThresholdJod?: number | null, deliveryFeeAboveJod?: number | null } | null, db?: import('better-sqlite3').Database }} [options]
  */
 function resolveStoreOrderDeliveryFeeJod(storeJson, computedFromDistanceJod, deliveryLat, deliveryLng, options) {
-  const specialFar = specialFarDeliveryZoneFixedFeeJod(deliveryLat, deliveryLng, options?.platformTiers);
+  const platformTiers = options && options.platformTiers ? options.platformTiers : null;
+
+  const specialFar = specialFarDeliveryZoneFixedFeeJod(deliveryLat, deliveryLng, platformTiers);
   if (specialFar != null) return specialFar;
 
-  const inDashboardFixedZone = dropoffInDashboardFixedDeliveryZone(
-    deliveryLat,
-    deliveryLng,
-    options?.db,
-  );
+  const remote = remoteDeliveryZoneFixedFeeJod(deliveryLat, deliveryLng);
+  if (remote != null) return remote;
+
+  const dashboardZoneFee = matchFixedDeliveryZoneFeeJod(deliveryLat, deliveryLng, options?.db);
+  if (dashboardZoneFee != null) return round2(dashboardZoneFee);
+
+  if (storeJson) {
+    if (storeJson.checkoutDeliveryFeeJod != null && storeJson.checkoutDeliveryFeeJod !== '') {
+      const v = Number(storeJson.checkoutDeliveryFeeJod);
+      if (Number.isFinite(v) && v >= 0) return round2(v);
+    }
+    if (storeJson.checkoutDeliveryFeeZero === true) {
+      return 0;
+    }
+  }
+
+  if (platformTiers) {
+    const flatRaw = platformTiers.flatDeliveryFeeJod;
+    if (flatRaw != null && String(flatRaw).trim() !== '') {
+      const fv = Number(flatRaw);
+      if (Number.isFinite(fv) && fv >= 0) return round2(fv);
+    }
+  }
 
   const base =
     computedFromDistanceJod != null && Number.isFinite(Number(computedFromDistanceJod))
@@ -263,7 +294,6 @@ function resolveStoreOrderDeliveryFeeJod(storeJson, computedFromDistanceJod, del
     }
   }
 
-  const platformTiers = options && options.platformTiers ? options.platformTiers : null;
   if (platformTiers) {
     const platThresholdRaw = platformTiers.deliveryOverCartThresholdJod;
     const platFeeAboveRaw = platformTiers.deliveryFeeAboveJod;
@@ -282,27 +312,6 @@ function resolveStoreOrderDeliveryFeeJod(storeJson, computedFromDistanceJod, del
       }
     }
   }
-
-  if (!storeJson) {
-    if (inDashboardFixedZone) {
-      const dashboardZoneFee = matchFixedDeliveryZoneFeeJod(deliveryLat, deliveryLng, options?.db);
-      if (dashboardZoneFee != null) return round2(dashboardZoneFee);
-    }
-    return round2(Math.max(0, base));
-  }
-
-  if (!inDashboardFixedZone) {
-    if (storeJson.checkoutDeliveryFeeJod != null && storeJson.checkoutDeliveryFeeJod !== '') {
-      const v = Number(storeJson.checkoutDeliveryFeeJod);
-      if (Number.isFinite(v) && v >= 0) return round2(v);
-    }
-    if (storeJson.checkoutDeliveryFeeZero === true) {
-      return 0;
-    }
-  }
-
-  const dashboardZoneFee = matchFixedDeliveryZoneFeeJod(deliveryLat, deliveryLng, options?.db);
-  if (dashboardZoneFee != null) return round2(dashboardZoneFee);
 
   return round2(Math.max(0, base));
 }
@@ -350,6 +359,7 @@ module.exports = {
   specialFarDeliveryZoneFixedFeeJod,
   dropoffInSpecialFarDeliveryZone,
   storeOrderDeliveryFeeFromDistanceTiers,
+  storeOrderDeliveryFeeDistanceOnly,
   storeOrderDeliveryFeeJod,
   resolveStoreOrderServiceFeeJod,
   resolveStoreOrderDeliveryFeeJod,
