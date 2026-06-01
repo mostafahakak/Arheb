@@ -544,12 +544,14 @@ app.post('/api/auth/register', async (req, res) => {
   }
 
   try {
-    const { sessionInfo } = await sendRegisterOtp(db, phoneNumber, phoneKey);
+    const { sessionInfo, channel } = await sendRegisterOtp(db, phoneNumber, phoneKey);
     return res.status(200).json({
       message: 'OTP SENT SUCCESSFUL',
       case: 1,
       alreadyRegistered: Boolean(existingUser && !existingUser.deleted),
       sessionInfo,
+      otpProvider: 'twilio',
+      otpChannel: channel || null,
     });
   } catch (error) {
     if (error.code === 'RATE_LIMIT') {

@@ -19,7 +19,6 @@
 
 const {
   matchFixedDeliveryZoneFeeJod,
-  dropoffInDashboardFixedDeliveryZone,
 } = require('./deliveryFixedZones');
 
 function round2(n) {
@@ -211,11 +210,11 @@ function resolveStoreOrderServiceFeeJod(storeJson, platformDefaultServiceFeeJod)
 /**
  * Checkout delivery order of precedence (first match wins):
  *   1. Special-far desert pins → fixed 10 JOD (never overridden).
- *   2. Dashboard fixed circular zones (`delivery_fixed_zones`) — fee/radius from DB; not overridden by cart thresholds or store fixed delivery fee.
- *   3. Per-store cart threshold (`checkoutDeliveryOverCartThresholdJod` + `checkoutDeliveryFeeAboveJod`).
- *   4. Platform-wide cart threshold (`platformTiers.deliveryOverCartThresholdJod` + `deliveryFeeAboveJod`).
- *   5. Per-store fixed fee (`checkoutDeliveryFeeJod`) from store settings.
- *   6. Per-store free delivery (`checkoutDeliveryFeeZero` — outside remote & dashboard fixed zones).
+ *   2. Per-store cart threshold (`checkoutDeliveryOverCartThresholdJod` + `checkoutDeliveryFeeAboveJod`).
+ *   3. Platform-wide cart threshold (`platformTiers.deliveryOverCartThresholdJod` + `deliveryFeeAboveJod`).
+ *   4. Per-store fixed fee (`checkoutDeliveryFeeJod`) from store settings / bulk checkout policy.
+ *   5. Per-store free delivery (`checkoutDeliveryFeeZero`) from store settings / bulk checkout policy.
+ *   6. Dashboard fixed circular zones (`delivery_fixed_zones`) — fee/radius from DB.
  *   7. Distance-based `computedFromDistanceJod` (tiers / platform flatDeliveryFeeJod).
  *
  * @param {object | null} storeJson
@@ -227,9 +226,6 @@ function resolveStoreOrderServiceFeeJod(storeJson, platformDefaultServiceFeeJod)
 function resolveStoreOrderDeliveryFeeJod(storeJson, computedFromDistanceJod, deliveryLat, deliveryLng, options) {
   const specialFar = specialFarDeliveryZoneFixedFeeJod(deliveryLat, deliveryLng, options?.platformTiers);
   if (specialFar != null) return specialFar;
-
-  const dashboardZoneFee = matchFixedDeliveryZoneFeeJod(deliveryLat, deliveryLng, options?.db);
-  if (dashboardZoneFee != null) return round2(dashboardZoneFee);
 
   const base =
     computedFromDistanceJod != null && Number.isFinite(Number(computedFromDistanceJod))
@@ -285,11 +281,13 @@ function resolveStoreOrderDeliveryFeeJod(storeJson, computedFromDistanceJod, del
     const v = Number(storeJson.checkoutDeliveryFeeJod);
     if (Number.isFinite(v) && v >= 0) return round2(v);
   }
-  const inRemoteZone = remoteDeliveryZoneFixedFeeJod(deliveryLat, deliveryLng) != null;
-  const inDashboardZone = dropoffInDashboardFixedDeliveryZone(deliveryLat, deliveryLng, options?.db);
-  if (storeJson.checkoutDeliveryFeeZero === true && !inRemoteZone && !inDashboardZone) {
+  if (storeJson.checkoutDeliveryFeeZero === true) {
     return 0;
   }
+
+  const dashboardZoneFee = matchFixedDeliveryZoneFeeJod(deliveryLat, deliveryLng, options?.db);
+  if (dashboardZoneFee != null) return round2(dashboardZoneFee);
+
   return round2(Math.max(0, base));
 }
 
