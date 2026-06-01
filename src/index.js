@@ -326,6 +326,29 @@ if (fs.existsSync(testClientDir)) {
   app.use('/test-client', express.static(testClientDir));
 }
 
+const {
+  ensurePlatformCheckoutFeesTable,
+  syncPlatformCheckoutFeesFromStoreBulkPolicy,
+  syncStoreListingDeliveryFeesFromBulkPolicy,
+} = require('./utils/platformCheckoutFees');
+try {
+  ensurePlatformCheckoutFeesTable(db);
+  const listingSync = syncStoreListingDeliveryFeesFromBulkPolicy();
+  if (listingSync.updated > 0) {
+    console.log(
+      `[startup] synced store listing deliveryFee on ${listingSync.updated} store(s) from bulk checkout policy`,
+    );
+  }
+  const platformSync = syncPlatformCheckoutFeesFromStoreBulkPolicy(db);
+  if (platformSync.synced) {
+    console.log(
+      `[startup] synced App Info flatDeliveryFeeJod to ${platformSync.flatDeliveryFeeJod} from store bulk policy`,
+    );
+  }
+} catch (e) {
+  console.warn('[startup] checkout delivery fee sync skipped:', e.message);
+}
+
 attachCategoriesRoutes(app, db);
 attachProductsRoutes(app, db);
 attachHomeRoutes(app, db, JWT_SECRET);

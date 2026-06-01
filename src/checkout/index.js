@@ -7,6 +7,7 @@ const {
   STORE_ORDER_SERVICE_FEE_JOD,
   resolveStoreOrderServiceFeeJod,
   resolveStoreOrderDeliveryFeeJod,
+  resolveStoreOrderDeliveryFeeJodDetailed,
 } = require('../utils/deliveryFees');
 const { getPlatformCheckoutFeeTiers, ensurePlatformCheckoutFeesTable } = require('../utils/platformCheckoutFees');
 const { seedDeliveryFixedZonesIfEmpty } = require('../utils/deliveryFixedZones');
@@ -774,13 +775,14 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       const weightKgNum = Math.max(0, safeNumber(weightKg, 0));
       const platformTiers = getPlatformCheckoutFeeTiers(db);
       const distanceFee = storeOrderDeliveryFeeDistanceOnly(q.distanceKm, platformTiers);
-      const deliveryFee = resolveStoreOrderDeliveryFeeJod(
+      const resolved = resolveStoreOrderDeliveryFeeJodDetailed(
         store,
         distanceFee,
         deliveryLocation.latitude,
         deliveryLocation.longitude,
         { cartAmountJod: cartAmountNum, platformTiers, db },
       );
+      const deliveryFee = resolved.fee;
       const serviceFee = resolveStoreOrderServiceFeeJod(store, platformTiers.defaultServiceFeeJod);
       const invoice = buildInvoice(deliveryFee, serviceFee);
       return res.status(200).json({
@@ -794,6 +796,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
           weightKg: round3(weightKgNum),
           currency: 'JOD',
           deliveryFee: invoice.deliveryFee,
+          deliveryFeeSource: resolved.source,
           serviceFee: invoice.serviceFee,
           feesTaxRate: FEES_TAX_RATE,
           feesTax: invoice.feesTax,

@@ -12,6 +12,8 @@ const { applyCatalogListPriceAndOriginal } = require('../utils/productCatalogPri
 const { getStorePaymentMethods } = require('../utils/storePaymentMethods');
 const { enrichOpeningHoursObject } = require('../utils/openingHoursJordan');
 const { upsertStoreFcmToken } = require('../storeFcm');
+const { getPlatformCheckoutFeeTiers } = require('../utils/platformCheckoutFees');
+const { effectiveStoreListingDeliveryFeeJod } = require('../utils/deliveryFees');
 
 const storesResponsePath = getJsonPath('stores_listing_response.json');
 
@@ -175,13 +177,15 @@ function computeStoreStatus(store) {
 }
 
 // Public store shape: include closingTime, openingTime, storeCategories, status; never expose arhebFee / admin-only flags
-function toPublicStore(store) {
+function toPublicStore(store, platformTiers) {
   const { arhebFee, hiddenFromCustomers, isOpen: _rawIsOpen, ...rest } = store;
   const openingHours = store.openingHours
     ? enrichOpeningHoursObject(store.openingHours)
     : enrichOpeningHoursObject(null);
+  const listingDeliveryFee = effectiveStoreListingDeliveryFeeJod(store, platformTiers);
   return {
     ...rest,
+    ...(listingDeliveryFee != null ? { deliveryFee: listingDeliveryFee } : {}),
     isOpen: customerFacingIsOpen(store),
     isPremium: store.isPremium === true,
     isExclusive: store.isExclusive === true,
@@ -261,10 +265,15 @@ module.exports = function attachStoresRoutes(app, db) {
     console.warn('No store data found to seed the database');
   }
 
+  function mapPublicStores(stores) {
+    const platformTiers = getPlatformCheckoutFeeTiers(db);
+    return (stores || []).map((s) => toPublicStore(s, platformTiers));
+  }
+
   app.get('/api/stores', (req, res) => {
     const storesResponse = loadStoresResponse();
     const raw = storesResponse?.data?.stores ?? [];
-    const stores = enrichStoresWithOffers(sortStoresOpenFirst(filterStoresForCustomerBrowse(raw).map(toPublicStore)));
+    const stores = enrichStoresWithOffers(sortStoresOpenFirst(filterStoresForCustomerBrowse(mapPublicStores(raw))));
     return res.status(200).json({
       success: true,
       message: 'Stores listing retrieved successfully',
@@ -276,7 +285,7 @@ module.exports = function attachStoresRoutes(app, db) {
   app.get('/api/stores/top-rated', (req, res) => {
     const storesResponse = loadStoresResponse();
     const storesList = sortStoresOpenFirst(
-      filterStoresForCustomerBrowse(storesResponse?.data?.stores ?? []).map(toPublicStore),
+      filterStoresForCustomerBrowse(storesResponse?.data?.stores ?? []).map((s) => toPublicStore(s, getPlatformCheckoutFeeTiers(db))),
     );
     const limit = req.query.limit ? parseInt(req.query.limit) : null;
     const topRatedStores = storesList
@@ -302,7 +311,7 @@ module.exports = function attachStoresRoutes(app, db) {
 
   function exclusiveStoresPayload(storesResponse, limit) {
     const storesList = sortStoresOpenFirst(
-      filterStoresForCustomerBrowse(storesResponse?.data?.stores ?? []).map(toPublicStore),
+      filterStoresForCustomerBrowse(storesResponse?.data?.stores ?? []).map((s) => toPublicStore(s, getPlatformCheckoutFeeTiers(db))),
     );
     const exclusive = storesList.filter((store) => store.isExclusive === true);
     const result = enrichStoresWithOffers(limit ? exclusive.slice(0, limit) : exclusive);
@@ -311,7 +320,7 @@ module.exports = function attachStoresRoutes(app, db) {
 
   function premiumStoresPayload(storesResponse, limit) {
     const storesList = sortStoresOpenFirst(
-      filterStoresForCustomerBrowse(storesResponse?.data?.stores ?? []).map(toPublicStore),
+      filterStoresForCustomerBrowse(storesResponse?.data?.stores ?? []).map((s) => toPublicStore(s, getPlatformCheckoutFeeTiers(db))),
     );
     const premium = storesList.filter((store) => store.isPremium === true);
     const result = enrichStoresWithOffers(limit ? premium.slice(0, limit) : premium);
@@ -351,7 +360,7 @@ module.exports = function attachStoresRoutes(app, db) {
     }
     const storesResponse = loadStoresResponse();
     const storesList = sortStoresOpenFirst(
-      filterStoresForCustomerBrowse(storesResponse?.data?.stores ?? []).map(toPublicStore),
+      filterStoresForCustomerBrowse(storesResponse?.data?.stores ?? []).map((s) => toPublicStore(s, getPlatformCheckoutFeeTiers(db))),
     );
     const categoryNameLower = categoryName.toLowerCase().trim();
     const matches = (val) => {

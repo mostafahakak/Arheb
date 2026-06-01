@@ -107,6 +107,13 @@ module.exports = function attachContactRoutes(app, db, authenticateRequest) {
             storeOrderDefaultServiceFeeJod: platformTiers.defaultServiceFeeJod,
             arhebBoxServiceFeeJod: getArhebBoxServiceFeeJod(db),
           },
+          platformCheckoutDelivery: {
+            flatDeliveryFeeJod: platformTiers.flatDeliveryFeeJod,
+            deliveryOverCartThresholdJod: platformTiers.deliveryOverCartThresholdJod,
+            deliveryFeeAboveJod: platformTiers.deliveryFeeAboveJod,
+            note:
+              'Per-store checkoutDeliveryFeeJod from bulk checkout overrides this flat fee outside dashboard fixed zones.',
+          },
         },
         timestamp: new Date().toISOString()
       });

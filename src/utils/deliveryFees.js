@@ -204,6 +204,32 @@ function storeOrderDeliveryFeeJod(distanceKm, deliveryLat, deliveryLng, db) {
  * Platform service fee default (JOD) with per-store overrides from stores JSON.
  * `checkoutServiceFeeDisabled: true` → 0; `checkoutServiceFeeJod` → fixed amount; else platform default.
  */
+/** Per-store bulk checkout delivery from Stores dashboard (`checkoutDeliveryFeeJod` / free flag). */
+function getStoreBulkCheckoutDeliveryFeeJod(storeJson) {
+  if (!storeJson) return null;
+  if (storeJson.checkoutDeliveryFeeZero === true) return 0;
+  if (storeJson.checkoutDeliveryFeeJod != null && storeJson.checkoutDeliveryFeeJod !== '') {
+    const v = Number(storeJson.checkoutDeliveryFeeJod);
+    if (Number.isFinite(v) && v >= 0) return round2(v);
+  }
+  return null;
+}
+
+/** Store card / listing fee when dropoff is unknown — prefer bulk policy, then App Info flat, then legacy field. */
+function effectiveStoreListingDeliveryFeeJod(storeJson, platformTiers) {
+  const bulk = getStoreBulkCheckoutDeliveryFeeJod(storeJson);
+  if (bulk != null) return bulk;
+  const flatRaw = platformTiers?.flatDeliveryFeeJod;
+  if (flatRaw != null && String(flatRaw).trim() !== '') {
+    const fv = Number(flatRaw);
+    if (Number.isFinite(fv) && fv >= 0) return round2(fv);
+  }
+  if (storeJson && typeof storeJson.deliveryFee === 'number' && Number.isFinite(storeJson.deliveryFee)) {
+    return round2(Math.max(0, storeJson.deliveryFee));
+  }
+  return null;
+}
+
 function resolveStoreOrderServiceFeeJod(storeJson, platformDefaultServiceFeeJod) {
   const def =
     platformDefaultServiceFeeJod != null && Number.isFinite(Number(platformDefaultServiceFeeJod))
@@ -235,33 +261,41 @@ function resolveStoreOrderServiceFeeJod(storeJson, platformDefaultServiceFeeJod)
  * @param {number} [deliveryLng]
  * @param {{ cartAmountJod?: number | null, platformTiers?: { deliveryOverCartThresholdJod?: number | null, deliveryFeeAboveJod?: number | null } | null, db?: import('better-sqlite3').Database }} [options]
  */
-function resolveStoreOrderDeliveryFeeJod(storeJson, computedFromDistanceJod, deliveryLat, deliveryLng, options) {
+function resolveStoreOrderDeliveryFeeJodDetailed(
+  storeJson,
+  computedFromDistanceJod,
+  deliveryLat,
+  deliveryLng,
+  options,
+) {
   const platformTiers = options && options.platformTiers ? options.platformTiers : null;
 
   const specialFar = specialFarDeliveryZoneFixedFeeJod(deliveryLat, deliveryLng, platformTiers);
-  if (specialFar != null) return specialFar;
+  if (specialFar != null) return { fee: specialFar, source: 'special_far_zone' };
 
   const remote = remoteDeliveryZoneFixedFeeJod(deliveryLat, deliveryLng);
-  if (remote != null) return remote;
+  if (remote != null) return { fee: remote, source: 'remote_zone' };
 
   const dashboardZoneFee = matchFixedDeliveryZoneFeeJod(deliveryLat, deliveryLng, options?.db);
-  if (dashboardZoneFee != null) return round2(dashboardZoneFee);
+  if (dashboardZoneFee != null) {
+    return { fee: round2(dashboardZoneFee), source: 'dashboard_fixed_zone' };
+  }
 
-  if (storeJson) {
-    if (storeJson.checkoutDeliveryFeeJod != null && storeJson.checkoutDeliveryFeeJod !== '') {
-      const v = Number(storeJson.checkoutDeliveryFeeJod);
-      if (Number.isFinite(v) && v >= 0) return round2(v);
-    }
-    if (storeJson.checkoutDeliveryFeeZero === true) {
-      return 0;
-    }
+  const bulkFee = getStoreBulkCheckoutDeliveryFeeJod(storeJson);
+  if (bulkFee != null) {
+    return {
+      fee: bulkFee,
+      source: bulkFee === 0 ? 'store_free_delivery' : 'store_bulk_checkout',
+    };
   }
 
   if (platformTiers) {
     const flatRaw = platformTiers.flatDeliveryFeeJod;
     if (flatRaw != null && String(flatRaw).trim() !== '') {
       const fv = Number(flatRaw);
-      if (Number.isFinite(fv) && fv >= 0) return round2(fv);
+      if (Number.isFinite(fv) && fv >= 0) {
+        return { fee: round2(fv), source: 'platform_flat_delivery' };
+      }
     }
   }
 
@@ -289,7 +323,7 @@ function resolveStoreOrderDeliveryFeeJod(storeJson, computedFromDistanceJod, del
         cartAmountJod != null &&
         cartAmountJod + 1e-9 >= threshold
       ) {
-        return round2(feeAbove);
+        return { fee: round2(feeAbove), source: 'store_cart_threshold' };
       }
     }
   }
@@ -308,12 +342,22 @@ function resolveStoreOrderDeliveryFeeJod(storeJson, computedFromDistanceJod, del
         cartAmountJod != null &&
         cartAmountJod + 1e-9 >= threshold
       ) {
-        return round2(feeAbove);
+        return { fee: round2(feeAbove), source: 'platform_cart_threshold' };
       }
     }
   }
 
-  return round2(Math.max(0, base));
+  return { fee: round2(Math.max(0, base)), source: 'distance_tiers' };
+}
+
+function resolveStoreOrderDeliveryFeeJod(storeJson, computedFromDistanceJod, deliveryLat, deliveryLng, options) {
+  return resolveStoreOrderDeliveryFeeJodDetailed(
+    storeJson,
+    computedFromDistanceJod,
+    deliveryLat,
+    deliveryLng,
+    options,
+  ).fee;
 }
 
 /**
@@ -361,8 +405,11 @@ module.exports = {
   storeOrderDeliveryFeeFromDistanceTiers,
   storeOrderDeliveryFeeDistanceOnly,
   storeOrderDeliveryFeeJod,
+  getStoreBulkCheckoutDeliveryFeeJod,
+  effectiveStoreListingDeliveryFeeJod,
   resolveStoreOrderServiceFeeJod,
   resolveStoreOrderDeliveryFeeJod,
+  resolveStoreOrderDeliveryFeeJodDetailed,
   arhebBoxDeliveryFeeFromDistanceJod,
   round2,
 };

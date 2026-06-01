@@ -1493,6 +1493,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       } else {
         if (body.checkoutDeliveryFeeZero !== undefined) {
           stores[idx].checkoutDeliveryFeeZero = coercePatchBoolean(body.checkoutDeliveryFeeZero);
+          if (stores[idx].checkoutDeliveryFeeZero === true) {
+            stores[idx].deliveryFee = 0;
+          }
         }
         if (body.checkoutServiceFeeDisabled !== undefined) {
           stores[idx].checkoutServiceFeeDisabled = coercePatchBoolean(body.checkoutServiceFeeDisabled);
@@ -1511,6 +1514,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           } else {
             const v = Number(body.checkoutDeliveryFeeJod);
             stores[idx].checkoutDeliveryFeeJod = Number.isFinite(v) && v >= 0 ? v : 0;
+            stores[idx].deliveryFee = stores[idx].checkoutDeliveryFeeJod;
           }
         }
         if (body.checkoutDeliveryOverCartThresholdJod !== undefined) {
@@ -1537,6 +1541,18 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     } catch (e) {
       console.error(e);
       return res.status(500).json({ success: false, message: 'Failed to save stores' });
+    }
+    if (!resetAll && body.checkoutDeliveryFeeJod !== undefined) {
+      if (body.checkoutDeliveryFeeJod === null || body.checkoutDeliveryFeeJod === '') {
+        setPlatformCheckoutFeeTiers(db, { flatDeliveryFeeJod: null });
+      } else {
+        const v = Number(body.checkoutDeliveryFeeJod);
+        if (Number.isFinite(v) && v >= 0) {
+          setPlatformCheckoutFeeTiers(db, { flatDeliveryFeeJod: v });
+        }
+      }
+    } else if (!resetAll && body.checkoutDeliveryFeeZero === true) {
+      setPlatformCheckoutFeeTiers(db, { flatDeliveryFeeJod: 0 });
     }
     logActivity(db, req, {
       action: 'edit',
