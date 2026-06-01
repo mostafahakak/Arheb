@@ -8,7 +8,7 @@ const { getArhebBoxServiceFeeJod } = require('../utils/driverCommission');
 const { getPlatformCheckoutFeeTiers } = require('../utils/platformCheckoutFees');
 const { quoteFromPickupDropoff, minAmountJod, distanceKm: haversineKm } = require('./pricing');
 const { isArhebBoxOrdersPaused } = require('./pause');
-const { seedDeliveryFixedZonesIfEmpty } = require('../utils/deliveryFixedZones');
+const { seedDefaultDeliveryFixedZonesIfEmpty } = require('../utils/deliveryFixedZones');
 
 const FEES_TAX_RATE = 0;
 
@@ -347,7 +347,7 @@ function notifyDriversAboutNewArhebBox(db, io, row) {
 
 module.exports = function attachArhebBoxRoutes(app, db, authenticateRequest, io) {
   ensureArhebBoxTable(db);
-  seedDeliveryFixedZonesIfEmpty(db);
+  seedDefaultDeliveryFixedZonesIfEmpty(db);
 
   // Quote: distance, minimum parcel amount, delivery fee + zero service fee + zero fees tax (no auth)
   app.post('/api/arheb-box/quote', (req, res) => {

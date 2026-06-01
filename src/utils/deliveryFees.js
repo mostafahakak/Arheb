@@ -248,8 +248,8 @@ function resolveStoreOrderServiceFeeJod(storeJson, platformDefaultServiceFeeJod)
  * Checkout delivery order of precedence (first match wins):
  *   1. Special-far desert pins → fixed 10 JOD (never overridden).
  *   2. Remote delivery zone pins → fixed fee (default 8 JOD).
- *   3. Per-store bulk checkout (`checkoutDeliveryFeeJod` / `checkoutDeliveryFeeZero`) when set on the store.
- *   4. Dashboard fixed circular zones (`delivery_fixed_zones`) — only when the store has no bulk checkout override.
+ *   3. Dashboard fixed circular zones (`delivery_fixed_zones`) — pinned App Info areas; wins over store bulk.
+ *   4. Per-store bulk checkout (`checkoutDeliveryFeeJod` / `checkoutDeliveryFeeZero`) — normal areas only.
  *   5. Platform flat delivery from App Info (`flatDeliveryFeeJod`).
  *   6. Per-store cart threshold (`checkoutDeliveryOverCartThresholdJod` + `checkoutDeliveryFeeAboveJod`).
  *   7. Platform-wide cart threshold (`platformTiers.deliveryOverCartThresholdJod` + `deliveryFeeAboveJod`).
@@ -276,17 +276,17 @@ function resolveStoreOrderDeliveryFeeJodDetailed(
   const remote = remoteDeliveryZoneFixedFeeJod(deliveryLat, deliveryLng);
   if (remote != null) return { fee: remote, source: 'remote_zone' };
 
+  const dashboardZoneFee = matchFixedDeliveryZoneFeeJod(deliveryLat, deliveryLng, options?.db);
+  if (dashboardZoneFee != null) {
+    return { fee: round2(dashboardZoneFee), source: 'dashboard_fixed_zone' };
+  }
+
   const bulkFee = getStoreBulkCheckoutDeliveryFeeJod(storeJson);
   if (bulkFee != null) {
     return {
       fee: bulkFee,
       source: bulkFee === 0 ? 'store_free_delivery' : 'store_bulk_checkout',
     };
-  }
-
-  const dashboardZoneFee = matchFixedDeliveryZoneFeeJod(deliveryLat, deliveryLng, options?.db);
-  if (dashboardZoneFee != null) {
-    return { fee: round2(dashboardZoneFee), source: 'dashboard_fixed_zone' };
   }
 
   if (platformTiers) {

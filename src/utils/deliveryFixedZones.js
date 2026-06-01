@@ -1,6 +1,6 @@
 /**
  * Dashboard-configurable fixed delivery fees for circular zones (WGS84 haversine km — “real” km, not road routing).
- * Zones are configured only via the dashboard (App Info). No automatic seed on empty table.
+ * Zones are configured via the dashboard (App Info). Default seed (تالا باي & جامعة العقبة) is inserted once when the table is empty.
  */
 
 function round2(n) {
@@ -91,7 +91,7 @@ function seedDefaultDeliveryFixedZonesIfEmpty(db) {
  */
 function matchFixedDeliveryZoneFeeJod(lat, lng, db) {
   if (!db) return null;
-  seedDeliveryFixedZonesIfEmpty(db);
+  seedDefaultDeliveryFixedZonesIfEmpty(db);
   const la = typeof lat === 'number' ? lat : Number(lat);
   const ln = typeof lng === 'number' ? lng : Number(lng);
   if (!Number.isFinite(la) || !Number.isFinite(ln)) return null;
@@ -119,7 +119,7 @@ function dropoffInDashboardFixedDeliveryZone(lat, lng, db) {
 }
 
 function listDeliveryFixedZones(db) {
-  seedDeliveryFixedZonesIfEmpty(db);
+  seedDefaultDeliveryFixedZonesIfEmpty(db);
   return db
     .prepare(
       `SELECT id, sortOrder, label, centerLat, centerLon, radiusKm, feeJod, enabled FROM delivery_fixed_zones ORDER BY sortOrder ASC, id ASC`,

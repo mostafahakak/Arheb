@@ -107,7 +107,7 @@ const {
 const {
   listDeliveryFixedZones,
   replaceDeliveryFixedZones,
-  seedDeliveryFixedZonesIfEmpty,
+  seedDefaultDeliveryFixedZonesIfEmpty,
 } = require('../utils/deliveryFixedZones');
 const { round2: round2Money } = require('../utils/deliveryFees');
 
@@ -5411,14 +5411,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   /** Fixed delivery zones (haversine km — store checkout + Arheb Box). SuperAdmin edits; Admin/SuperAdmin read. */
   app.get('/api/admin/settings/delivery-fixed-zones', auth, requireAdminOrSuper, (req, res) => {
     try {
-      seedDeliveryFixedZonesIfEmpty(db);
+      seedDefaultDeliveryFixedZonesIfEmpty(db);
       const zones = listDeliveryFixedZones(db);
       return res.status(200).json({
         success: true,
         data: {
           zones,
           note:
-            'Circular zones around pins (WGS84 haversine km). Store bulk checkoutDeliveryFeeJod overrides these zones when set. Zones are not auto-created on checkout.',
+            'Circular zones around pins (WGS84 haversine km). Inside a zone, the zone fee wins over store bulk checkout. Default seed: جامعة العقبة & تالا باي when empty.',
         },
       });
     } catch (e) {

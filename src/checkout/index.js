@@ -10,7 +10,7 @@ const {
   resolveStoreOrderDeliveryFeeJodDetailed,
 } = require('../utils/deliveryFees');
 const { getPlatformCheckoutFeeTiers, ensurePlatformCheckoutFeesTable } = require('../utils/platformCheckoutFees');
-const { seedDeliveryFixedZonesIfEmpty } = require('../utils/deliveryFixedZones');
+const { seedDefaultDeliveryFixedZonesIfEmpty } = require('../utils/deliveryFixedZones');
 const { mapOrderItemsRows } = require('../utils/orderItemApi');
 const { enrichWithJordanTime, nowOrderCreatedAtForDb } = require('../utils/jordanTime');
 const { promoAppliesToStore, promoMinAmountOk } = require('../utils/promoCode');
@@ -26,7 +26,7 @@ const { resolveStorePickupLocation } = require('../utils/mapsUrlResolve');
 module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   const { getJsonPath } = require('../config/jsonPaths');
   ensurePlatformCheckoutFeesTable(db);
-  seedDeliveryFixedZonesIfEmpty(db);
+  seedDefaultDeliveryFixedZonesIfEmpty(db);
   const FEES_TAX_RATE = 0;
 
   function fallbackStoreOrderServiceFeeJod() {
