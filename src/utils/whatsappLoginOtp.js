@@ -65,6 +65,8 @@ function resolveOtpDestination(phoneNumber, phoneKey) {
 
 /** DB channel for live app register/verify-otp (Twilio). */
 const REGISTER_OTP_CHANNEL = 'register';
+/** DB channel for POST /api/driver/send-otp + /api/driver/login (Twilio). */
+const DRIVER_LOGIN_OTP_CHANNEL = 'driver_login';
 
 /** Twilio Verify delivery: `whatsapp` (default) or `sms` (no WhatsApp Business needed). */
 function getTwilioVerifyChannel() {
@@ -457,10 +459,11 @@ function checkResendCooldown(pending, now) {
 }
 
 /**
- * Send OTP for live POST /api/auth/register (Twilio Verify preferred, else Messaging/Meta).
- * Returns sessionInfo string for verify-otp (same contract as legacy Firebase sessionInfo).
+ * Send OTP via Twilio Verify (preferred) or Messaging/Meta fallback.
+ * @param {string} channel DB channel key (register, driver_login, driver, customer, …)
+ * @returns {{ sessionInfo: string, channel: string, expiresInSec: number, otpProvider: 'twilio' }}
  */
-async function sendRegisterOtp(db, phoneNumber, phoneKey) {
+async function sendPhoneLoginOtp(db, phoneNumber, phoneKey, channel) {
   const cfg = getWhatsappConfig();
   if (!cfg.configured) {
     const err = new Error(getWhatsappOtpNotConfiguredHint());
@@ -475,7 +478,7 @@ async function sendRegisterOtp(db, phoneNumber, phoneKey) {
   }
 
   const now = Date.now();
-  const pending = getPendingWhatsappOtp(db, phoneKey, REGISTER_OTP_CHANNEL);
+  const pending = getPendingWhatsappOtp(db, phoneKey, channel);
   const cooldown = checkResendCooldown(pending, now);
   if (!cooldown.ok) {
     const err = new Error(`Wait ${cooldown.waitSec}s before requesting another code`);
@@ -487,15 +490,16 @@ async function sendRegisterOtp(db, phoneNumber, phoneKey) {
   const localVerificationId = generateVerificationId();
   let sessionInfo = localVerificationId;
   let ttlMs = OTP_TTL_MS;
+  let deliveryChannel = 'whatsapp';
 
   if (cfg.provider === 'twilio_verify') {
-    const channel = getRegisterOtpChannel();
-    const verification = await startTwilioVerifyOtp(dest.digits, channel);
+    deliveryChannel = getRegisterOtpChannel();
+    const verification = await startTwilioVerifyOtp(dest.digits, deliveryChannel);
     sessionInfo = verification.sid;
     ttlMs = TWILIO_VERIFY_PENDING_TTL_MS;
     upsertWhatsappOtp(db, {
       phoneKey,
-      channel: REGISTER_OTP_CHANNEL,
+      channel,
       code: '__twilio_verify__',
       verificationId: verification.sid,
       now,
@@ -506,7 +510,7 @@ async function sendRegisterOtp(db, phoneNumber, phoneKey) {
     await sendWhatsappAuthenticationOtp(dest.digits, code);
     upsertWhatsappOtp(db, {
       phoneKey,
-      channel: REGISTER_OTP_CHANNEL,
+      channel,
       code,
       verificationId: localVerificationId,
       now,
@@ -514,15 +518,20 @@ async function sendRegisterOtp(db, phoneNumber, phoneKey) {
     });
   }
 
-  return { sessionInfo, channel: cfg.provider === 'twilio_verify' ? getRegisterOtpChannel() : 'whatsapp' };
+  return {
+    sessionInfo,
+    channel: cfg.provider === 'twilio_verify' ? deliveryChannel : 'whatsapp',
+    expiresInSec: Math.floor(ttlMs / 1000),
+    otpProvider: 'twilio',
+  };
 }
 
 /**
- * Verify OTP for live POST /api/auth/verify-otp.
+ * Verify OTP sent via sendPhoneLoginOtp.
  * @returns {{ phoneKey: string }}
  */
-async function verifyRegisterOtp(db, phoneNumber, phoneKey, sessionInfo, otp) {
-  const pending = getPendingWhatsappOtp(db, phoneKey, REGISTER_OTP_CHANNEL);
+async function verifyPhoneLoginOtp(db, phoneNumber, phoneKey, sessionInfo, otp, channel) {
+  const pending = getPendingWhatsappOtp(db, phoneKey, channel);
   if (!pending || String(pending.verificationId) !== String(sessionInfo)) {
     const err = new Error('Invalid or expired OTP. Request a new code.');
     err.code = 'INVALID_SESSION';
@@ -556,12 +565,37 @@ async function verifyRegisterOtp(db, phoneNumber, phoneKey, sessionInfo, otp) {
     }
   }
 
-  deleteWhatsappOtp(db, phoneKey, REGISTER_OTP_CHANNEL);
+  deleteWhatsappOtp(db, phoneKey, channel);
   return { phoneKey };
+}
+
+/**
+ * Send OTP for live POST /api/auth/register (Twilio Verify preferred, else Messaging/Meta).
+ * Returns sessionInfo string for verify-otp (same contract as legacy Firebase sessionInfo).
+ */
+async function sendRegisterOtp(db, phoneNumber, phoneKey) {
+  return sendPhoneLoginOtp(db, phoneNumber, phoneKey, REGISTER_OTP_CHANNEL);
+}
+
+async function sendDriverLoginOtp(db, phoneNumber, phoneKey) {
+  return sendPhoneLoginOtp(db, phoneNumber, phoneKey, DRIVER_LOGIN_OTP_CHANNEL);
+}
+
+/**
+ * Verify OTP for live POST /api/auth/verify-otp.
+ * @returns {{ phoneKey: string }}
+ */
+async function verifyRegisterOtp(db, phoneNumber, phoneKey, sessionInfo, otp) {
+  return verifyPhoneLoginOtp(db, phoneNumber, phoneKey, sessionInfo, otp, REGISTER_OTP_CHANNEL);
+}
+
+async function verifyDriverLoginOtp(db, phoneNumber, phoneKey, verificationId, otp) {
+  return verifyPhoneLoginOtp(db, phoneNumber, phoneKey, verificationId, otp, DRIVER_LOGIN_OTP_CHANNEL);
 }
 
 module.exports = {
   REGISTER_OTP_CHANNEL,
+  DRIVER_LOGIN_OTP_CHANNEL,
   OTP_TTL_MS,
   TWILIO_VERIFY_PENDING_TTL_MS,
   MIN_RESEND_INTERVAL_MS,
@@ -590,4 +624,8 @@ module.exports = {
   checkResendCooldown,
   sendRegisterOtp,
   verifyRegisterOtp,
+  sendPhoneLoginOtp,
+  verifyPhoneLoginOtp,
+  sendDriverLoginOtp,
+  verifyDriverLoginOtp,
 };
