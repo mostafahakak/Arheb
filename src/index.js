@@ -236,6 +236,7 @@ const findDriverByMobile = db.prepare('SELECT * FROM drivers WHERE mobile = ?');
 const {
   jordanMobileLookupKeys,
   normalizeJordanMobileKey,
+  jordanMobileToE164,
 } = require('./utils/jordanMobile');
 const {
   ensureWhatsappOtpTable,
@@ -246,13 +247,58 @@ const {
   verifyCustomerWhatsappLoginOtp,
 } = require('./utils/whatsappLoginOtp');
 
+function pickCanonicalUserRow(matches) {
+  if (!matches.length) return null;
+  if (matches.length === 1) return matches[0];
+  const active = matches.filter((u) => !u.deleted);
+  const pool = active.length ? active : matches;
+  pool.sort((a, b) => {
+    const score = (u) => {
+      if (String(u.phoneNumber).startsWith('+962')) return 0;
+      if (String(u.phoneNumber).startsWith('+')) return 1;
+      if (String(u.phoneNumber).startsWith('0')) return 2;
+      return 3;
+    };
+    const diff = score(a) - score(b);
+    if (diff !== 0) return diff;
+    return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
+  });
+  return pool[0];
+}
+
 function findUserByPhoneFlexible(phone) {
   const keys = jordanMobileLookupKeys(phone);
+  const seen = new Set();
+  const matches = [];
   for (const k of keys) {
     const u = findUserByPhone.get(k);
-    if (u) return u;
+    if (u && !seen.has(u.phoneNumber)) {
+      seen.add(u.phoneNumber);
+      matches.push(u);
+    }
   }
-  return null;
+  return pickCanonicalUserRow(matches);
+}
+
+function retireDuplicatePhoneUserRows(canonicalPhoneKey) {
+  const keys = jordanMobileLookupKeys(canonicalPhoneKey);
+  for (const k of keys) {
+    const u = findUserByPhone.get(k);
+    if (!u || u.phoneNumber === canonicalPhoneKey || u.deleted) continue;
+    db.prepare(
+      `UPDATE users SET deleted = 1, deletedAt = CURRENT_TIMESTAMP, token = NULL WHERE phoneNumber = ?`,
+    ).run(u.phoneNumber);
+  }
+}
+
+function resolveAuthPhoneIdentity(phoneInput) {
+  const normalizedPhone = String(phoneInput || '').trim();
+  const phoneKey = normalizeJordanMobileKey(normalizedPhone);
+  const existingUser = findUserByPhoneFlexible(normalizedPhone);
+  const canonicalPhone =
+    existingUser?.phoneNumber ?? jordanMobileToE164(normalizedPhone) ?? phoneKey;
+  const alreadyRegistered = Boolean(existingUser && !existingUser.deleted);
+  return { normalizedPhone, phoneKey, canonicalPhone, existingUser, alreadyRegistered };
 }
 
 function findDriverByPhoneFlexible(phone) {
@@ -371,6 +417,8 @@ function finalizePhoneAuthSession(firebasePhone, firebaseUid, verificationIdToke
     deleted: 0,
     deletedAt: null,
   });
+
+  retireDuplicatePhoneUserRows(phoneKey);
 
   if (existing && existing.deleted) {
     try {
@@ -614,12 +662,11 @@ async function handleTwilioAuthRegister(req, res) {
   }
 
   const normalizedPhone = String(phoneNumber).trim();
-  const phoneKey = normalizeJordanMobileKey(normalizedPhone);
+  const { phoneKey, existingUser, alreadyRegistered } = resolveAuthPhoneIdentity(normalizedPhone);
   if (!phoneKey || phoneKey.replace(/\D/g, '').length < 9) {
     return res.status(400).json({ message: 'Invalid phone number', case: 2 });
   }
 
-  const existingUser = findUserByPhoneFlexible(normalizedPhone);
   if (existingUser && existingUser.isBlocked) {
     return res.status(403).json({ message: 'User is blocked', case: 2 });
   }
@@ -629,7 +676,8 @@ async function handleTwilioAuthRegister(req, res) {
     return res.status(200).json({
       message: 'OTP SENT SUCCESSFUL',
       case: 1,
-      alreadyRegistered: Boolean(existingUser && !existingUser.deleted),
+      alreadyRegistered,
+      isNewUser: !alreadyRegistered,
       sessionInfo: sent.sessionInfo,
       verificationId: sent.sessionInfo,
       otpProvider: 'twilio',
@@ -670,20 +718,26 @@ async function handleTwilioAuthVerifyOtp(req, res) {
     });
   }
 
-  const phoneKey = normalizeJordanMobileKey(phoneNumber);
-  if (!phoneKey) {
+  const identity = resolveAuthPhoneIdentity(phoneNumber);
+  if (!identity.phoneKey) {
     return res.status(400).json({ success: false, message: 'Invalid phone number', case: 2 });
   }
 
   try {
-    await verifyRegisterOtp(db, phoneNumber, phoneKey, sessionInfo, otp);
-    const sessionBody = finalizePhoneAuthSession(phoneKey, `twilio:${phoneKey}`, null);
-    const withDriver = attachDriverClaimsToSession(sessionBody, phoneKey, null);
+    await verifyRegisterOtp(db, identity.normalizedPhone, identity.phoneKey, sessionInfo, otp);
+    const sessionBody = finalizePhoneAuthSession(
+      identity.canonicalPhone,
+      `twilio:${identity.phoneKey}`,
+      null,
+    );
+    const withDriver = attachDriverClaimsToSession(sessionBody, identity.canonicalPhone, null);
     return res.status(200).json({
       ...withDriver,
       otpProvider: 'twilio',
       firebaseToken: null,
       case: 1,
+      alreadyRegistered: identity.alreadyRegistered,
+      isNewUser: !identity.alreadyRegistered,
     });
   } catch (error) {
     if (error.statusCode === 403) {

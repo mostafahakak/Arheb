@@ -16,18 +16,36 @@ function normalizeJordanMobileKey(input) {
   const digits = raw.replace(/\D/g, '');
   if (!digits) return raw;
   if (digits.startsWith('962') && digits.length >= 12) {
-    return `0${digits.slice(3)}`;
+    return `0${digits.slice(3, 12)}`;
   }
   if (digits.startsWith('00962') && digits.length >= 14) {
-    return `0${digits.slice(5)}`;
+    return `0${digits.slice(5, 14)}`;
   }
   if (digits.startsWith('0') && digits.length >= 10) {
-    return digits.slice(0, 11);
+    return digits.slice(0, 10);
   }
   if (digits.length === 9 && digits.startsWith('7')) {
     return `0${digits}`;
   }
   return raw;
+}
+
+/** E.164 for Jordan mobiles (+9627XXXXXXXX) from any common input format. */
+function jordanMobileToE164(input) {
+  const norm = normalizeJordanMobileKey(input);
+  if (norm && norm.startsWith('0') && norm.length >= 10) {
+    return `+962${norm.slice(1)}`;
+  }
+  const raw = toAsciiDigits(input).trim();
+  if (raw.startsWith('+')) return raw;
+  const digits = raw.replace(/\D/g, '');
+  if (digits.startsWith('962') && digits.length >= 12) {
+    return `+${digits.slice(0, 12)}`;
+  }
+  if (digits.length === 9 && digits.startsWith('7')) {
+    return `+962${digits}`;
+  }
+  return norm ? raw : '';
 }
 
 /**
@@ -42,10 +60,16 @@ function jordanMobileLookupKeys(input) {
   if (raw) keys.add(raw);
   const digits = raw.replace(/\D/g, '');
   if (digits.startsWith('962') && digits.length >= 12) {
-    keys.add(digits.slice(0, 12));
+    const jordan962 = digits.slice(0, 12);
+    keys.add(jordan962);
+    keys.add(`+${jordan962}`);
   }
   if (norm && norm.startsWith('0') && norm.length >= 10) {
     keys.add(`962${norm.slice(1)}`);
+    keys.add(`+962${norm.slice(1)}`);
+  }
+  if (raw.startsWith('+')) {
+    keys.add(raw);
   }
   if (digits.length === 9 && digits.startsWith('7')) {
     keys.add(`0${digits}`);
@@ -62,6 +86,7 @@ function normalizeOtpDigits(otp) {
 module.exports = {
   toAsciiDigits,
   normalizeJordanMobileKey,
+  jordanMobileToE164,
   jordanMobileLookupKeys,
   normalizeOtpDigits,
 };

@@ -355,13 +355,38 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
   const findDriverById = db.prepare('SELECT * FROM drivers WHERE id = ?');
   const findDriverByMobile = db.prepare('SELECT * FROM drivers WHERE mobile = ?');
 
+  function pickCanonicalDriverRow(matches) {
+    if (!matches.length) return null;
+    if (matches.length === 1) return matches[0];
+    const active = matches.filter((d) => !d.deleted);
+    const pool = active.length ? active : matches;
+    pool.sort((a, b) => {
+      const score = (d) => {
+        const m = String(d.mobile);
+        if (m.startsWith('+962')) return 0;
+        if (m.startsWith('+')) return 1;
+        if (m.startsWith('0')) return 2;
+        return 3;
+      };
+      const diff = score(a) - score(b);
+      if (diff !== 0) return diff;
+      return Number(a.id) - Number(b.id);
+    });
+    return pool[0];
+  }
+
   function findDriverByMobileFlexible(mobile) {
     const keys = jordanMobileLookupKeys(mobile);
+    const seen = new Set();
+    const matches = [];
     for (const k of keys) {
       const d = findDriverByMobile.get(k);
-      if (d && !d.deleted) return d;
+      if (d && !d.deleted && !seen.has(d.id)) {
+        seen.add(d.id);
+        matches.push(d);
+      }
     }
-    return null;
+    return pickCanonicalDriverRow(matches);
   }
 
   function getPendingDriverOtp(canonicalMobile) {
@@ -554,6 +579,8 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
       return res.status(200).json({
         success: true,
         message: deliveryLabel,
+        case: 1,
+        alreadyRegistered: true,
         data: {
           verificationId: sent.sessionInfo,
           sessionInfo: sent.sessionInfo,
@@ -634,6 +661,8 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     return res.status(200).json({
       success: true,
       message: 'Login successful',
+      case: 1,
+      alreadyRegistered: true,
       data: {
         driver: {
           id: String(d.id),
