@@ -3171,8 +3171,9 @@ Single reference for every **`/api/admin/*`** route (mirrors `src/admin/routes.j
 | POST | `/api/admin/admins` | A/S | Create admin / store admin. |
 | PATCH | `/api/admin/admins/:id` | A/S | Update admin. |
 | DELETE | `/api/admin/admins/:id` | A/S | Delete admin (rules per role). |
-| GET | `/api/admin/users` | A/S | List/search users — optional order aggregates (see [GET /api/admin/users (order statistics)](#get-apiproadminusers-order-statistics)); query `q` / `search`. |
+| GET | `/api/admin/users` | A/S | List/search users — optional order aggregates (see [GET /api/admin/users (order statistics)](#get-apiproadminusers-order-statistics)); query `q` / `search`, `sortBy`, `sortDir`. |
 | PATCH | `/api/admin/users/:phone/block` | A/S | Block/unblock user. |
+| DELETE | `/api/admin/users/:phone` | A/S | Soft-delete user (and alias phone rows for same Jordan number). |
 | GET | `/api/admin/users/:phone/orders` | A/S | Orders for phone. |
 | GET | `/api/admin/customers/:phone/profile` | A/S | Profile + orders shortcut. |
 
