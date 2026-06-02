@@ -42,6 +42,7 @@ const {
   normalizeOpeningHoursFromBody,
   parseFlexibleTimeTo24h,
 } = require('../utils/openingHoursJordan');
+const { jordanMobileLookupKeys } = require('../utils/jordanMobile');
 const {
   getDriverCommissionSettings,
   setDriverCommissionSettings,
@@ -376,6 +377,113 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   const findAdminById = db.prepare('SELECT * FROM admins WHERE id = ?');
   const findAllAdmins = db.prepare('SELECT id, email, role, storeId, name, createdAt FROM admins ORDER BY id');
   const findUserByPhone = db.prepare('SELECT * FROM users WHERE phoneNumber = ?');
+  const softDeleteUserByPhone = db.prepare(
+    `UPDATE users SET deleted = 1, deletedAt = CURRENT_TIMESTAMP, token = NULL WHERE phoneNumber = ?`,
+  );
+
+  function pickCanonicalAppUserRow(matches) {
+    if (!matches.length) return null;
+    if (matches.length === 1) return matches[0];
+    const active = matches.filter((u) => !u.deleted);
+    const pool = active.length ? active : matches;
+    pool.sort((a, b) => {
+      const score = (u) => {
+        if (String(u.phoneNumber).startsWith('+962')) return 0;
+        if (String(u.phoneNumber).startsWith('+')) return 1;
+        if (String(u.phoneNumber).startsWith('0')) return 2;
+        return 3;
+      };
+      const diff = score(a) - score(b);
+      if (diff !== 0) return diff;
+      return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
+    });
+    return pool[0];
+  }
+
+  function findAppUserByPhoneFlexible(phone) {
+    const keys = jordanMobileLookupKeys(phone);
+    const seen = new Set();
+    const matches = [];
+    for (const k of keys) {
+      const u = findUserByPhone.get(k);
+      if (u && !seen.has(u.phoneNumber)) {
+        seen.add(u.phoneNumber);
+        matches.push(u);
+      }
+    }
+    return pickCanonicalAppUserRow(matches);
+  }
+
+  function resolveUsersOrderClause(sortBy, sortDir, withOrderStats) {
+    const dir = String(sortDir || '').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+    const key = String(sortBy || '').trim();
+    if (!withOrderStats) {
+      if (key === 'name') return `ORDER BY name ${dir} COLLATE NOCASE, createdAt DESC`;
+      return `ORDER BY createdAt ${dir}`;
+    }
+    if (key === 'name') return `ORDER BY u.name ${dir} COLLATE NOCASE, u.createdAt DESC`;
+    if (key === 'createdAt' || key === 'joined') return `ORDER BY u.createdAt ${dir}`;
+    if (key === 'ordersGrandTotalJod' || key === 'total' || key === 'totalAmount') {
+      return `ORDER BY ordersGrandTotalJod ${dir}, orderCount DESC, u.createdAt DESC`;
+    }
+    return `ORDER BY orderCount ${dir}, ordersGrandTotalJod DESC, u.createdAt DESC`;
+  }
+
+  function loadOrdersForAppUser(user) {
+    const keys = [
+      ...new Set(
+        [...jordanMobileLookupKeys(user.phoneNumber), user.phoneNumber, user.userId].filter(
+          (k) => k != null && String(k).trim() !== '',
+        ),
+      ),
+    ];
+    if (!keys.length) return [];
+    const conditions = [];
+    const params = [];
+    for (const k of keys) {
+      conditions.push('phoneNumber = ?');
+      params.push(k);
+      conditions.push('userId = ?');
+      params.push(k);
+    }
+    const sql = `SELECT * FROM orders WHERE (${conditions.join(' OR ')}) ORDER BY createdAt DESC, id DESC`;
+    return db.prepare(sql).all(...params);
+  }
+
+  function loadArhebBoxForAppUser(user) {
+    const keys = [
+      ...new Set([...jordanMobileLookupKeys(user.phoneNumber), user.phoneNumber].filter(
+        (k) => k != null && String(k).trim() !== '',
+      )),
+    ];
+    if (!keys.length) return [];
+    const conditions = keys.map(() => 'phoneNumber = ?').join(' OR ');
+    try {
+      return db
+        .prepare(`SELECT * FROM arheb_box_requests WHERE (${conditions}) ORDER BY createdAt DESC, id DESC`)
+        .all(...keys);
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function softDeleteAppUserAndAliases(phone) {
+    const primary = findAppUserByPhoneFlexible(phone);
+    if (!primary || primary.deleted) return null;
+    const keys = [
+      ...new Set([...jordanMobileLookupKeys(primary.phoneNumber), primary.phoneNumber].filter(Boolean)),
+    ];
+    const deletedPhones = [];
+    for (const k of keys) {
+      const u = findUserByPhone.get(k);
+      if (u && !u.deleted) {
+        softDeleteUserByPhone.run(u.phoneNumber);
+        deletedPhones.push(u.phoneNumber);
+      }
+    }
+    return { primary, deletedPhones };
+  }
+
   const findOrderById = db.prepare('SELECT * FROM orders WHERE id = ?');
   const findOrderItems = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
 
@@ -529,6 +637,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       const totalRegisteredUsersRow = db.prepare('SELECT COUNT(*) AS c FROM users WHERE deleted = 0').get();
       const totalRegisteredUsers = Number(totalRegisteredUsersRow?.c ?? 0) || 0;
 
+      const sortBy = (req.query.sortBy || req.query.sort || '').toString().trim();
+      const sortDir = (req.query.sortDir || req.query.order || 'desc').toString().trim();
+
       let statsLimit = null;
       let statsExcludeZerosApplied = false;
 
@@ -568,6 +679,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         statsLimit = limit;
         statsExcludeZerosApplied = excludeZeroOrders;
 
+        const orderClause = resolveUsersOrderClause(sortBy, sortDir, true);
+
         const sql = `
           SELECT u.phoneNumber, u.userId, u.name, u.addressName, u.createdAt, u.deleted, u.isBlocked,
             COUNT(o.id) AS orderCount,
@@ -581,15 +694,16 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           )
           WHERE ${where.join(' AND ')}
           GROUP BY u.phoneNumber${havingSql}
-          ORDER BY orderCount DESC, ordersGrandTotalJod DESC, u.createdAt DESC${limitSql}`;
+          ${orderClause}${limitSql}`;
         rows = db.prepare(sql).all(...joinParams, ...whereParams, ...limitParams);
       } else {
+        const orderClause = resolveUsersOrderClause(sortBy, sortDir, false);
         rows = db
           .prepare(
             `SELECT phoneNumber, userId, name, addressName, createdAt, deleted, isBlocked
              FROM users u
              WHERE ${where.join(' AND ').replace(/u\./g, '')}
-             ORDER BY createdAt DESC`
+             ${orderClause}`,
           )
           .all(...whereParams);
       }
@@ -612,6 +726,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       const meta = {
         totalRegisteredUsers,
         withOrderStats,
+        sortBy: sortBy || (withOrderStats ? 'orderCount' : 'createdAt'),
+        sortDir: String(sortDir).toLowerCase() === 'asc' ? 'asc' : 'desc',
         ...(withOrderStats
           ? {
               allTime,
@@ -631,19 +747,19 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
 
   app.patch('/api/admin/users/:phone/block', auth, requireAdminOrSuper, (req, res) => {
     try {
-      const phone = String(req.params.phone || '').trim();
+      const phone = decodeURIComponent(String(req.params.phone || '').trim());
       if (!phone) return res.status(400).json({ success: false, message: 'Invalid phone' });
-      const user = findUserByPhone.get(phone);
+      const user = findAppUserByPhoneFlexible(phone);
       if (!user || user.deleted) return res.status(404).json({ success: false, message: 'User not found' });
       const blocked = req.body?.isBlocked === true;
-      db.prepare('UPDATE users SET isBlocked = ? WHERE phoneNumber = ?').run(blocked ? 1 : 0, phone);
-      const updated = findUserByPhone.get(phone);
+      db.prepare('UPDATE users SET isBlocked = ? WHERE phoneNumber = ?').run(blocked ? 1 : 0, user.phoneNumber);
+      const updated = findUserByPhone.get(user.phoneNumber);
       logActivity(db, req, {
         action: 'edit',
         resourceType: 'user',
         resourceId: phone,
         storeScopeId: null,
-        summary: `${blocked ? 'Blocked' : 'Unblocked'} user ${phone}`,
+        summary: `${blocked ? 'Blocked' : 'Unblocked'} user ${updated.phoneNumber}`,
       });
       return res.status(200).json({
         success: true,
@@ -663,16 +779,41 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     }
   });
 
+  app.delete('/api/admin/users/:phone', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      const phone = decodeURIComponent(String(req.params.phone || '').trim());
+      if (!phone) return res.status(400).json({ success: false, message: 'Invalid phone' });
+      const result = softDeleteAppUserAndAliases(phone);
+      if (!result) return res.status(404).json({ success: false, message: 'User not found' });
+      logActivity(db, req, {
+        action: 'delete',
+        resourceType: 'user',
+        resourceId: result.primary.phoneNumber,
+        storeScopeId: null,
+        summary: `Deleted user ${result.primary.phoneNumber}${result.deletedPhones.length > 1 ? ` (+${result.deletedPhones.length - 1} alias row(s))` : ''}`,
+      });
+      return res.status(200).json({
+        success: true,
+        message: 'User deleted',
+        data: {
+          phoneNumber: result.primary.phoneNumber,
+          deletedPhones: result.deletedPhones,
+        },
+      });
+    } catch (e) {
+      console.error('Admin user delete error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to delete user' });
+    }
+  });
+
   app.get('/api/admin/users/:phone/orders', auth, requireAdminOrSuper, (req, res) => {
     try {
-      const phone = String(req.params.phone || '').trim();
+      const phone = decodeURIComponent(String(req.params.phone || '').trim());
       if (!phone) return res.status(400).json({ success: false, message: 'Invalid phone' });
-      const user = findUserByPhone.get(phone);
+      const user = findAppUserByPhoneFlexible(phone);
       if (!user || user.deleted) return res.status(404).json({ success: false, message: 'User not found' });
 
-      const orders = db
-        .prepare('SELECT * FROM orders WHERE phoneNumber = ? OR userId = ? ORDER BY createdAt DESC, id DESC')
-        .all(phone, user.userId || phone);
+      const orders = loadOrdersForAppUser(user);
       const storesList = loadStores();
       const storeById = Object.fromEntries(storesList.map((s) => [String(s.id), s]));
       const ordersOut = orders.map((o) => {
@@ -707,20 +848,11 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     try {
       const phone = decodeURIComponent(String(req.params.phone || '').trim());
       if (!phone) return res.status(400).json({ success: false, message: 'Invalid phone' });
-      const user = findUserByPhone.get(phone);
+      const user = findAppUserByPhoneFlexible(phone);
       if (!user || user.deleted) return res.status(404).json({ success: false, message: 'User not found' });
-      const uid = user.userId || phone;
-      const orders = db
-        .prepare('SELECT * FROM orders WHERE phoneNumber = ? OR userId = ? ORDER BY createdAt DESC, id DESC')
-        .all(phone, uid);
-      let boxRows = [];
-      try {
-        boxRows = db
-          .prepare('SELECT * FROM arheb_box_requests WHERE phoneNumber = ? ORDER BY createdAt DESC, id DESC')
-          .all(phone);
-      } catch (e) {
-        boxRows = [];
-      }
+      const uid = user.userId || user.phoneNumber;
+      const orders = loadOrdersForAppUser(user);
+      const boxRows = loadArhebBoxForAppUser(user);
       const storesList = loadStores();
       const storeById = Object.fromEntries(storesList.map((s) => [String(s.id), s]));
       const storeOrderCount = {};
