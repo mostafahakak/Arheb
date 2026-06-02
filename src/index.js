@@ -53,7 +53,7 @@ if (!JWT_SECRET) {
 
 if (!FIREBASE_API_KEY) {
   console.warn(
-    '[auth] FIREBASE_API_KEY not set — Firebase Admin delete-user calls are disabled. Phone OTP login uses Twilio on /api/auth/register + /api/auth/verify-otp (and /login aliases).',
+    '[auth] FIREBASE_API_KEY not set — Firebase SMS OTP (/api/auth/register, verify-otp) and delete-user calls are disabled.',
   );
 }
 
@@ -239,11 +239,8 @@ const {
 } = require('./utils/jordanMobile');
 const {
   ensureWhatsappOtpTable,
-  sendRegisterOtp,
-  verifyRegisterOtp,
   sendCustomerWhatsappLoginOtp,
   verifyCustomerWhatsappLoginOtp,
-  isTwilioOtpConfigured,
 } = require('./utils/whatsappLoginOtp');
 
 function findUserByPhoneFlexible(phone) {
@@ -478,32 +475,88 @@ function finalizeFirebaseIdentitySession(decoded, verificationIdToken) {
   };
 }
 
+function extractFirebaseError(error) {
+  const d = error?.response?.data;
+  if (d?.error?.message) return d.error.message;
+  if (typeof d?.error === 'string') return d.error;
+  if (d?.error && typeof d.error === 'object' && d.error.message) return d.error.message;
+  return error?.message || 'Unexpected Firebase error';
+}
+
+function hintForSendVerificationError(rawMessage) {
+  const s = String(rawMessage || '');
+  if (
+    s.includes('MISSING_CLIENT_IDENTIFIER') ||
+    s.includes('MISSING_CLIENT_ID') ||
+    s.includes('CAPTCHA_CHECK_FAILED')
+  ) {
+    return (
+      'Real phone numbers require app verification tokens (Firebase test numbers skip this). ' +
+      'Recommended: complete phone sign-in on the device with Firebase Auth SDK, then call POST /api/auth/verify-firebase-token with the Firebase idToken. ' +
+      'Alternative: send recaptchaToken or captchaResponse from the client to POST /api/auth/register (see Identity Toolkit sendVerificationCode).'
+    );
+  }
+  return null;
+}
+
+async function sendFirebasePhoneOtp(phoneNumber, options = {}) {
+  if (!FIREBASE_API_KEY) {
+    const err = new Error('Firebase OTP is not configured (FIREBASE_API_KEY missing on server)');
+    err.code = 'FIREBASE_NOT_CONFIGURED';
+    throw err;
+  }
+  const url = `https://identitytoolkit.googleapis.com/v1/accounts:sendVerificationCode?key=${FIREBASE_API_KEY}`;
+  const payload = { phoneNumber };
+  if (options.recaptchaToken) payload.recaptchaToken = options.recaptchaToken;
+  if (options.captchaResponse) payload.captchaResponse = options.captchaResponse;
+  if (options.clientType) payload.clientType = options.clientType;
+
+  const response = await axios.post(url, payload, { timeout: 15000 });
+  return response.data.sessionInfo;
+}
+
+async function verifyFirebasePhoneOtp(sessionInfo, code) {
+  if (!FIREBASE_API_KEY) {
+    const err = new Error('Firebase OTP is not configured (FIREBASE_API_KEY missing on server)');
+    err.code = 'FIREBASE_NOT_CONFIGURED';
+    throw err;
+  }
+  const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPhoneNumber?key=${FIREBASE_API_KEY}`;
+  const response = await axios.post(url, { sessionInfo, code }, { timeout: 15000 });
+  return response.data;
+}
+
 function authSendOtpPathLabel(req) {
   const p = String(req.path || '');
-  if (p.includes('send-otp')) return 'send-otp→Twilio';
-  if (p.includes('firebase')) return 'firebase register→Twilio';
-  return 'register→Twilio';
+  if (p.includes('send-otp')) return 'send-otp→Firebase';
+  if (p.includes('firebase')) return 'firebase register→Firebase';
+  return 'register→Firebase';
 }
 
 function authLoginPathLabel(req) {
   const p = String(req.path || '');
-  if (p.endsWith('/login')) return 'login→Twilio';
-  if (p.includes('firebase')) return 'firebase verify→Twilio';
-  return 'verify-otp→Twilio';
+  if (p.endsWith('/login')) return 'login→Firebase';
+  if (p.includes('firebase')) return 'firebase verify→Firebase';
+  return 'verify-otp→Firebase';
 }
 
-/** Send OTP — register, send-otp, and firebase/register aliases (Twilio Verify). */
+/** Send OTP — register, send-otp, and firebase/register aliases (Firebase Identity Toolkit SMS). */
 async function handleAuthRegister(req, res) {
   const body = req.body || {};
   const phoneNumber = body.phoneNumber || body.mobile;
+  const { recaptchaToken, captchaResponse, clientType } = body;
   console.log(`auth/send-otp hit (${authSendOtpPathLabel(req)})`, {
     phoneNumber: maskPhoneForLog(phoneNumber),
+    hasRecaptchaToken: Boolean(recaptchaToken),
+    hasCaptchaResponse: Boolean(captchaResponse),
+    clientType: clientType || null,
   });
   if (!phoneNumber || !String(phoneNumber).trim()) {
     return res.status(400).json({ message: 'phoneNumber is required', case: 2 });
   }
 
-  const phoneKey = normalizeJordanMobileKey(phoneNumber);
+  const normalizedPhone = String(phoneNumber).trim();
+  const phoneKey = normalizeJordanMobileKey(normalizedPhone);
   if (!phoneKey || phoneKey.replace(/\D/g, '').length < 9) {
     return res.status(400).json({ message: 'Invalid phone number', case: 2 });
   }
@@ -514,30 +567,31 @@ async function handleAuthRegister(req, res) {
   }
 
   try {
-    const sent = await sendRegisterOtp(db, phoneNumber, phoneKey);
+    const sessionInfo = await sendFirebasePhoneOtp(normalizedPhone, {
+      recaptchaToken,
+      captchaResponse,
+      clientType,
+    });
     return res.status(200).json({
       message: 'OTP SENT SUCCESSFUL',
       case: 1,
       alreadyRegistered: Boolean(existingUser && !existingUser.deleted),
-      sessionInfo: sent.sessionInfo,
-      verificationId: sent.sessionInfo,
-      otpProvider: 'twilio',
-      otpChannel: sent.channel || null,
+      sessionInfo,
+      verificationId: sessionInfo,
+      otpProvider: 'firebase',
     });
   } catch (error) {
-    if (error.code === 'RATE_LIMIT') {
-      return res.status(429).json({
-        message: error.message,
-        case: 2,
-        retryAfterSec: error.retryAfterSec,
-      });
-    }
-    if (error.code === 'OTP_NOT_CONFIGURED') {
+    if (error.code === 'FIREBASE_NOT_CONFIGURED') {
       return res.status(503).json({ message: error.message, case: 2 });
     }
-    const raw = error.response?.data?.error?.message || error.message || 'OTP send failed';
+    const raw = extractFirebaseError(error);
+    const hint = hintForSendVerificationError(raw);
     console.error('auth/send-otp error:', raw);
-    return res.status(502).json({ message: String(raw), case: 2 });
+    return res.status(500).json({
+      message: hint ? `${raw}. ${hint}` : raw,
+      case: 2,
+      ...(hint && { firebaseHint: hint }),
+    });
   }
 }
 
@@ -580,8 +634,8 @@ attachDriverPresence(io, db, JWT_SECRET);
 attachMerchantPresence(io, db, JWT_SECRET);
 
 /**
- * Exchange Firebase idToken for Arheb JWT (non-phone Firebase sign-in only when Twilio OTP is enabled).
- * Phone OTP login must use POST /api/auth/verify-otp or POST /api/auth/login (Twilio).
+ * Preferred for mobile apps: client completes Firebase Phone Auth on device, then exchanges idToken for your JWT.
+ * Requires FIREBASE_SERVICE_ACCOUNT_JSON (same Firebase project as the app).
  */
 app.post('/api/auth/verify-firebase-token', async (req, res) => {
   const { idToken } = req.body || {};
@@ -606,15 +660,6 @@ app.post('/api/auth/verify-firebase-token', async (req, res) => {
 
   try {
     const decoded = await auth.verifyIdToken(idToken);
-    if (isTwilioOtpConfigured() && decoded.phone_number) {
-      return res.status(410).json({
-        success: false,
-        message:
-          'Firebase phone OTP login is disabled. Use POST /api/auth/register (or /api/auth/send-otp) then POST /api/auth/verify-otp (or /api/auth/login) with Twilio OTP.',
-        case: 2,
-        otpProvider: 'twilio',
-      });
-    }
     const body = finalizeFirebaseIdentitySession(decoded, idToken);
     return res.status(200).json(body);
   } catch (error) {
@@ -701,9 +746,9 @@ app.post('/api/auth/whatsapp/verify-code', async (req, res) => {
 
   try {
     await verifyCustomerWhatsappLoginOtp(db, phoneNumber, phoneKey, verificationId, otp);
-    const sessionBody = finalizePhoneAuthSession(phoneKey, `twilio:${verificationId}`, null);
+    const sessionBody = finalizePhoneAuthSession(phoneKey, `whatsapp:${verificationId}`, null);
     const withDriver = attachDriverClaimsToSession(sessionBody, phoneKey, null);
-    return res.status(200).json({ ...withDriver, otpProvider: 'twilio', firebaseToken: null });
+    return res.status(200).json({ ...withDriver, firebaseToken: null });
   } catch (error) {
     if (error.statusCode === 403) {
       return res.status(403).json({ success: false, message: error.message, case: 2 });
@@ -720,7 +765,7 @@ app.post('/api/auth/whatsapp/verify-code', async (req, res) => {
   }
 });
 
-/** Login — verify-otp, login, and firebase/verify-otp aliases (Twilio Verify). */
+/** Login — verify-otp, login, and firebase/verify-otp aliases (Firebase Identity Toolkit SMS). */
 async function handleAuthVerifyOtp(req, res) {
   const body = req.body || {};
   const phoneNumber = body.phoneNumber || body.mobile;
@@ -739,27 +784,32 @@ async function handleAuthVerifyOtp(req, res) {
     });
   }
 
-  const phoneKey = normalizeJordanMobileKey(phoneNumber);
-  if (!phoneKey) {
-    return res.status(400).json({ success: false, message: 'Invalid phone number', case: 2 });
-  }
-
   try {
-    await verifyRegisterOtp(db, phoneNumber, phoneKey, sessionInfo, otp);
-    const sessionBody = finalizePhoneAuthSession(phoneKey, `twilio:${phoneKey}`, null);
-    const withDriver = attachDriverClaimsToSession(sessionBody, phoneKey, null);
-    return res.status(200).json({ ...withDriver, otpProvider: 'twilio', firebaseToken: null, case: 1 });
+    const verification = await verifyFirebasePhoneOtp(sessionInfo, otp);
+    const firebasePhone = verification.phoneNumber || phoneNumber;
+    const firebaseUid = verification.localId || verification?.userId || null;
+    const sessionBody = finalizePhoneAuthSession(
+      firebasePhone,
+      firebaseUid,
+      verification.idToken ?? null,
+    );
+    const withDriver = attachDriverClaimsToSession(
+      sessionBody,
+      firebasePhone,
+      verification.idToken ?? null,
+    );
+    return res.status(200).json({ ...withDriver, otpProvider: 'firebase', case: 1 });
   } catch (error) {
+    if (error.code === 'FIREBASE_NOT_CONFIGURED') {
+      return res.status(503).json({ success: false, message: error.message, case: 2 });
+    }
+    console.error('auth/login error:', extractFirebaseError(error));
     if (error.statusCode === 403) {
       return res.status(403).json({ success: false, message: error.message, case: 2 });
     }
-    if (error.code === 'INVALID_SESSION' || error.code === 'INVALID_OTP') {
-      return res.status(401).json({ success: false, message: error.message, case: 2 });
-    }
-    console.error('auth/login error:', error?.message || error);
-    return res.status(502).json({
+    return res.status(401).json({
       success: false,
-      message: error.message || 'Verification failed',
+      message: extractFirebaseError(error),
       case: 2,
     });
   }

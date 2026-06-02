@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const fs = require('fs');
-const { jordanMobileLookupKeys, normalizeJordanMobileKey } = require('../utils/jordanMobile');
+const { jordanMobileLookupKeys, normalizeJordanMobileKey, normalizeOtpDigits } = require('../utils/jordanMobile');
 const { getJsonPath } = require('../config/jsonPaths');
 const fcm = require('../fcm');
 const enrichArhebBoxRow = require('../arhebBox').enrichArhebBoxRow;
@@ -23,11 +24,22 @@ const { getActiveFromListWithDistance } = require('../driverPresence');
 const { offerNextSequentialDriver, offerNextSequentialArhebBoxDriver, parseLatLongFromGoogleMapsUrl } = require('../utils/sequentialDriverOffer');
 const { notifyArhebBoxCustomerDriverToPick, notifyArhebBoxCustomerDriverEnRoute } = require('../utils/arhebBoxFcm');
 const {
-  sendDriverLoginOtp,
-  verifyDriverLoginOtp,
-  sendDriverWhatsappLoginOtp,
-  verifyDriverWhatsappLoginOtp,
+  generateOtpCode: generateWhatsappOtpCode,
+  generateVerificationId: generateWhatsappVerificationId,
+  resolveOtpDestination,
+  getTwilioVerifyChannel,
+  getWhatsappOtpNotConfiguredHint,
+  getWhatsappConfig,
+  sendWhatsappAuthenticationOtp,
+  startTwilioVerifyWhatsappOtp,
+  checkTwilioVerifyWhatsappOtp,
+  isTwilioVerifyVerificationId,
+  upsertWhatsappOtp,
   getPendingWhatsappOtp,
+  deleteWhatsappOtp,
+  checkResendCooldown,
+  OTP_TTL_MS: WHATSAPP_OTP_TTL_MS,
+  TWILIO_VERIFY_PENDING_TTL_MS,
 } = require('../utils/whatsappLoginOtp');
 
 /** After a driver accepts (or is assigned) a store order — before "On the way". Legacy DB rows may still say "Driver to pick". */
@@ -242,6 +254,15 @@ function mapOrderStatus(s) {
   return s;
 }
 
+const DRIVER_OTP_TTL_MS = 5 * 60 * 1000;
+
+function randomDriverVerificationId() {
+  return crypto.randomBytes(16).toString('hex');
+}
+
+function generateDriverOtpCode() {
+  return String(crypto.randomInt(100000, 1000000));
+}
 
 function maskPhoneForLog(phone) {
   const s = String(phone || '').trim();
@@ -310,6 +331,25 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
   ensureDriverCommissionPercentColumn(db);
   syncAllDriverRatingsFromTable(db);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS driver_otp_pending (
+      mobile TEXT PRIMARY KEY,
+      code TEXT NOT NULL,
+      verificationId TEXT NOT NULL,
+      expiresAt INTEGER NOT NULL
+    )
+  `);
+  const upsertDriverOtp = db.prepare(`
+    INSERT INTO driver_otp_pending (mobile, code, verificationId, expiresAt)
+    VALUES (@mobile, @code, @verificationId, @expiresAt)
+    ON CONFLICT(mobile) DO UPDATE SET
+      code = excluded.code,
+      verificationId = excluded.verificationId,
+      expiresAt = excluded.expiresAt
+  `);
+  const getDriverOtpRow = db.prepare('SELECT * FROM driver_otp_pending WHERE mobile = ?');
+  const deleteDriverOtpRow = db.prepare('DELETE FROM driver_otp_pending WHERE mobile = ?');
+
   const findDriverById = db.prepare('SELECT * FROM drivers WHERE id = ?');
   const findDriverByMobile = db.prepare('SELECT * FROM drivers WHERE mobile = ?');
 
@@ -320,6 +360,20 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
       if (d && !d.deleted) return d;
     }
     return null;
+  }
+
+  function getPendingDriverOtp(canonicalMobile) {
+    const row = getDriverOtpRow.get(canonicalMobile);
+    if (!row) return null;
+    if (Date.now() > row.expiresAt) {
+      deleteDriverOtpRow.run(canonicalMobile);
+      return null;
+    }
+    return {
+      code: row.code,
+      verificationId: row.verificationId,
+      expiresAt: row.expiresAt,
+    };
   }
 
   const findOrderById = db.prepare('SELECT * FROM orders WHERE id = ?');
@@ -363,10 +417,10 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     }
   }
 
-  // POST /api/driver/send-otp — Twilio Verify (same as customer POST /api/auth/register)
-  app.post('/api/driver/send-otp', async (req, res) => {
+  // POST /api/driver/send-otp — local OTP (set DRIVER_OTP_LOG=true to log code in server logs)
+  app.post('/api/driver/send-otp', (req, res) => {
     const { mobile } = req.body || {};
-    console.log('driver/send-otp hit (Twilio)', { mobile: maskPhoneForLog(mobile) });
+    console.log('driver/send-otp hit', { mobile: maskPhoneForLog(mobile) });
     if (!mobile || !String(mobile).trim()) {
       return res.status(400).json({ success: false, message: 'mobile is required' });
     }
@@ -380,58 +434,35 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     if (driver.isBlocked) {
       return res.status(403).json({ success: false, message: 'Account is blocked' });
     }
+    const code = generateDriverOtpCode();
+    const verificationId = randomDriverVerificationId();
     const canonicalMobile = String(driver.mobile).trim();
-    const phoneKey = normalizeJordanMobileKey(canonicalMobile) || canonicalMobile;
-    try {
-      const sent = await sendDriverLoginOtp(db, canonicalMobile, phoneKey);
-      const deliveryLabel =
-        sent.channel === 'sms' ? 'OTP sent via SMS (Twilio Verify)' : 'OTP sent successfully';
-      return res.status(200).json({
-        success: true,
-        message: deliveryLabel,
-        data: {
-          verificationId: sent.sessionInfo,
-          sessionInfo: sent.sessionInfo,
-          expiresIn: sent.expiresInSec,
-          mobile: canonicalMobile,
-          otpProvider: sent.otpProvider,
-          otpChannel: sent.channel,
-        },
-      });
-    } catch (error) {
-      if (error.code === 'RATE_LIMIT') {
-        return res.status(429).json({
-          success: false,
-          message: error.message,
-          retryAfterSec: error.retryAfterSec,
-        });
-      }
-      if (error.code === 'OTP_NOT_CONFIGURED') {
-        return res.status(503).json({ success: false, message: error.message });
-      }
-      const raw = error.response?.data?.error?.message || error.message || 'OTP send failed';
-      console.error('driver/send-otp error:', raw);
-      return res.status(502).json({ success: false, message: String(raw) });
+    const expiresAt = Date.now() + DRIVER_OTP_TTL_MS;
+    upsertDriverOtp.run({ mobile: canonicalMobile, code, verificationId, expiresAt });
+    if (process.env.DRIVER_OTP_LOG === 'true') {
+      console.warn(`[driver OTP] ${canonicalMobile} code=${code} verificationId=${verificationId}`);
     }
+    return res.status(200).json({
+      success: true,
+      message: 'OTP sent successfully',
+      data: {
+        verificationId,
+        expiresIn: Math.floor(DRIVER_OTP_TTL_MS / 1000),
+        mobile: canonicalMobile,
+      },
+    });
   });
 
-  // POST /api/driver/login — Twilio Verify (verificationId from send-otp, often VE…)
-  app.post('/api/driver/login', async (req, res) => {
-    const { mobile, otpCode, verificationId, sessionInfo } = req.body || {};
-    const verifyId = verificationId || sessionInfo;
-    console.log('driver/login hit (Twilio)', {
+  // POST /api/driver/login
+  app.post('/api/driver/login', (req, res) => {
+    const { mobile, otpCode, verificationId } = req.body || {};
+    console.log('driver/login hit', {
       mobile: maskPhoneForLog(mobile),
       otpLength: String(otpCode ?? '').length,
-      hasVerificationId: Boolean(verifyId),
+      hasVerificationId: Boolean(verificationId),
     });
     if (!mobile || otpCode === undefined || otpCode === null || otpCode === '') {
       return res.status(400).json({ success: false, message: 'mobile and otpCode are required' });
-    }
-    if (!verifyId) {
-      return res.status(400).json({
-        success: false,
-        message: 'verificationId (or sessionInfo) is required from send-otp',
-      });
     }
     const driver = findDriverByMobileFlexible(mobile);
     if (!driver || driver.deleted) {
@@ -441,19 +472,24 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
       return res.status(403).json({ success: false, message: 'Account is blocked' });
     }
     const canonicalMobile = String(driver.mobile).trim();
-    const phoneKey = normalizeJordanMobileKey(canonicalMobile) || canonicalMobile;
-    try {
-      await verifyDriverLoginOtp(db, canonicalMobile, phoneKey, verifyId, otpCode);
-    } catch (error) {
-      if (error.code === 'INVALID_SESSION' || error.code === 'INVALID_OTP') {
-        return res.status(401).json({ success: false, message: error.message });
-      }
-      console.error('driver/login error:', error?.message || error);
-      return res.status(502).json({
+    const pending = getPendingDriverOtp(canonicalMobile);
+    if (!pending) {
+      return res.status(401).json({
         success: false,
-        message: error.message || 'Verification failed',
+        message: 'Invalid or expired OTP. Request a new code from POST /api/driver/send-otp.',
       });
     }
+    if (verificationId && String(verificationId) !== pending.verificationId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid verificationId. Use the value returned by send-otp.',
+      });
+    }
+    const otpNorm = normalizeOtpDigits(otpCode);
+    if (otpNorm.length !== 6 || otpNorm !== String(pending.code)) {
+      return res.status(401).json({ success: false, message: 'Invalid OTP code' });
+    }
+    deleteDriverOtpRow.run(canonicalMobile);
     const token = jwt.sign(
       { driverId: driver.id, mobile: driver.mobile },
       JWT_SECRET,
@@ -486,15 +522,18 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
         },
         token: `Bearer ${token}`,
         refreshToken: null,
-        otpProvider: 'twilio',
       },
     });
   });
 
-  // WhatsApp OTP login (same JWT as /api/driver/login); Twilio Verify or Meta — see whatsappLoginOtp env vars.
+  // WhatsApp OTP login (same JWT as /api/driver/login); Meta or optional Twilio — see whatsappLoginOtp env vars.
   app.post('/api/driver/whatsapp/send-otp', async (req, res) => {
     const { mobile } = req.body || {};
-    console.log('driver/whatsapp/send-otp hit (Twilio)', { mobile: maskPhoneForLog(mobile) });
+    console.log('driver/whatsapp/send-otp hit', { mobile: maskPhoneForLog(mobile) });
+    const cfg = getWhatsappConfig();
+    if (!cfg.configured) {
+      return res.status(503).json({ success: false, message: getWhatsappOtpNotConfiguredHint() });
+    }
     if (!mobile || !String(mobile).trim()) {
       return res.status(400).json({ success: false, message: 'mobile is required' });
     }
@@ -509,47 +548,87 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
       return res.status(403).json({ success: false, message: 'Account is blocked' });
     }
     const canonicalMobile = String(driver.mobile).trim();
-    const phoneKey = normalizeJordanMobileKey(canonicalMobile) || canonicalMobile;
-    try {
-      const sent = await sendDriverWhatsappLoginOtp(db, canonicalMobile, phoneKey);
-      const delivery = sent.channel === 'sms' ? 'sms' : 'whatsapp';
-      return res.status(200).json({
-        success: true,
-        message: delivery === 'sms' ? 'OTP sent via SMS (Twilio Verify)' : 'OTP sent via WhatsApp',
-        data: {
-          verificationId: sent.sessionInfo,
-          sessionInfo: sent.sessionInfo,
-          expiresIn: sent.expiresInSec,
-          mobile: canonicalMobile,
-          channel: delivery,
-          otpProvider: sent.otpProvider,
-        },
+    const dest = resolveOtpDestination(canonicalMobile, normalizeJordanMobileKey(canonicalMobile));
+    if (!dest) {
+      return res.status(400).json({
+        success: false,
+        message: 'Could not format driver phone for OTP',
       });
-    } catch (error) {
-      if (error.code === 'RATE_LIMIT') {
-        return res.status(429).json({
-          success: false,
-          message: error.message,
-          retryAfterSec: error.retryAfterSec,
+    }
+
+    const now = Date.now();
+    const pendingWa = getPendingWhatsappOtp(db, canonicalMobile, 'driver');
+    const cooldown = checkResendCooldown(pendingWa, now);
+    if (!cooldown.ok) {
+      return res.status(429).json({
+        success: false,
+        message: `Wait ${cooldown.waitSec}s before requesting another code`,
+        retryAfterSec: cooldown.waitSec,
+      });
+    }
+
+    const code = generateWhatsappOtpCode();
+    const localVerificationId = generateWhatsappVerificationId();
+    let responseVerificationId = localVerificationId;
+    let expiresInSec = Math.floor(WHATSAPP_OTP_TTL_MS / 1000);
+    try {
+      if (cfg.provider === 'twilio_verify') {
+        const verification = await startTwilioVerifyWhatsappOtp(dest.digits);
+        responseVerificationId = verification.sid;
+        expiresInSec = Math.floor(TWILIO_VERIFY_PENDING_TTL_MS / 1000);
+        upsertWhatsappOtp(db, {
+          phoneKey: canonicalMobile,
+          channel: 'driver',
+          code: '__twilio_verify__',
+          verificationId: verification.sid,
+          now,
+          ttlMs: TWILIO_VERIFY_PENDING_TTL_MS,
+        });
+      } else {
+        await sendWhatsappAuthenticationOtp(dest.digits, code);
+        upsertWhatsappOtp(db, {
+          phoneKey: canonicalMobile,
+          channel: 'driver',
+          code,
+          verificationId: localVerificationId,
+          now,
         });
       }
-      if (error.code === 'OTP_NOT_CONFIGURED') {
-        return res.status(503).json({ success: false, message: error.message });
-      }
-      const raw = error.response?.data?.error?.message || error.message || 'OTP send failed';
+    } catch (error) {
+      const raw =
+        error.response?.data?.error?.message ||
+        error.response?.data?.error ||
+        error.message ||
+        'WhatsApp send failed';
       console.error('driver/whatsapp/send-otp error:', raw);
       return res.status(502).json({ success: false, message: String(raw) });
     }
+
+    const verifyCh = getTwilioVerifyChannel();
+    const delivery = cfg.provider === 'twilio_verify' ? (verifyCh === 'sms' ? 'sms' : 'whatsapp') : 'whatsapp';
+    return res.status(200).json({
+      success: true,
+      message: delivery === 'sms' ? 'OTP sent via SMS (Twilio Verify)' : 'OTP sent via WhatsApp',
+      data: {
+        verificationId: responseVerificationId,
+        expiresIn: expiresInSec,
+        mobile: canonicalMobile,
+        channel: delivery,
+      },
+    });
   });
 
   app.post('/api/driver/whatsapp/login', async (req, res) => {
-    const { mobile, otpCode, verificationId, sessionInfo } = req.body || {};
-    const verifyId = verificationId || sessionInfo;
-    console.log('driver/whatsapp/login hit (Twilio)', {
+    const { mobile, otpCode, verificationId } = req.body || {};
+    console.log('driver/whatsapp/login hit', {
       mobile: maskPhoneForLog(mobile),
       otpLength: String(otpCode ?? '').length,
-      hasVerificationId: Boolean(verifyId),
+      hasVerificationId: Boolean(verificationId),
     });
+    const cfg = getWhatsappConfig();
+    if (!cfg.configured) {
+      return res.status(503).json({ success: false, message: getWhatsappOtpNotConfiguredHint() });
+    }
     if (!mobile || otpCode === undefined || otpCode === null || otpCode === '') {
       return res.status(400).json({ success: false, message: 'mobile and otpCode are required' });
     }
@@ -561,27 +640,39 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
       return res.status(403).json({ success: false, message: 'Account is blocked' });
     }
     const canonicalMobile = String(driver.mobile).trim();
-    const phoneKey = normalizeJordanMobileKey(canonicalMobile) || canonicalMobile;
     const pending = getPendingWhatsappOtp(db, canonicalMobile, 'driver');
-    const id = verifyId || pending?.verificationId;
-    if (!id) {
+    if (!pending) {
       return res.status(401).json({
         success: false,
         message: 'Invalid or expired OTP. Request a new code from POST /api/driver/whatsapp/send-otp.',
       });
     }
-    try {
-      await verifyDriverWhatsappLoginOtp(db, canonicalMobile, phoneKey, id, otpCode);
-    } catch (error) {
-      if (error.code === 'INVALID_SESSION' || error.code === 'INVALID_OTP') {
-        return res.status(401).json({ success: false, message: error.message });
-      }
-      console.error('driver/whatsapp/login error:', error?.message || error);
-      return res.status(502).json({
+    if (verificationId && String(verificationId) !== pending.verificationId) {
+      return res.status(401).json({
         success: false,
-        message: error.message || 'Verification failed',
+        message: 'Invalid verificationId. Use the value returned by whatsapp/send-otp.',
       });
     }
+    const loginDest = resolveOtpDestination(canonicalMobile, normalizeJordanMobileKey(canonicalMobile));
+    const otpDigitsLogin = loginDest ? loginDest.digits : '';
+    if (isTwilioVerifyVerificationId(pending.verificationId) && otpDigitsLogin) {
+      let approved = false;
+      try {
+        approved = await checkTwilioVerifyWhatsappOtp(otpDigitsLogin, otpCode);
+      } catch (err) {
+        console.error('driver/whatsapp/login (Twilio Verify) error:', err?.message || err);
+        return res.status(502).json({ success: false, message: err.message || 'Verification check failed' });
+      }
+      if (!approved) {
+        return res.status(401).json({ success: false, message: 'Invalid OTP code' });
+      }
+    } else {
+      const otpNorm = normalizeOtpDigits(otpCode);
+      if (otpNorm.length !== 6 || otpNorm !== String(pending.code)) {
+        return res.status(401).json({ success: false, message: 'Invalid OTP code' });
+      }
+    }
+    deleteWhatsappOtp(db, canonicalMobile, 'driver');
 
     const token = jwt.sign(
       { driverId: driver.id, mobile: driver.mobile },
@@ -616,7 +707,6 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
         token: `Bearer ${token}`,
         refreshToken: null,
         channel: 'whatsapp',
-        otpProvider: 'twilio',
       },
     });
   });
