@@ -40,6 +40,8 @@ const {
   checkResendCooldown,
   OTP_TTL_MS: WHATSAPP_OTP_TTL_MS,
   TWILIO_VERIFY_PENDING_TTL_MS,
+  sendDriverLoginOtp,
+  verifyDriverLoginOtp,
 } = require('../utils/whatsappLoginOtp');
 
 /** After a driver accepts (or is assigned) a store order — before "On the way". Legacy DB rows may still say "Driver to pick". */
@@ -522,6 +524,134 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
         },
         token: `Bearer ${token}`,
         refreshToken: null,
+      },
+    });
+  });
+
+  // POST /api/driver/twilio/send-otp — Twilio Verify SMS (real OTP; requires TWILIO_* env)
+  app.post('/api/driver/twilio/send-otp', async (req, res) => {
+    const { mobile } = req.body || {};
+    console.log('driver/twilio/send-otp hit', { mobile: maskPhoneForLog(mobile) });
+    if (!mobile || !String(mobile).trim()) {
+      return res.status(400).json({ success: false, message: 'mobile is required' });
+    }
+    const driver = findDriverByMobileFlexible(mobile);
+    if (!driver || driver.deleted) {
+      return res.status(404).json({
+        success: false,
+        message: 'Driver not found. Contact admin to be added.',
+      });
+    }
+    if (driver.isBlocked) {
+      return res.status(403).json({ success: false, message: 'Account is blocked' });
+    }
+    const canonicalMobile = String(driver.mobile).trim();
+    const phoneKey = normalizeJordanMobileKey(canonicalMobile) || canonicalMobile;
+    try {
+      const sent = await sendDriverLoginOtp(db, canonicalMobile, phoneKey);
+      const deliveryLabel =
+        sent.channel === 'sms' ? 'OTP sent via SMS (Twilio Verify)' : 'OTP sent successfully';
+      return res.status(200).json({
+        success: true,
+        message: deliveryLabel,
+        data: {
+          verificationId: sent.sessionInfo,
+          sessionInfo: sent.sessionInfo,
+          expiresIn: sent.expiresInSec,
+          mobile: canonicalMobile,
+          otpProvider: sent.otpProvider,
+          otpChannel: sent.channel,
+        },
+      });
+    } catch (error) {
+      if (error.code === 'RATE_LIMIT') {
+        return res.status(429).json({
+          success: false,
+          message: error.message,
+          retryAfterSec: error.retryAfterSec,
+        });
+      }
+      if (error.code === 'OTP_NOT_CONFIGURED') {
+        return res.status(503).json({ success: false, message: error.message });
+      }
+      const raw = error.response?.data?.error?.message || error.message || 'OTP send failed';
+      console.error('driver/twilio/send-otp error:', raw);
+      return res.status(502).json({ success: false, message: String(raw) });
+    }
+  });
+
+  // POST /api/driver/twilio/login — Twilio Verify (verificationId from twilio/send-otp, often VE…)
+  app.post('/api/driver/twilio/login', async (req, res) => {
+    const { mobile, otpCode, verificationId, sessionInfo } = req.body || {};
+    const verifyId = verificationId || sessionInfo;
+    console.log('driver/twilio/login hit', {
+      mobile: maskPhoneForLog(mobile),
+      otpLength: String(otpCode ?? '').length,
+      hasVerificationId: Boolean(verifyId),
+    });
+    if (!mobile || otpCode === undefined || otpCode === null || otpCode === '') {
+      return res.status(400).json({ success: false, message: 'mobile and otpCode are required' });
+    }
+    if (!verifyId) {
+      return res.status(400).json({
+        success: false,
+        message: 'verificationId (or sessionInfo) is required from twilio/send-otp',
+      });
+    }
+    const driver = findDriverByMobileFlexible(mobile);
+    if (!driver || driver.deleted) {
+      return res.status(401).json({ success: false, message: 'Driver not found. Contact admin to be added.' });
+    }
+    if (driver.isBlocked) {
+      return res.status(403).json({ success: false, message: 'Account is blocked' });
+    }
+    const canonicalMobile = String(driver.mobile).trim();
+    const phoneKey = normalizeJordanMobileKey(canonicalMobile) || canonicalMobile;
+    try {
+      await verifyDriverLoginOtp(db, canonicalMobile, phoneKey, verifyId, otpCode);
+    } catch (error) {
+      if (error.code === 'INVALID_SESSION' || error.code === 'INVALID_OTP') {
+        return res.status(401).json({ success: false, message: error.message });
+      }
+      console.error('driver/twilio/login error:', error?.message || error);
+      return res.status(502).json({
+        success: false,
+        message: error.message || 'Verification failed',
+      });
+    }
+    const token = jwt.sign(
+      { driverId: driver.id, mobile: driver.mobile },
+      JWT_SECRET,
+      { expiresIn: '7d' },
+    );
+    const d = { ...driver };
+    delete d.licenseNumber;
+    const defaultPct = getDriverDeliveryDefaultPercent(db);
+    const commissionPercent =
+      d.commissionPercent != null && Number.isFinite(Number(d.commissionPercent))
+        ? Number(d.commissionPercent)
+        : defaultPct;
+    return res.status(200).json({
+      success: true,
+      message: 'Login successful',
+      data: {
+        driver: {
+          id: String(d.id),
+          name: d.name,
+          photo: d.photo,
+          mobile: d.mobile,
+          email: d.email,
+          vehicleType: d.vehicleType,
+          vehicleNumber: d.vehicleNumber,
+          latitude: d.latitude,
+          longitude: d.longitude,
+          rating: d.rating ?? 5,
+          isVerified: Boolean(d.isVerified),
+          commissionPercent,
+        },
+        token: `Bearer ${token}`,
+        refreshToken: null,
+        otpProvider: 'twilio',
       },
     });
   });

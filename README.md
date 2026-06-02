@@ -29,6 +29,10 @@ ARHEB_JSON_DIR=./Arheb API JSON
 FIREBASE_PROJECT_ID=...
 FIREBASE_CLIENT_EMAIL=...
 FIREBASE_PRIVATE_KEY=...
+# Web API key (Project settings → General) — required for Firebase SMS OTP on /api/auth/register
+# FIREBASE_API_KEY=AIza...
+# Stringified service account JSON — verify-firebase-token, FCM, Firebase Admin
+# FIREBASE_SERVICE_ACCOUNT_JSON={"type":"service_account",...}
 
 JWT_SECRET=change-me
 SUPERADMIN_EMAIL=admin@arheb.app
@@ -54,17 +58,16 @@ JOFOTARA_SELLER_NAME=your-company-name
 # Pause new Arheb Box orders (quote, POST /api/arheb-box, card initiate). Values: true | 1 | yes (case-insensitive). Omit or set false to allow orders.
 # ARHEB_BOX_PAUSED=true
 
-# WhatsApp OTP login (customer + driver): prefer Twilio when all Twilio vars are set; else Meta Cloud API.
-# Preferred: Twilio Verify WhatsApp — create a Verify service in Console; enable WhatsApp on the service.
+# Twilio Verify (optional alternate SMS OTP — /api/auth/twilio/* and /api/driver/twilio/*)
 # TWILIO_ACCOUNT_SID=
 # TWILIO_AUTH_TOKEN=
 # TWILIO_VERIFY_SERVICE_SID=VAxxxxxxxx
 # Must be the Verify *Service* SID (starts with VA), not Account SID (AC) or Messaging Service (MG).
-# Live app login (POST /api/auth/register): TWILIO_REGISTER_OTP_CHANNEL=sms (default) or whatsapp
+# TWILIO_REGISTER_OTP_CHANNEL=sms (default for /api/auth/twilio/* and /api/driver/twilio/*)
 # Optional: TWILIO_VERIFY_CHANNEL=sms — WhatsApp OTP endpoints (/api/auth/whatsapp/*)
 # Optional: TWILIO_VERIFY_PENDING_TTL_MS=600000 (stored pending row TTL, default 10 min)
 #
-# Or Twilio Programmable Messaging (Content template + sender):
+# Or Twilio Programmable Messaging (Content template + sender) for WhatsApp fallback:
 # TWILIO_MESSAGING_SERVICE_SID=MGxxxxxxxx
 # TWILIO_WHATSAPP_FROM=whatsapp:+14155238886
 # TWILIO_WHATSAPP_OTP_CONTENT_SID=HXxxxxxxxx
@@ -175,8 +178,9 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
 
 - [Overview](#overview)
 - [Authentication](#authentication)
-  - [Register / Send OTP](#register--send-otp)
-  - [Verify OTP](#verify-otp)
+  - [Register / Send OTP (Firebase)](#register--send-otp-firebase)
+  - [Verify OTP / Login (Firebase)](#verify-otp--login-firebase)
+  - [Twilio SMS OTP (customer)](#twilio-sms-otp-customer)
   - [WhatsApp OTP login (customer)](#whatsapp-otp-login-customer)
   - [Delete User](#delete-user)
 - [Products](#products)
@@ -261,6 +265,7 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
 - [Driver API](#driver-api)
   - [Driver workflow (store & Arheb Box)](#driver-workflow-store--arheb-box)
   - [Driver Send OTP](#driver-send-otp)
+  - [Driver Twilio SMS OTP](#driver-twilio-sms-otp)
   - [Driver WhatsApp OTP](#driver-whatsapp-otp)
   - [Driver Login](#driver-login)
   - [Driver Home](#driver-home)
@@ -284,7 +289,8 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
 
 Arheb Backend is a comprehensive REST API for an e-commerce platform built with Node.js, Express, Firebase Authentication, and SQLite. It provides:
 
-- 🔐 Firebase Phone OTP Authentication
+- 🔐 **Firebase Phone OTP** on main customer endpoints (`/api/auth/register`, `/api/auth/verify-otp`)
+- 📱 **Twilio Verify SMS** on alternate customer/driver endpoints (`/api/auth/twilio/*`, `/api/driver/twilio/*`)
 - 📦 Product & Store Management
 - 🛒 Order Processing & Checkout
 - 💰 Promo Code System
@@ -296,7 +302,7 @@ Arheb Backend is a comprehensive REST API for an e-commerce platform built with 
 
 ### Key Features
 
-- **Authentication**: Firebase phone OTP verification with JWT tokens
+- **Authentication**: Firebase phone OTP on main customer routes; optional Twilio Verify on `/api/auth/twilio/*` and `/api/driver/twilio/*`; JWT sessions
 - **Pagination**: Efficient product listing with pagination
 - **Store Ratings**: Dynamic rating system that updates store averages
 - **Order Management**: Complete order lifecycle management
@@ -309,20 +315,36 @@ Arheb Backend is a comprehensive REST API for an e-commerce platform built with 
 
 ## Authentication
 
-Live customer login uses **Twilio Verify** on `POST /api/auth/register` and `POST /api/auth/verify-otp` (same URLs and JSON shape as before). Configure **`TWILIO_ACCOUNT_SID`**, **`TWILIO_AUTH_TOKEN`**, **`TWILIO_VERIFY_SERVICE_SID`** (`VA…` from Twilio Console → Verify → Services — **not** Messaging Service `MG…`). Set **`TWILIO_REGISTER_OTP_CHANNEL=sms`** for SMS OTP (default). Legacy Firebase SMS: **`POST /api/auth/firebase/register`** and **`POST /api/auth/firebase/verify-otp`** (requires **`FIREBASE_API_KEY`**).
+The **live customer app** uses **Firebase Phone OTP** on the main routes. **Twilio Verify SMS** is available on separate `/api/auth/twilio/*` and `/api/driver/twilio/*` endpoints (same JSON shape, no reCAPTCHA).
 
-### Register / Send OTP
+| Flow | Send OTP | Verify / login |
+|------|----------|----------------|
+| **Customer (Firebase — main)** | `POST /api/auth/register` (aliases: `/api/auth/send-otp`, `/api/auth/firebase/register`) | `POST /api/auth/verify-otp` (aliases: `/api/auth/login`, `/api/auth/firebase/verify-otp`, `/api/auth/firebase/login`) |
+| **Customer (Twilio — alternate)** | `POST /api/auth/twilio/register` (alias: `/api/auth/twilio/send-otp`) | `POST /api/auth/twilio/verify-otp` (alias: `/api/auth/twilio/login`) |
+| **Customer (device SDK)** | Firebase Auth SDK on device | `POST /api/auth/verify-firebase-token` with `{ "idToken": "..." }` |
+| **Customer (WhatsApp)** | `POST /api/auth/whatsapp/send-code` | `POST /api/auth/whatsapp/verify-code` |
 
-Sends an OTP code to the provided phone number via **Twilio Verify** (SMS or WhatsApp per server env).
+**Firebase env (main customer OTP):** **`FIREBASE_API_KEY`** (Identity Toolkit SMS) and **`FIREBASE_SERVICE_ACCOUNT_JSON`** (for `verify-firebase-token` and FCM).
 
-**Endpoint:** `POST /api/auth/register`
+**Twilio env (alternate SMS only):** **`TWILIO_ACCOUNT_SID`**, **`TWILIO_AUTH_TOKEN`**, **`TWILIO_VERIFY_SERVICE_SID`** (`VA…` from Twilio Console → Verify → Services — **not** Messaging Service `MG…`). Optional **`TWILIO_REGISTER_OTP_CHANNEL=sms`** (default).
+
+---
+
+### Register / Send OTP (Firebase)
+
+Sends an OTP via **Firebase Identity Toolkit** SMS. Phone numbers are normalized to **E.164** server-side. Real numbers usually need **`recaptchaToken`** or **`captchaResponse`** from the client (Firebase test numbers may skip this).
+
+**Endpoints:** `POST /api/auth/register`, `POST /api/auth/send-otp`, `POST /api/auth/firebase/register`
 
 **Authentication:** Not required
 
 **Request Body:**
 ```json
 {
-  "phoneNumber": "+962791234567"
+  "phoneNumber": "+962791234567",
+  "recaptchaToken": "optional-from-firebase-recaptcha",
+  "captchaResponse": "optional-legacy-field",
+  "clientType": "optional"
 }
 ```
 
@@ -332,16 +354,16 @@ Sends an OTP code to the provided phone number via **Twilio Verify** (SMS or Wha
   "message": "OTP SENT SUCCESSFUL",
   "case": 1,
   "alreadyRegistered": false,
-  "sessionInfo": "VEaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  "sessionInfo": "firebase-session-info-string",
+  "verificationId": "firebase-session-info-string",
+  "otpProvider": "firebase"
 }
 ```
 
-(`sessionInfo` is Twilio Verify attempt SID or internal id — pass it to verify-otp.)
-
-**Error Response (502/503):**
+**Error Response (500/503):**
 ```json
 {
-  "message": "OTP send failed or Twilio not configured",
+  "message": "Firebase error or hint about reCAPTCHA",
   "case": 2
 }
 ```
@@ -351,7 +373,7 @@ Sends an OTP code to the provided phone number via **Twilio Verify** (SMS or Wha
 const response = await fetch('https://arheb-backend.onrender.com/api/auth/register', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ phoneNumber: '+962791234567' }),
+  body: JSON.stringify({ phoneNumber: '+962791234567', recaptchaToken: '...' }),
 });
 
 const data = await response.json();
@@ -360,11 +382,11 @@ console.log(data.sessionInfo); // Save for verify-otp
 
 ---
 
-### Verify OTP
+### Verify OTP / Login (Firebase)
 
-Verifies the OTP code and returns authentication tokens.
+Verifies the Firebase OTP and returns your app JWT (and optional Firebase ID token).
 
-**Endpoint:** `POST /api/auth/verify-otp`
+**Endpoints:** `POST /api/auth/verify-otp`, `POST /api/auth/login`, `POST /api/auth/firebase/verify-otp`, `POST /api/auth/firebase/login`
 
 **Authentication:** Not required
 
@@ -377,24 +399,27 @@ Verifies the OTP code and returns authentication tokens.
 }
 ```
 
+(`verificationId` and `otpCode` are accepted aliases for `sessionInfo` and `otp`.)
+
 **Success Response (200):**
 ```json
 {
   "success": true,
   "token": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "firebaseToken": null,
+  "firebaseToken": "firebase-id-token-or-null",
   "phoneNumber": "+962791234567",
-  "userId": "+962791234567"
+  "userId": "+962791234567",
+  "otpProvider": "firebase",
+  "case": 1
 }
 ```
-
-(`firebaseToken` is null with Twilio login; use **`token`** for API calls.)
 
 **Error Response (401):**
 ```json
 {
   "success": false,
-  "message": "Invalid OTP or error message"
+  "message": "Invalid OTP or error message",
+  "case": 2
 }
 ```
 
@@ -404,18 +429,49 @@ const response = await fetch('https://arheb-backend.onrender.com/api/auth/verify
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
-    phoneNumber: '+201500157920',
+    phoneNumber: '+962791234567',
     sessionInfo: 'session-info-from-register',
-    otp: '111111'
-  })
+    otp: '123456',
+  }),
 });
 
 const data = await response.json();
 if (data.success) {
   const authToken = data.token; // Bearer token for authenticated requests
-  const firebaseToken = data.firebaseToken; // Firebase ID token
+  const firebaseToken = data.firebaseToken; // Firebase ID token when present
 }
 ```
+
+---
+
+### Twilio SMS OTP (customer)
+
+Alternate customer login via **Twilio Verify SMS** (no reCAPTCHA). Same request/response fields as Firebase register/verify, but responses include **`otpProvider: "twilio"`** and **`firebaseToken: null`** on login.
+
+**Send OTP —** `POST /api/auth/twilio/register` or `POST /api/auth/twilio/send-otp`
+
+**Body:** `{ "phoneNumber": "+962791234567" }` (Jordan local formats like `079…` are normalized server-side)
+
+**Success (200):**
+```json
+{
+  "message": "OTP SENT SUCCESSFUL",
+  "case": 1,
+  "alreadyRegistered": false,
+  "sessionInfo": "VEaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "verificationId": "VEaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "otpProvider": "twilio",
+  "otpChannel": "sms"
+}
+```
+
+**Verify / login —** `POST /api/auth/twilio/verify-otp` or `POST /api/auth/twilio/login`
+
+**Body:** `{ "phoneNumber": "+962791234567", "sessionInfo": "VE…", "otp": "123456" }`
+
+**Success (200):** Same shape as Firebase verify (JWT **`token`**, **`firebaseToken": null`**, **`otpProvider": "twilio"`**).
+
+**Errors:** **503** if Twilio is not configured; **429** on resend cooldown; **401** on invalid OTP.
 
 ---
 
@@ -3704,7 +3760,7 @@ When a driver **accepts** an order, the backend stores a **commission snapshot**
 
 ### Driver Send OTP
 
-Sends an OTP flow identifier for driver login/register (backend returns a mock verification ID; use any OTP code for testing).
+Default driver flow: **local OTP** stored on the server (for testing / admin-added drivers). Set **`DRIVER_OTP_LOG=true`** on the server to log the 6-digit code in Render logs.
 
 **Endpoint:** `POST /api/driver/send-otp`
 
@@ -3729,6 +3785,22 @@ Sends an OTP flow identifier for driver login/register (backend returns a mock v
   }
 }
 ```
+
+---
+
+### Driver Twilio SMS OTP
+
+Real SMS via **Twilio Verify** for drivers already added in the admin dashboard.
+
+**Send OTP —** `POST /api/driver/twilio/send-otp`  
+**Body:** `{ "mobile": "0790000000" }`  
+**Success (200):** `{ "success": true, "data": { "verificationId": "VE…", "sessionInfo": "VE…", "expiresIn": 600, "mobile": "…", "otpProvider": "twilio", "otpChannel": "sms" } }`
+
+**Login —** `POST /api/driver/twilio/login`  
+**Body:** `{ "mobile": "0790000000", "otpCode": "123456", "verificationId": "<from twilio/send-otp>" }`  
+**Success (200):** Same payload as **Driver Login** below, with `otpProvider: "twilio"`.
+
+Requires **`TWILIO_ACCOUNT_SID`**, **`TWILIO_AUTH_TOKEN`**, **`TWILIO_VERIFY_SERVICE_SID`** (`VA…`).
 
 ---
 
@@ -4243,7 +4315,9 @@ Both `dateFrom` and `dateTo` are optional (inclusive on `date(createdAt)`).
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| POST | `/api/driver/send-otp` | No | Send OTP (mock; returns verificationId) |
+| POST | `/api/driver/send-otp` | No | Local test OTP (verificationId + code in server DB) |
+| POST | `/api/driver/twilio/send-otp` | No | Twilio Verify SMS OTP (real SMS) |
+| POST | `/api/driver/twilio/login` | No | Login with mobile + otpCode + verificationId from twilio/send-otp |
 | POST | `/api/driver/login` | No | Login with mobile + otpCode; returns driver + token (blocked drivers get 403) |
 | GET | `/api/driver/home` | Yes | Driver dashboard (blocked drivers get 403) |
 | GET | `/api/driver/stats` | Yes | Stats (profit/earnings, orders, period, rating reviews count) |
@@ -4296,7 +4370,8 @@ A comprehensive test client is available at:
 **Test Client:** `https://arheb-backend.onrender.com/test-client/index.html`
 
 This interactive interface allows you to:
-- ✅ Test authentication flow (register, verify OTP, delete user)
+- ✅ Test authentication flow (Firebase register/verify on `/api/auth/register`; Twilio on `/api/auth/twilio/*`)
+- ✅ **Twilio SMS OTP:** customer **`POST /api/auth/twilio/register`** + **`/api/auth/twilio/verify-otp`**; driver **`POST /api/driver/twilio/send-otp`** + **`/api/driver/twilio/login`**
 - ✅ **WhatsApp OTP:** customer **`POST /api/auth/whatsapp/send-code`** + **`verify-code`**; driver **`POST /api/driver/whatsapp/send-otp`** + **`login`** (requires WhatsApp env on server)
 - ✅ **Admin REST catalog:** all **`/api/admin/*`** routes are listed under [Admin API complete endpoint catalog](#admin-api-complete-endpoint-catalog) in this README.
 - ✅ Browse all data endpoints (categories, products, stores, home)
@@ -4354,7 +4429,8 @@ const profileResponse = await fetch('https://arheb-backend.onrender.com/api/prof
 - 📱 Phone numbers should be in **E.164 format** (e.g., `+201500157920`)
 - 🔑 JWT tokens expire after **7 days**
 - ⏰ All timestamps are in **ISO 8601 format** (UTC). Many order and Arheb Box payloads also include **`createdAtJordan`** (or similar `*Jordan` fields) for display in **Jordan (Asia/Amman)** local time.
-- 🔥 Backend uses **Firebase Authentication** for phone number verification
+- 🔥 Main customer app uses **Firebase** on `/api/auth/register` + `/api/auth/verify-otp` (or device SDK + `/api/auth/verify-firebase-token`)
+- 📱 Optional **Twilio Verify SMS** on `/api/auth/twilio/*` and `/api/driver/twilio/*` (same JWT/session shape; no Firebase SMS billing)
 - 📦 Data endpoints return cached/static data from JSON files
 - ⭐ Store ratings are calculated dynamically when orders are rated
 - 💰 Promo codes automatically apply discount when used in checkout

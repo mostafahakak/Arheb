@@ -240,6 +240,8 @@ const {
 const {
   ensureWhatsappOtpTable,
   resolveOtpDestination,
+  sendRegisterOtp,
+  verifyRegisterOtp,
   sendCustomerWhatsappLoginOtp,
   verifyCustomerWhatsappLoginOtp,
 } = require('./utils/whatsappLoginOtp');
@@ -601,6 +603,108 @@ async function handleAuthRegister(req, res) {
 app.post('/api/auth/register', handleAuthRegister);
 app.post('/api/auth/send-otp', handleAuthRegister);
 app.post('/api/auth/firebase/register', handleAuthRegister);
+
+/** Twilio Verify SMS OTP — alternate to Firebase (no reCAPTCHA). Same JSON as register/verify-otp. */
+async function handleTwilioAuthRegister(req, res) {
+  const body = req.body || {};
+  const phoneNumber = body.phoneNumber || body.mobile;
+  console.log('auth/twilio/register hit', { phoneNumber: maskPhoneForLog(phoneNumber) });
+  if (!phoneNumber || !String(phoneNumber).trim()) {
+    return res.status(400).json({ message: 'phoneNumber is required', case: 2 });
+  }
+
+  const normalizedPhone = String(phoneNumber).trim();
+  const phoneKey = normalizeJordanMobileKey(normalizedPhone);
+  if (!phoneKey || phoneKey.replace(/\D/g, '').length < 9) {
+    return res.status(400).json({ message: 'Invalid phone number', case: 2 });
+  }
+
+  const existingUser = findUserByPhoneFlexible(normalizedPhone);
+  if (existingUser && existingUser.isBlocked) {
+    return res.status(403).json({ message: 'User is blocked', case: 2 });
+  }
+
+  try {
+    const sent = await sendRegisterOtp(db, normalizedPhone, phoneKey);
+    return res.status(200).json({
+      message: 'OTP SENT SUCCESSFUL',
+      case: 1,
+      alreadyRegistered: Boolean(existingUser && !existingUser.deleted),
+      sessionInfo: sent.sessionInfo,
+      verificationId: sent.sessionInfo,
+      otpProvider: 'twilio',
+      otpChannel: sent.channel || null,
+    });
+  } catch (error) {
+    if (error.code === 'RATE_LIMIT') {
+      return res.status(429).json({
+        message: error.message,
+        case: 2,
+        retryAfterSec: error.retryAfterSec,
+      });
+    }
+    if (error.code === 'OTP_NOT_CONFIGURED') {
+      return res.status(503).json({ message: error.message, case: 2 });
+    }
+    const raw = error.response?.data?.error?.message || error.message || 'OTP send failed';
+    console.error('auth/twilio/register error:', raw);
+    return res.status(502).json({ message: String(raw), case: 2 });
+  }
+}
+
+async function handleTwilioAuthVerifyOtp(req, res) {
+  const body = req.body || {};
+  const phoneNumber = body.phoneNumber || body.mobile;
+  const sessionInfo = body.sessionInfo || body.verificationId;
+  const otp = body.otp ?? body.otpCode;
+  console.log('auth/twilio/verify-otp hit', {
+    phoneNumber: maskPhoneForLog(phoneNumber),
+    hasSessionInfo: Boolean(sessionInfo),
+    otpLength: String(otp ?? '').length,
+  });
+  if (!phoneNumber || !sessionInfo || otp === undefined || otp === null || otp === '') {
+    return res.status(400).json({
+      success: false,
+      message: 'phoneNumber, sessionInfo (or verificationId), and otp (or otpCode) are required',
+      case: 2,
+    });
+  }
+
+  const phoneKey = normalizeJordanMobileKey(phoneNumber);
+  if (!phoneKey) {
+    return res.status(400).json({ success: false, message: 'Invalid phone number', case: 2 });
+  }
+
+  try {
+    await verifyRegisterOtp(db, phoneNumber, phoneKey, sessionInfo, otp);
+    const sessionBody = finalizePhoneAuthSession(phoneKey, `twilio:${phoneKey}`, null);
+    const withDriver = attachDriverClaimsToSession(sessionBody, phoneKey, null);
+    return res.status(200).json({
+      ...withDriver,
+      otpProvider: 'twilio',
+      firebaseToken: null,
+      case: 1,
+    });
+  } catch (error) {
+    if (error.statusCode === 403) {
+      return res.status(403).json({ success: false, message: error.message, case: 2 });
+    }
+    if (error.code === 'INVALID_SESSION' || error.code === 'INVALID_OTP') {
+      return res.status(401).json({ success: false, message: error.message, case: 2 });
+    }
+    console.error('auth/twilio/verify-otp error:', error?.message || error);
+    return res.status(502).json({
+      success: false,
+      message: error.message || 'Verification failed',
+      case: 2,
+    });
+  }
+}
+
+app.post('/api/auth/twilio/register', handleTwilioAuthRegister);
+app.post('/api/auth/twilio/send-otp', handleTwilioAuthRegister);
+app.post('/api/auth/twilio/verify-otp', handleTwilioAuthVerifyOtp);
+app.post('/api/auth/twilio/login', handleTwilioAuthVerifyOtp);
 
 function authenticateRequest(req, res, next) {
   const authHeader = req.headers.authorization;
