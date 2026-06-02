@@ -487,23 +487,23 @@
         <section id="auth" class="section active">
           <h2>Authentication <span class="badge public">Public</span></h2>
           <div class="card" style="margin-bottom: 1rem; background: #ebf8ff; border: 1px solid #90cdf4;">
-            <h3 style="margin-top: 0;">Live app login (Twilio OTP)</h3>
+            <h3 style="margin-top: 0;">Live app register + login (Firebase OTP)</h3>
             <p style="font-size: 0.85rem; color: #2c5282; margin: 0 0 0.5rem 0;">
-              <code>POST /api/auth/register</code> and <code>POST /api/auth/verify-otp</code> use <strong>Twilio Verify</strong> on the server (same URLs as the production app). No Firebase SMS on these endpoints anymore.
+              <code>POST /api/auth/register</code> (and <code>/api/auth/send-otp</code>, <code>/api/auth/firebase/register</code>) send SMS via <strong>Firebase Identity Toolkit</strong>.
+              <code>POST /api/auth/verify-otp</code> (and <code>/api/auth/login</code>) verify the code and return your JWT + <code>firebaseToken</code>.
             </p>
             <ul style="font-size: 0.8rem; color: #2b6cb0; margin: 0; padding-left: 1.2rem;">
-              <li><strong>Required on Render:</strong> <code>TWILIO_ACCOUNT_SID</code> (AC…), <code>TWILIO_AUTH_TOKEN</code>, <code>TWILIO_VERIFY_SERVICE_SID</code> (<strong>VA…</strong> from Twilio Console → Verify → Services).</li>
-              <li><strong>Not the same as Messaging Service:</strong> <code>MG…</code> is <code>TWILIO_MESSAGING_SERVICE_SID</code> (optional template WhatsApp fallback only).</li>
-              <li><strong>SMS OTP (like old Firebase):</strong> <code>TWILIO_REGISTER_OTP_CHANNEL=sms</code> on the server.</li>
+              <li><strong>Required on Render:</strong> <code>FIREBASE_API_KEY</code> and <code>FIREBASE_SERVICE_ACCOUNT_JSON</code> (same Firebase project as the app).</li>
+              <li><strong>Real numbers:</strong> complete reCAPTCHA below before <strong>Request OTP</strong> (or use Firebase Phone Auth on-device + <code>POST /api/auth/verify-firebase-token</code>).</li>
             </ul>
             <p style="font-size: 0.8rem; color: #718096; margin: 0.75rem 0 0 0;">
-              After <strong>Request OTP</strong>, <code>sessionInfo</code> is filled automatically. If it starts with <code>VE…</code>, Twilio Verify sent the code (SMS or WhatsApp per server config).
+              After <strong>Request OTP</strong>, <code>sessionInfo</code> is filled automatically from the Firebase response.
             </p>
           </div>
           
           <div class="card">
-            <h3>Register / Send OTP <span class="badge public">Twilio</span></h3>
-            <p style="font-size: 0.8rem; color: #718096;">POST <code>/api/auth/register</code> — body: <code>{ "phoneNumber": "+962…" }</code></p>
+            <h3>Register / Send OTP <span class="badge public">Firebase</span></h3>
+            <p style="font-size: 0.8rem; color: #718096;">POST <code>/api/auth/register</code> — body: <code>{ "phoneNumber": "+962…", "recaptchaToken": "…" }</code></p>
             <div class="form-group">
               <label for="phoneInput">Phone Number</label>
               <input id="phoneInput" type="tel" value="+962791234567" placeholder="+962791234567" />
@@ -514,8 +514,8 @@
           </div>
 
           <div class="card">
-            <h3>Verify OTP</h3>
-            <p style="font-size: 0.8rem; color: #718096;">POST <code>/api/auth/verify-otp</code> — returns <code>token</code> (Bearer JWT). <code>firebaseToken</code> may be null with Twilio.</p>
+            <h3>Verify OTP / Login</h3>
+            <p style="font-size: 0.8rem; color: #718096;">POST <code>/api/auth/verify-otp</code> — returns <code>token</code> (Bearer JWT) and <code>firebaseToken</code>.</p>
             <div class="form-group">
               <label for="sessionInfoInput">Session Info</label>
               <textarea id="sessionInfoInput" rows="3" placeholder="Filled from register response (sessionInfo)"></textarea>
@@ -530,8 +530,8 @@
           </div>
 
           <div class="card">
-            <h3>Legacy Firebase SMS OTP</h3>
-            <p style="font-size: 0.8rem; color: #718096;">POST <code>/api/auth/firebase/register</code> + <code>/api/auth/firebase/verify-otp</code> — requires <code>FIREBASE_API_KEY</code> on server and reCAPTCHA below.</p>
+            <h3>Firebase aliases (same as above)</h3>
+            <p style="font-size: 0.8rem; color: #718096;">Also available: <code>/api/auth/firebase/register</code>, <code>/api/auth/firebase/verify-otp</code>, <code>/api/auth/login</code>, <code>/api/auth/send-otp</code> — all use Firebase OTP on the server.</p>
             <button id="firebaseSendOtpBtn" class="secondary">Firebase: Request OTP</button>
             <button id="firebaseVerifyOtpBtn" class="secondary">Firebase: Verify OTP</button>
             <div id="firebaseAuthStatus" class="status info" style="display: none;"></div>
@@ -1603,31 +1603,30 @@
         verifier.render().catch(console.error);
       }
 
-      // Authentication — live app: Twilio on /api/auth/register (no reCAPTCHA)
+      // Authentication — live app: Firebase on /api/auth/register (reCAPTCHA required for real numbers)
       document.getElementById('sendOtpBtn').addEventListener('click', async () => {
         const phone = document.getElementById('phoneInput').value.trim();
         if (!phone) {
           showStatus('registerStatus', 'Enter phone number', 'error');
           return;
         }
-        showStatus('registerStatus', 'Sending OTP via Twilio…', 'info');
+        showStatus('registerStatus', 'Preparing reCAPTCHA…', 'info');
         try {
+          const recaptchaToken = await verifier.verify();
+          showStatus('registerStatus', 'Sending OTP via Firebase…', 'info');
           const res = await fetch(`${getBackendBase()}/api/auth/register`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ phoneNumber: phone }),
+            body: JSON.stringify({ phoneNumber: phone, recaptchaToken }),
           });
           const data = await res.json();
           showOutput('registerOutput', data);
           if (data.sessionInfo) {
             document.getElementById('sessionInfoInput').value = data.sessionInfo;
           }
-          const hint = String(data.sessionInfo || '').startsWith('VE')
-            ? 'Twilio Verify — check SMS/WhatsApp for the code.'
-            : (res.ok ? 'OTP sent — check your phone.' : '');
           showStatus(
             'registerStatus',
-            res.ok ? (hint || 'OTP sent successfully!') : (data.message || 'Failed to send OTP'),
+            res.ok ? 'Firebase OTP sent — check SMS for the code.' : (data.message || 'Failed to send OTP'),
             res.ok ? 'success' : 'error',
           );
         } catch (error) {

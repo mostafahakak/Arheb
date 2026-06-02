@@ -239,6 +239,7 @@ const {
 } = require('./utils/jordanMobile');
 const {
   ensureWhatsappOtpTable,
+  resolveOtpDestination,
   sendCustomerWhatsappLoginOtp,
   verifyCustomerWhatsappLoginOtp,
 } = require('./utils/whatsappLoginOtp');
@@ -557,17 +558,19 @@ async function handleAuthRegister(req, res) {
 
   const normalizedPhone = String(phoneNumber).trim();
   const phoneKey = normalizeJordanMobileKey(normalizedPhone);
-  if (!phoneKey || phoneKey.replace(/\D/g, '').length < 9) {
+  const dest = resolveOtpDestination(normalizedPhone, phoneKey);
+  const firebasePhone = dest?.e164 || (normalizedPhone.startsWith('+') ? normalizedPhone : null);
+  if (!firebasePhone || firebasePhone.replace(/\D/g, '').length < 9) {
     return res.status(400).json({ message: 'Invalid phone number', case: 2 });
   }
 
-  const existingUser = findUserByPhoneFlexible(phoneKey);
+  const existingUser = findUserByPhoneFlexible(normalizedPhone);
   if (existingUser && existingUser.isBlocked) {
     return res.status(403).json({ message: 'User is blocked', case: 2 });
   }
 
   try {
-    const sessionInfo = await sendFirebasePhoneOtp(normalizedPhone, {
+    const sessionInfo = await sendFirebasePhoneOtp(firebasePhone, {
       recaptchaToken,
       captchaResponse,
       clientType,
@@ -586,7 +589,7 @@ async function handleAuthRegister(req, res) {
     }
     const raw = extractFirebaseError(error);
     const hint = hintForSendVerificationError(raw);
-    console.error('auth/send-otp error:', raw);
+    console.error('auth/register error:', raw);
     return res.status(500).json({
       message: hint ? `${raw}. ${hint}` : raw,
       case: 2,
