@@ -65,13 +65,14 @@ JOFOTARA_SELLER_NAME=your-company-name
 # Must be the SMS Verify *Service* SID (starts with VA), not Account SID (AC) or Messaging Service (MG).
 # TWILIO_REGISTER_OTP_CHANNEL=sms
 #
-# Twilio Verify — WhatsApp (/api/auth/whatsapp/* and /api/driver/whatsapp/*)
+# Twilio Verify — WhatsApp fallback (/api/auth/whatsapp/* and /api/driver/whatsapp/*)
 # TWILIO_VERIFY_WHATSAPP_SERVICE_SID=VAyyyyyyyy
-# Create a separate Verify service in Twilio Console with WhatsApp channel enabled.
+# Verify may fall back to SMS depending on Twilio service settings.
 # Optional: TWILIO_VERIFY_PENDING_TTL_MS=600000 (stored pending row TTL, default 10 min)
 #
-# Or Twilio Programmable Messaging (Content template + sender) for WhatsApp fallback if Verify WhatsApp is not set:
-# TWILIO_MESSAGING_SERVICE_SID=MGxxxxxxxx
+# Twilio Programmable Messaging (Content template) — preferred for WhatsApp-only test/client tab:
+# TWILIO_WHATSAPP_MESSAGING_SERVICE_SID=MGxxxxxxxx
+# Optional legacy fallback only: TWILIO_MESSAGING_SERVICE_SID=MGxxxxxxxx
 # TWILIO_WHATSAPP_FROM=whatsapp:+14155238886
 # TWILIO_WHATSAPP_OTP_CONTENT_SID=HXxxxxxxxx
 # Optional: TWILIO_WHATSAPP_OTP_CODE_VAR=1; TWILIO_WHATSAPP_OTP_CONTENT_VARIABLES_EXTRAS_JSON={"2":"Arheb"}
@@ -488,7 +489,7 @@ Alternative to SMS OTP: sends a code via **WhatsApp** (Twilio Verify WhatsApp, T
 
 **SMS live app** continues to use **`TWILIO_VERIFY_SERVICE_SID`** on `/api/auth/twilio/*` — do not reuse the same `VA…` unless both channels are enabled on one service.
 
-**Or (Twilio Messaging + Content template):** used only when **`TWILIO_VERIFY_WHATSAPP_SERVICE_SID`** is not set — **`TWILIO_WHATSAPP_FROM`**, **`TWILIO_WHATSAPP_OTP_CONTENT_SID`**, plus Account SID and Auth Token.
+**Twilio Messaging + Content template (WhatsApp-only):** when **`TWILIO_WHATSAPP_MESSAGING_SERVICE_SID`** (`MG…`) and **`TWILIO_WHATSAPP_OTP_CONTENT_SID`** are set, the backend prefers this path for WhatsApp OTP so it sends to `whatsapp:+...` and does not fall back to SMS. Keep **`TWILIO_MESSAGING_SERVICE_SID`** for SMS if you use it elsewhere. **`TWILIO_VERIFY_WHATSAPP_SERVICE_SID`** remains a fallback, but Twilio Verify may fall back to SMS depending on service settings.
 
 **Or (Meta Cloud API):** **`WHATSAPP_ACCESS_TOKEN`**, **`WHATSAPP_PHONE_NUMBER_ID`**, and optional template/language vars. If no provider is fully configured, endpoints return **503**.
 

@@ -569,8 +569,8 @@
             </p>
             <ul style="font-size: 0.8rem; color: #2f855a; margin: 0; padding-left: 1.2rem;">
               <li><strong>SMS (live):</strong> <code>TWILIO_VERIFY_SERVICE_SID</code> (<strong>VA…</strong>, SMS) — <code>/api/auth/twilio/*</code> (Authentication tab).</li>
-              <li><strong>WhatsApp (this tab):</strong> <code>TWILIO_VERIFY_WHATSAPP_SERVICE_SID</code> (<strong>VA…</strong>, separate service with WhatsApp enabled) + same <code>TWILIO_ACCOUNT_SID</code> / <code>TWILIO_AUTH_TOKEN</code>.</li>
-              <li><strong>Twilio Messaging fallback:</strong> <code>TWILIO_WHATSAPP_FROM</code>, <code>TWILIO_WHATSAPP_OTP_CONTENT_SID</code> (only if WhatsApp Verify service is not set).</li>
+              <li><strong>WhatsApp-only (this tab):</strong> set <code>TWILIO_WHATSAPP_MESSAGING_SERVICE_SID</code> (<strong>MG…</strong>) + <code>TWILIO_WHATSAPP_OTP_CONTENT_SID</code> (<strong>HX…</strong>). This path sends to <code>whatsapp:+...</code> and will not fall back to SMS.</li>
+              <li><strong>Verify WhatsApp fallback:</strong> <code>TWILIO_VERIFY_WHATSAPP_SERVICE_SID</code> (<strong>VA…</strong>) can be used, but Twilio Verify may fall back to SMS depending on service settings.</li>
               <li><strong>Meta Cloud API:</strong> <code>WHATSAPP_ACCESS_TOKEN</code>, <code>WHATSAPP_PHONE_NUMBER_ID</code>, template env vars.</li>
             </ul>
             <p style="font-size: 0.8rem; color: #276749; margin: 0.75rem 0 0 0;">

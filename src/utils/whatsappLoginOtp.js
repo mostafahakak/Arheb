@@ -219,13 +219,16 @@ function getTwilioWhatsappConfig() {
   const authToken = process.env.TWILIO_AUTH_TOKEN?.trim();
   const from = normalizeTwilioWhatsAppAddress(process.env.TWILIO_WHATSAPP_FROM?.trim() || '');
   const contentSid = process.env.TWILIO_WHATSAPP_OTP_CONTENT_SID?.trim();
-  const complete = Boolean(accountSid && authToken && from && contentSid);
+  const messagingServiceSid = process.env.TWILIO_WHATSAPP_MESSAGING_SERVICE_SID?.trim();
+  const hasWhatsappSender = from || (messagingServiceSid && messagingServiceSid.startsWith('MG'));
+  const complete = Boolean(accountSid && authToken && hasWhatsappSender && contentSid);
   return {
     complete,
     accountSid,
     authToken,
     from,
     contentSid,
+    messagingServiceSid,
   };
 }
 
@@ -251,10 +254,20 @@ function getMetaWhatsappConfig() {
 }
 
 /**
- * Priority: Twilio Verify WhatsApp → Twilio Messaging (Content) → Meta Cloud API.
+ * Priority: WhatsApp-only Twilio Messaging → Twilio Verify WhatsApp → Meta Cloud API.
+ * Messaging is preferred when TWILIO_WHATSAPP_MESSAGING_SERVICE_SID is set because
+ * Verify can fall back to SMS depending on the Twilio service configuration.
  * @returns {{ configured: boolean, provider: 'twilio_verify'|'twilio'|'meta'|null } & Record<string, unknown>}
  */
 function getWhatsappConfig() {
+  const twilio = getTwilioWhatsappConfig();
+  if (twilio.complete && twilio.messagingServiceSid) {
+    return {
+      configured: true,
+      provider: 'twilio',
+      twilio,
+    };
+  }
   const verify = getTwilioVerifyWhatsappConfig();
   if (verify.complete) {
     return {
@@ -263,7 +276,6 @@ function getWhatsappConfig() {
       verify,
     };
   }
-  const twilio = getTwilioWhatsappConfig();
   if (twilio.complete) {
     return {
       configured: true,
@@ -383,7 +395,7 @@ async function sendTwilioWhatsappAuthenticationOtp(toDigits, otpCode) {
   const t = getTwilioWhatsappConfig();
   if (!t.complete) {
     const err = new Error(
-      'Twilio WhatsApp OTP is not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_FROM, TWILIO_WHATSAPP_OTP_CONTENT_SID)',
+      'Twilio WhatsApp OTP is not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_OTP_CONTENT_SID, and TWILIO_WHATSAPP_MESSAGING_SERVICE_SID or TWILIO_WHATSAPP_FROM)',
     );
     err.code = 'WHATSAPP_NOT_CONFIGURED';
     throw err;
@@ -392,8 +404,13 @@ async function sendTwilioWhatsappAuthenticationOtp(toDigits, otpCode) {
   const client = twilioSdk(t.accountSid, t.authToken);
   const to = jordanDigitsToTwilioWhatsAppTo(toDigits);
   const contentVariables = buildTwilioOtpContentVariables(otpCode);
-  /** Optional Messaging Service (MG…); when set, Twilio picks the sender from the pool. */
-  const messagingServiceSid = process.env.TWILIO_MESSAGING_SERVICE_SID?.trim();
+  /**
+   * Prefer a WhatsApp-specific Messaging Service so SMS can keep using
+   * TWILIO_MESSAGING_SERVICE_SID without leaking into WhatsApp fallback sends.
+   */
+  const messagingServiceSid =
+    t.messagingServiceSid ||
+    process.env.TWILIO_MESSAGING_SERVICE_SID?.trim();
   const createPayload = {
     to,
     contentSid: t.contentSid,
@@ -467,7 +484,7 @@ async function sendWhatsappAuthenticationOtp(toDigits, otpCode) {
     return sendMetaWhatsappAuthenticationOtp(toDigits, otpCode);
   }
   const err = new Error(
-    'WhatsApp OTP is not configured. Set Twilio Verify (TWILIO_VERIFY_SERVICE_SID), or Twilio Messaging (TWILIO_WHATSAPP_FROM + TWILIO_WHATSAPP_OTP_CONTENT_SID), or Meta (WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID).',
+    'WhatsApp OTP is not configured. Set Twilio Verify (TWILIO_VERIFY_WHATSAPP_SERVICE_SID), or Twilio Messaging (TWILIO_WHATSAPP_MESSAGING_SERVICE_SID + TWILIO_WHATSAPP_FROM + TWILIO_WHATSAPP_OTP_CONTENT_SID), or Meta (WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID).',
   );
   err.code = 'WHATSAPP_NOT_CONFIGURED';
   throw err;
