@@ -695,7 +695,7 @@ async function handleTwilioAuthRegister(req, res) {
       return res.status(503).json({ message: error.message, case: 2 });
     }
     const raw = error.response?.data?.error?.message || error.message || 'OTP send failed';
-    console.error('auth/twilio/register error:', raw);
+    console.error('auth/twilio/register error:', raw, error.twilioErrorCode || '');
     return res.status(502).json({ message: String(raw), case: 2 });
   }
 }

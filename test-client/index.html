@@ -539,12 +539,12 @@
           </div>
 
           <div class="card" style="background: #fffaf0; border: 1px solid #fbd38d;">
-            <h3>Twilio SMS (live app)</h3>
+            <h3>Twilio WhatsApp (live app)</h3>
             <p style="font-size: 0.8rem; color: #744210; margin-top: 0;">
-              <code>POST /api/auth/twilio/register</code> + <code>/api/auth/twilio/verify-otp</code> — uses <strong>TWILIO_VERIFY_SERVICE_SID</strong> (SMS). No reCAPTCHA.
+              <code>POST /api/auth/twilio/register</code> + <code>/api/auth/twilio/verify-otp</code> — same URLs as the mobile app. WhatsApp via <strong>TWILIO_WHATSAPP_OTP_CONTENT_SID</strong> (HX…). No reCAPTCHA.
             </p>
-            <button id="twilioSendOtpBtn" type="button">Twilio SMS: Request OTP</button>
-            <button id="twilioVerifyOtpBtn" type="button" class="secondary">Twilio SMS: Verify OTP</button>
+            <button id="twilioSendOtpBtn" type="button">Live app: Request OTP</button>
+            <button id="twilioVerifyOtpBtn" type="button" class="secondary">Live app: Verify OTP</button>
             <div id="twilioAuthStatus" class="status info" style="display: none;"></div>
             <div id="twilioAuthOutput" class="output" style="display: none;"></div>
           </div>
@@ -1752,7 +1752,7 @@
           showStatus('twilioAuthStatus', 'Enter phone number', 'error');
           return;
         }
-        showStatus('twilioAuthStatus', 'Sending Twilio SMS OTP…', 'info');
+        showStatus('twilioAuthStatus', 'Sending WhatsApp OTP (live app)…', 'info');
         try {
           const res = await fetch(`${getBackendBase()}/api/auth/twilio/register`, {
             method: 'POST',
@@ -1767,7 +1767,7 @@
           showStatus(
             'twilioAuthStatus',
             res.ok
-              ? `OTP sent (${data.alreadyRegistered ? 'existing user' : 'new user'}). Check SMS.`
+              ? `OTP sent (${data.alreadyRegistered ? 'existing user' : 'new user'}). Check WhatsApp.`
               : (data.message || 'Failed'),
             res.ok ? 'success' : 'error',
           );
