@@ -425,12 +425,9 @@ async function sendTwilioWhatsappAuthenticationOtp(toDigits, otpCode) {
   const to = jordanDigitsToTwilioWhatsAppTo(toDigits);
   const contentVariables = buildTwilioOtpContentVariables(otpCode);
   /**
-   * Prefer a WhatsApp-specific Messaging Service so SMS can keep using
-   * TWILIO_MESSAGING_SERVICE_SID without leaking into WhatsApp fallback sends.
+   * Use only the WhatsApp Messaging Service — never fall back to TWILIO_MESSAGING_SERVICE_SID (SMS).
    */
-  const messagingServiceSid =
-    t.messagingServiceSid ||
-    process.env.TWILIO_MESSAGING_SERVICE_SID?.trim();
+  const messagingServiceSid = t.messagingServiceSid;
   const createPayload = {
     to,
     contentSid: t.contentSid,
@@ -438,8 +435,14 @@ async function sendTwilioWhatsappAuthenticationOtp(toDigits, otpCode) {
   };
   if (messagingServiceSid && messagingServiceSid.startsWith('MG')) {
     createPayload.messagingServiceSid = messagingServiceSid;
-  } else {
+  } else if (t.from) {
     createPayload.from = t.from;
+  } else {
+    const err = new Error(
+      'WhatsApp sender not configured. Set TWILIO_WHATSAPP_MESSAGING_SERVICE_SID (MG…) or TWILIO_WHATSAPP_FROM.',
+    );
+    err.code = 'WHATSAPP_NOT_CONFIGURED';
+    throw err;
   }
   const message = await client.messages.create(createPayload);
   if (message.errorCode) {
@@ -453,24 +456,22 @@ async function sendTwilioWhatsappAuthenticationOtp(toDigits, otpCode) {
     status: message.status,
     to: maskDigitsForLog(toDigits),
   });
-  if (process.env.TWILIO_WHATSAPP_SKIP_DELIVERY_CHECK !== '1') {
-    await sleep(2500);
-    const delivery = await client.messages(message.sid).fetch();
-    if (delivery.errorCode || delivery.status === 'failed' || delivery.status === 'undelivered') {
-      const err = new Error(
-        delivery.errorMessage || `WhatsApp delivery failed (${delivery.status || delivery.errorCode})`,
-      );
-      err.code = 'TWILIO_SEND_FAILED';
-      err.twilioErrorCode = delivery.errorCode;
-      throw err;
-    }
-    if (delivery.status !== message.status) {
-      console.log('[whatsapp-otp] Twilio delivery status', {
+  // Log delivery outcome asynchronously — do not block/fail the API (Twilio can report
+  // "failed" briefly or for retryable cases while whatsapp/send-code still delivers).
+  void (async () => {
+    try {
+      await sleep(6000);
+      const delivery = await client.messages(message.sid).fetch();
+      console.log('[whatsapp-otp] Twilio delivery', {
         sid: message.sid,
         status: delivery.status,
+        errorCode: delivery.errorCode || null,
+        errorMessage: delivery.errorMessage || null,
       });
+    } catch (logErr) {
+      console.warn('[whatsapp-otp] delivery log failed:', logErr.message);
     }
-  }
+  })();
   return { sid: message.sid, status: message.status, provider: 'twilio' };
 }
 
@@ -712,24 +713,23 @@ async function verifyPhoneLoginOtp(db, phoneNumber, phoneKey, sessionInfo, otp, 
  * Returns sessionInfo string for verify-otp (same contract as legacy Firebase sessionInfo).
  */
 async function sendRegisterOtp(db, phoneNumber, phoneKey) {
-  // Same pending row/cooldown as /api/auth/whatsapp/* so live app + test tabs do not double-send.
-  return sendPhoneLoginOtp(db, phoneNumber, phoneKey, CUSTOMER_WHATSAPP_OTP_CHANNEL);
+  return sendCustomerWhatsappLoginOtp(db, phoneNumber, phoneKey);
 }
 
 async function sendDriverLoginOtp(db, phoneNumber, phoneKey) {
-  return sendPhoneLoginOtp(db, phoneNumber, phoneKey, DRIVER_WHATSAPP_OTP_CHANNEL);
+  return sendDriverWhatsappLoginOtp(db, phoneNumber, phoneKey);
 }
 
 /**
- * Verify OTP for live POST /api/auth/verify-otp.
+ * Verify OTP for live POST /api/auth/twilio/verify-otp.
  * @returns {{ phoneKey: string }}
  */
 async function verifyRegisterOtp(db, phoneNumber, phoneKey, sessionInfo, otp) {
-  return verifyPhoneLoginOtp(db, phoneNumber, phoneKey, sessionInfo, otp, CUSTOMER_WHATSAPP_OTP_CHANNEL);
+  return verifyCustomerWhatsappLoginOtp(db, phoneNumber, phoneKey, sessionInfo, otp);
 }
 
 async function verifyDriverLoginOtp(db, phoneNumber, phoneKey, verificationId, otp) {
-  return verifyPhoneLoginOtp(db, phoneNumber, phoneKey, verificationId, otp, DRIVER_WHATSAPP_OTP_CHANNEL);
+  return verifyDriverWhatsappLoginOtp(db, phoneNumber, phoneKey, verificationId, otp);
 }
 
 async function sendCustomerWhatsappLoginOtp(db, phoneNumber, phoneKey) {
