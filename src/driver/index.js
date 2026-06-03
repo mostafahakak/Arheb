@@ -553,7 +553,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     });
   });
 
-  // POST /api/driver/twilio/send-otp — Twilio Verify SMS (real OTP; requires TWILIO_* env)
+  // POST /api/driver/twilio/send-otp — live driver OTP (WhatsApp; same JSON as before)
   app.post('/api/driver/twilio/send-otp', async (req, res) => {
     const { mobile } = req.body || {};
     console.log('driver/twilio/send-otp hit', { mobile: maskPhoneForLog(mobile) });
@@ -607,7 +607,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     }
   });
 
-  // POST /api/driver/twilio/login — Twilio Verify (verificationId from twilio/send-otp, often VE…)
+  // POST /api/driver/twilio/login — verify OTP from twilio/send-otp (WhatsApp Content or Verify)
   app.post('/api/driver/twilio/login', async (req, res) => {
     const { mobile, otpCode, verificationId, sessionInfo } = req.body || {};
     const verifyId = verificationId || sessionInfo;

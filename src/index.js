@@ -652,7 +652,7 @@ app.post('/api/auth/register', handleAuthRegister);
 app.post('/api/auth/send-otp', handleAuthRegister);
 app.post('/api/auth/firebase/register', handleAuthRegister);
 
-/** Twilio Verify SMS OTP — alternate to Firebase (no reCAPTCHA). Same JSON as register/verify-otp. */
+/** Live customer auth — /api/auth/twilio/* (WhatsApp OTP; same JSON contract as before). */
 async function handleTwilioAuthRegister(req, res) {
   const body = req.body || {};
   const phoneNumber = body.phoneNumber || body.mobile;

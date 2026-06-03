@@ -63,9 +63,9 @@ function resolveOtpDestination(phoneNumber, phoneKey) {
   return null;
 }
 
-/** DB channel for live app register/verify-otp (Twilio). */
+/** DB channel for live app /api/auth/twilio/* (WhatsApp OTP, same API contract as before). */
 const REGISTER_OTP_CHANNEL = 'register';
-/** DB channel for POST /api/driver/send-otp + /api/driver/login (Twilio). */
+/** DB channel for live app /api/driver/twilio/* (WhatsApp OTP, same API contract as before). */
 const DRIVER_LOGIN_OTP_CHANNEL = 'driver_login';
 /** DB channel for POST /api/auth/whatsapp/send-code + verify-code. */
 const CUSTOMER_WHATSAPP_OTP_CHANNEL = 'customer';
@@ -73,16 +73,26 @@ const CUSTOMER_WHATSAPP_OTP_CHANNEL = 'customer';
 const DRIVER_WHATSAPP_OTP_CHANNEL = 'driver';
 
 function isTwilioOtpConfigured() {
-  return getTwilioVerifySmsConfig().complete;
+  return getWhatsappConfig().configured;
+}
+
+/** Live Twilio routes and dedicated WhatsApp routes all deliver via WhatsApp. */
+function isWhatsappOtpRoute(channel) {
+  return (
+    channel === REGISTER_OTP_CHANNEL ||
+    channel === DRIVER_LOGIN_OTP_CHANNEL ||
+    channel === CUSTOMER_WHATSAPP_OTP_CHANNEL ||
+    channel === DRIVER_WHATSAPP_OTP_CHANNEL
+  );
 }
 
 function isTwilioWhatsappVerifyConfigured() {
   return getTwilioVerifyWhatsappConfig().complete;
 }
 
-/** SMS vs WhatsApp for Twilio Verify — register/driver SMS routes vs WhatsApp login routes. */
+/** Twilio Verify delivery channel when Messaging/Meta fallback is not used. */
 function getTwilioDeliveryChannelFor(dbChannel) {
-  if (dbChannel === CUSTOMER_WHATSAPP_OTP_CHANNEL || dbChannel === DRIVER_WHATSAPP_OTP_CHANNEL) {
+  if (isWhatsappOtpRoute(dbChannel)) {
     return 'whatsapp';
   }
   return getRegisterOtpChannel();
@@ -116,7 +126,7 @@ function getWhatsappOtpNotConfiguredHint() {
   if (smsSid && !smsSid.startsWith('VA')) {
     return 'TWILIO_VERIFY_SERVICE_SID must start with VA (Twilio Console → Verify → Services). Do not use Account SID (AC…) here.';
   }
-  return 'WhatsApp OTP not configured. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_VERIFY_WHATSAPP_SERVICE_SID (VA…, WhatsApp channel enabled), or Meta WHATSAPP_ACCESS_TOKEN + WHATSAPP_PHONE_NUMBER_ID.';
+  return 'WhatsApp OTP not configured. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_MESSAGING_SERVICE_SID (MG…), TWILIO_WHATSAPP_OTP_CONTENT_SID (HX…), or TWILIO_VERIFY_WHATSAPP_SERVICE_SID (VA…), or Meta WHATSAPP_ACCESS_TOKEN + WHATSAPP_PHONE_NUMBER_ID.';
 }
 
 function getSmsOtpNotConfiguredHint() {
@@ -200,7 +210,7 @@ function getTwilioVerifyConfig() {
 }
 
 function getTwilioVerifyConfigForChannel(dbChannel) {
-  if (dbChannel === CUSTOMER_WHATSAPP_OTP_CHANNEL || dbChannel === DRIVER_WHATSAPP_OTP_CHANNEL) {
+  if (isWhatsappOtpRoute(dbChannel)) {
     return getTwilioVerifyWhatsappConfig();
   }
   return getTwilioVerifySmsConfig();
@@ -550,11 +560,10 @@ function checkResendCooldown(pending, now) {
  * @returns {{ sessionInfo: string, channel: string, expiresInSec: number, otpProvider: 'twilio' }}
  */
 async function sendPhoneLoginOtp(db, phoneNumber, phoneKey, channel) {
-  const isWhatsappRoute =
-    channel === CUSTOMER_WHATSAPP_OTP_CHANNEL || channel === DRIVER_WHATSAPP_OTP_CHANNEL;
-  const cfg = isWhatsappRoute ? getWhatsappConfig() : getSmsOtpConfig();
+  const useWhatsapp = isWhatsappOtpRoute(channel);
+  const cfg = useWhatsapp ? getWhatsappConfig() : getSmsOtpConfig();
   if (!cfg.configured) {
-    const err = new Error(isWhatsappRoute ? getWhatsappOtpNotConfiguredHint() : getSmsOtpNotConfiguredHint());
+    const err = new Error(useWhatsapp ? getWhatsappOtpNotConfiguredHint() : getSmsOtpNotConfiguredHint());
     err.code = 'OTP_NOT_CONFIGURED';
     throw err;
   }
@@ -659,7 +668,7 @@ async function verifyPhoneLoginOtp(db, phoneNumber, phoneKey, sessionInfo, otp, 
 }
 
 /**
- * Send OTP for live POST /api/auth/register (Twilio Verify preferred, else Messaging/Meta).
+ * Send OTP for live POST /api/auth/twilio/* (WhatsApp via Content template or Verify fallback).
  * Returns sessionInfo string for verify-otp (same contract as legacy Firebase sessionInfo).
  */
 async function sendRegisterOtp(db, phoneNumber, phoneKey) {
