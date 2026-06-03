@@ -447,7 +447,7 @@ async function sendTwilioWhatsappAuthenticationOtp(toDigits, otpCode) {
   const message = await client.messages.create(createPayload);
   if (message.errorCode) {
     const err = new Error(message.errorMessage || `Twilio WhatsApp send failed (${message.errorCode})`);
-    err.code = 'TWILIO_SEND_FAILED';
+    err.code = 'WHATSAPP_DELIVERY_FAILED';
     err.twilioErrorCode = message.errorCode;
     throw err;
   }
@@ -456,23 +456,55 @@ async function sendTwilioWhatsappAuthenticationOtp(toDigits, otpCode) {
     status: message.status,
     to: maskDigitsForLog(toDigits),
   });
-  // Log delivery outcome asynchronously — do not block/fail the API (Twilio can report
-  // "failed" briefly or for retryable cases while whatsapp/send-code still delivers).
-  void (async () => {
-    try {
-      await sleep(6000);
-      const delivery = await client.messages(message.sid).fetch();
-      console.log('[whatsapp-otp] Twilio delivery', {
-        sid: message.sid,
-        status: delivery.status,
-        errorCode: delivery.errorCode || null,
-        errorMessage: delivery.errorMessage || null,
-      });
-    } catch (logErr) {
-      console.warn('[whatsapp-otp] delivery log failed:', logErr.message);
+  // Wait for a terminal delivery status so a failed WhatsApp send (e.g. error 63112 —
+  // Meta disabled the WhatsApp Business Account) is detected here and can fall back to SMS.
+  if (process.env.TWILIO_WHATSAPP_SKIP_DELIVERY_CHECK !== '1') {
+    const outcome = await waitForTwilioDelivery(client, message.sid);
+    if (outcome.failed) {
+      const err = new Error(
+        outcome.errorMessage || `WhatsApp delivery failed (${outcome.status || outcome.errorCode})`,
+      );
+      err.code = 'WHATSAPP_DELIVERY_FAILED';
+      err.twilioErrorCode = outcome.errorCode;
+      throw err;
     }
-  })();
+  }
   return { sid: message.sid, status: message.status, provider: 'twilio' };
+}
+
+/**
+ * Poll a Twilio message until it reaches a terminal status (or attempts run out).
+ * @returns {Promise<{ failed: boolean, status?: string, errorCode?: number, errorMessage?: string }>}
+ */
+async function waitForTwilioDelivery(client, sid, { attempts = 6, intervalMs = 1000 } = {}) {
+  let last = null;
+  for (let i = 0; i < attempts; i++) {
+    await sleep(intervalMs);
+    try {
+      last = await client.messages(sid).fetch();
+    } catch (e) {
+      console.warn('[whatsapp-otp] delivery fetch failed:', e.message);
+      continue;
+    }
+    console.log('[whatsapp-otp] Twilio delivery', {
+      sid,
+      status: last.status,
+      errorCode: last.errorCode || null,
+      errorMessage: last.errorMessage || null,
+    });
+    if (last.errorCode || last.status === 'failed' || last.status === 'undelivered') {
+      return {
+        failed: true,
+        status: last.status,
+        errorCode: last.errorCode,
+        errorMessage: last.errorMessage,
+      };
+    }
+    if (last.status === 'sent' || last.status === 'delivered' || last.status === 'read') {
+      return { failed: false, status: last.status };
+    }
+  }
+  return { failed: false, status: last ? last.status : 'unknown' };
 }
 
 /**
@@ -595,9 +627,10 @@ function checkResendCooldown(pending, now) {
 }
 
 /**
- * Send OTP via Twilio Verify (preferred) or Messaging/Meta fallback.
+ * Send OTP. WhatsApp routes try WhatsApp first and fall back to Twilio SMS Verify
+ * (unless WHATSAPP_OTP_SMS_FALLBACK=0) when WhatsApp delivery fails.
  * @param {string} channel DB channel key (register, driver_login, driver, customer, …)
- * @returns {{ sessionInfo: string, channel: string, expiresInSec: number, otpProvider: 'twilio' }}
+ * @returns {{ sessionInfo: string, channel: 'whatsapp'|'sms', expiresInSec: number, otpProvider: 'twilio' }}
  */
 async function sendPhoneLoginOtp(db, phoneNumber, phoneKey, channel) {
   const useWhatsapp = isWhatsappOtpRoute(channel);
@@ -643,22 +676,48 @@ async function sendPhoneLoginOtp(db, phoneNumber, phoneKey, channel) {
       ttlMs,
     });
   } else {
-    const code = generateOtpCode();
     ttlMs = TWILIO_VERIFY_PENDING_TTL_MS;
-    await sendWhatsappAuthenticationOtp(dest.digits, code);
-    upsertWhatsappOtp(db, {
-      phoneKey,
-      channel,
-      code,
-      verificationId: localVerificationId,
-      now,
-      ttlMs,
-    });
+    const code = generateOtpCode();
+    try {
+      await sendWhatsappAuthenticationOtp(dest.digits, code);
+      deliveryChannel = 'whatsapp';
+      upsertWhatsappOtp(db, {
+        phoneKey,
+        channel,
+        code,
+        verificationId: localVerificationId,
+        now,
+        ttlMs,
+      });
+    } catch (waErr) {
+      // WhatsApp send/delivery failed (e.g. 63112). Fall back to SMS so the user still gets the OTP.
+      const smsCfg = getTwilioVerifySmsConfig();
+      const fallbackEnabled = process.env.WHATSAPP_OTP_SMS_FALLBACK !== '0';
+      if (!fallbackEnabled || !smsCfg.complete) {
+        throw waErr;
+      }
+      console.warn(
+        '[whatsapp-otp] WhatsApp failed, falling back to SMS:',
+        waErr.message,
+        waErr.twilioErrorCode || '',
+      );
+      const verification = await startTwilioVerifyOtp(dest.digits, 'sms', smsCfg);
+      sessionInfo = verification.sid;
+      deliveryChannel = 'sms';
+      upsertWhatsappOtp(db, {
+        phoneKey,
+        channel,
+        code: '__twilio_verify_sms__',
+        verificationId: verification.sid,
+        now,
+        ttlMs,
+      });
+    }
   }
 
   return {
     sessionInfo,
-    channel: cfg.provider === 'twilio_verify' ? deliveryChannel : 'whatsapp',
+    channel: deliveryChannel,
     expiresInSec: Math.floor(ttlMs / 1000),
     otpProvider: 'twilio',
   };
@@ -682,7 +741,10 @@ async function verifyPhoneLoginOtp(db, phoneNumber, phoneKey, sessionInfo, otp, 
   if (isTwilioVerifyVerificationId(pending.verificationId) && otpDigits) {
     let approved = false;
     try {
-      const verifyCfg = getTwilioVerifyConfigForChannel(channel);
+      const verifyCfg =
+        pending.code === '__twilio_verify_sms__'
+          ? getTwilioVerifySmsConfig()
+          : getTwilioVerifyConfigForChannel(channel);
       approved = await checkTwilioVerifyWhatsappOtp(otpDigits, otp, verifyCfg);
     } catch (e) {
       const err = new Error(e.message || 'Verification check failed');
