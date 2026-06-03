@@ -538,6 +538,17 @@
             <div id="firebaseAuthOutput" class="output" style="display: none;"></div>
           </div>
 
+          <div class="card" style="background: #fffaf0; border: 1px solid #fbd38d;">
+            <h3>Twilio SMS (live app)</h3>
+            <p style="font-size: 0.8rem; color: #744210; margin-top: 0;">
+              <code>POST /api/auth/twilio/register</code> + <code>/api/auth/twilio/verify-otp</code> — uses <strong>TWILIO_VERIFY_SERVICE_SID</strong> (SMS). No reCAPTCHA.
+            </p>
+            <button id="twilioSendOtpBtn" type="button">Twilio SMS: Request OTP</button>
+            <button id="twilioVerifyOtpBtn" type="button" class="secondary">Twilio SMS: Verify OTP</button>
+            <div id="twilioAuthStatus" class="status info" style="display: none;"></div>
+            <div id="twilioAuthOutput" class="output" style="display: none;"></div>
+          </div>
+
           <div class="card">
             <h3>Delete User <span class="badge auth">Auth Required</span></h3>
             <p style="font-size: 0.8rem; color: #718096;">Uses Bearer token from verify step only (soft delete).</p>
@@ -557,15 +568,13 @@
               Set the <strong>API base URL</strong> in the header. This page calls the same production endpoints as your apps.
             </p>
             <ul style="font-size: 0.8rem; color: #2f855a; margin: 0; padding-left: 1.2rem;">
-              <li><strong>Live app (same as Authentication tab):</strong> <code>POST /api/auth/register</code> + <code>/api/auth/verify-otp</code> — Twilio Verify; set <code>TWILIO_VERIFY_SERVICE_SID</code> (<strong>VA…</strong>, not MG…).</li>
-              <li><strong>Twilio Verify (WhatsApp):</strong> <code>TWILIO_ACCOUNT_SID</code>, <code>TWILIO_AUTH_TOKEN</code>, <code>TWILIO_VERIFY_SERVICE_SID</code> (<strong>must start with VA</strong> from Verify → Services — not AC, not MG). Enable WhatsApp on the service if using WhatsApp.</li>
-              <li><strong>Twilio Verify (SMS, no WhatsApp):</strong> same three vars + <code>TWILIO_REGISTER_OTP_CHANNEL=sms</code> (or <code>TWILIO_VERIFY_CHANNEL=sms</code>) on the server.</li>
-              <li><strong>Twilio Messaging Service (MG…):</strong> optional <code>TWILIO_MESSAGING_SERVICE_SID</code> — only for Content-template WhatsApp fallback, not for Verify OTP.</li>
-              <li><strong>Twilio Messaging (template):</strong> above + <code>TWILIO_WHATSAPP_FROM</code>, <code>TWILIO_WHATSAPP_OTP_CONTENT_SID</code>.</li>
+              <li><strong>SMS (live):</strong> <code>TWILIO_VERIFY_SERVICE_SID</code> (<strong>VA…</strong>, SMS) — <code>/api/auth/twilio/*</code> (Authentication tab).</li>
+              <li><strong>WhatsApp (this tab):</strong> <code>TWILIO_VERIFY_WHATSAPP_SERVICE_SID</code> (<strong>VA…</strong>, separate service with WhatsApp enabled) + same <code>TWILIO_ACCOUNT_SID</code> / <code>TWILIO_AUTH_TOKEN</code>.</li>
+              <li><strong>Twilio Messaging fallback:</strong> <code>TWILIO_WHATSAPP_FROM</code>, <code>TWILIO_WHATSAPP_OTP_CONTENT_SID</code> (only if WhatsApp Verify service is not set).</li>
               <li><strong>Meta Cloud API:</strong> <code>WHATSAPP_ACCESS_TOKEN</code>, <code>WHATSAPP_PHONE_NUMBER_ID</code>, template env vars.</li>
             </ul>
-            <p style="font-size: 0.8rem; color: #718096; margin: 0.75rem 0 0 0;">
-              After <strong>Send code</strong>, <code>verificationId</code> is filled automatically. If it starts with <code>VE…</code>, you are on <strong>Twilio Verify</strong>; use the code from the WhatsApp message (length may vary). Otherwise it is a UUID and the code is typically 6 digits.
+            <p style="font-size: 0.8rem; color: #276749; margin: 0.75rem 0 0 0;">
+              Existing users are matched by phone (<code>079…</code> = <code>+962…</code>) — login returns <code>alreadyRegistered: true</code> instead of creating a duplicate profile.
             </p>
           </div>
           <p style="font-size: 0.875rem; color: #718096; margin-bottom: 1rem;">
@@ -1737,6 +1746,69 @@
         }
       });
 
+      document.getElementById('twilioSendOtpBtn').addEventListener('click', async () => {
+        const phone = document.getElementById('phoneInput').value.trim();
+        if (!phone) {
+          showStatus('twilioAuthStatus', 'Enter phone number', 'error');
+          return;
+        }
+        showStatus('twilioAuthStatus', 'Sending Twilio SMS OTP…', 'info');
+        try {
+          const res = await fetch(`${getBackendBase()}/api/auth/twilio/register`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phoneNumber: phone }),
+          });
+          const data = await res.json();
+          showOutput('twilioAuthOutput', data);
+          if (data.sessionInfo) {
+            document.getElementById('sessionInfoInput').value = data.sessionInfo;
+          }
+          showStatus(
+            'twilioAuthStatus',
+            res.ok
+              ? `OTP sent (${data.alreadyRegistered ? 'existing user' : 'new user'}). Check SMS.`
+              : (data.message || 'Failed'),
+            res.ok ? 'success' : 'error',
+          );
+        } catch (error) {
+          showStatus('twilioAuthStatus', `Error: ${error.message}`, 'error');
+        }
+      });
+
+      document.getElementById('twilioVerifyOtpBtn').addEventListener('click', async () => {
+        const sessionInfo = document.getElementById('sessionInfoInput').value.trim();
+        const otp = document.getElementById('otpInput').value.trim();
+        const phone = document.getElementById('phoneInput').value.trim();
+        if (!sessionInfo || !otp) {
+          showStatus('twilioAuthStatus', 'Need sessionInfo and OTP', 'error');
+          return;
+        }
+        showStatus('twilioAuthStatus', 'Verifying Twilio OTP…', 'info');
+        try {
+          const res = await fetch(`${getBackendBase()}/api/auth/twilio/verify-otp`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phoneNumber: phone, sessionInfo, otp }),
+          });
+          const data = await res.json();
+          showOutput('twilioAuthOutput', data);
+          if (data.success || data.token) {
+            lastAppToken = data.token;
+            lastFirebaseToken = data.firebaseToken || '';
+            showStatus(
+              'twilioAuthStatus',
+              `Logged in (${data.alreadyRegistered ? 'existing profile' : 'new profile'}). Token saved.`,
+              'success',
+            );
+          } else {
+            showStatus('twilioAuthStatus', data.message || 'Verification failed', 'error');
+          }
+        } catch (error) {
+          showStatus('twilioAuthStatus', `Error: ${error.message}`, 'error');
+        }
+      });
+
       // WhatsApp OTP (customer + driver)
       document.getElementById('waCustomerSendBtn').addEventListener('click', async () => {
         const phoneNumber = document.getElementById('waCustomerPhone').value.trim();
@@ -1753,14 +1825,14 @@
           });
           const data = await res.json().catch(() => ({}));
           showOutput('waCustomerSendOutput', data);
-          const vid = data.data?.verificationId ?? data.verificationId;
+          const vid = data.verificationId ?? data.sessionInfo;
           if (vid) {
             document.getElementById('waCustomerVerificationId').value = vid;
           }
           showStatus(
             'waCustomerSendStatus',
             res.ok
-              ? (String(vid || '').startsWith('VE') ? 'Code sent via Twilio Verify (check WhatsApp).' : 'Code sent (check WhatsApp).')
+              ? `${data.alreadyRegistered ? 'Existing user — ' : ''}${String(vid || '').startsWith('VE') ? 'Code sent via Twilio Verify WhatsApp.' : 'Code sent (check WhatsApp).'}`
               : (data.message || res.statusText || 'Failed'),
             res.ok ? 'success' : 'error',
           );
@@ -1792,7 +1864,9 @@
           }
           showStatus(
             'waCustomerVerifyStatus',
-            res.ok && data.success ? 'Logged in — user token saved for Delete User / profile tests.' : (data.message || 'Verification failed'),
+            res.ok && data.success
+              ? `Logged in (${data.alreadyRegistered ? 'existing profile' : 'new profile'}) — token saved.`
+              : (data.message || 'Verification failed'),
             res.ok && data.success ? 'success' : 'error',
           );
         } catch (error) {

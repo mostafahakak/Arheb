@@ -58,16 +58,19 @@ JOFOTARA_SELLER_NAME=your-company-name
 # Pause new Arheb Box orders (quote, POST /api/arheb-box, card initiate). Values: true | 1 | yes (case-insensitive). Omit or set false to allow orders.
 # ARHEB_BOX_PAUSED=true
 
-# Twilio Verify (optional alternate SMS OTP — /api/auth/twilio/* and /api/driver/twilio/*)
+# Twilio Verify — SMS (live app: /api/auth/twilio/* and /api/driver/twilio/*)
 # TWILIO_ACCOUNT_SID=
 # TWILIO_AUTH_TOKEN=
 # TWILIO_VERIFY_SERVICE_SID=VAxxxxxxxx
-# Must be the Verify *Service* SID (starts with VA), not Account SID (AC) or Messaging Service (MG).
-# TWILIO_REGISTER_OTP_CHANNEL=sms (default for /api/auth/twilio/* and /api/driver/twilio/*)
-# Optional: TWILIO_VERIFY_CHANNEL=sms — WhatsApp OTP endpoints (/api/auth/whatsapp/*)
+# Must be the SMS Verify *Service* SID (starts with VA), not Account SID (AC) or Messaging Service (MG).
+# TWILIO_REGISTER_OTP_CHANNEL=sms
+#
+# Twilio Verify — WhatsApp (/api/auth/whatsapp/* and /api/driver/whatsapp/*)
+# TWILIO_VERIFY_WHATSAPP_SERVICE_SID=VAyyyyyyyy
+# Create a separate Verify service in Twilio Console with WhatsApp channel enabled.
 # Optional: TWILIO_VERIFY_PENDING_TTL_MS=600000 (stored pending row TTL, default 10 min)
 #
-# Or Twilio Programmable Messaging (Content template + sender) for WhatsApp fallback:
+# Or Twilio Programmable Messaging (Content template + sender) for WhatsApp fallback if Verify WhatsApp is not set:
 # TWILIO_MESSAGING_SERVICE_SID=MGxxxxxxxx
 # TWILIO_WHATSAPP_FROM=whatsapp:+14155238886
 # TWILIO_WHATSAPP_OTP_CONTENT_SID=HXxxxxxxxx
@@ -326,7 +329,9 @@ The **live customer app** uses **Firebase Phone OTP** on the main routes. **Twil
 
 **Firebase env (main customer OTP):** **`FIREBASE_API_KEY`** (Identity Toolkit SMS) and **`FIREBASE_SERVICE_ACCOUNT_JSON`** (for `verify-firebase-token` and FCM).
 
-**Twilio env (alternate SMS only):** **`TWILIO_ACCOUNT_SID`**, **`TWILIO_AUTH_TOKEN`**, **`TWILIO_VERIFY_SERVICE_SID`** (`VA…` from Twilio Console → Verify → Services — **not** Messaging Service `MG…`). Optional **`TWILIO_REGISTER_OTP_CHANNEL=sms`** (default).
+**Twilio env (SMS — live `/api/auth/twilio/*`):** **`TWILIO_ACCOUNT_SID`**, **`TWILIO_AUTH_TOKEN`**, **`TWILIO_VERIFY_SERVICE_SID`** (`VA…`, SMS channel). **`TWILIO_REGISTER_OTP_CHANNEL=sms`**.
+
+**Twilio env (WhatsApp — `/api/auth/whatsapp/*`):** same Account SID + Auth Token + **`TWILIO_VERIFY_WHATSAPP_SERVICE_SID`** (`VA…`, **separate** Verify service with WhatsApp enabled).
 
 ---
 
@@ -477,11 +482,13 @@ Alternate customer login via **Twilio Verify SMS** (no reCAPTCHA). Same request/
 
 ### WhatsApp OTP login (customer)
 
-Alternative to Firebase phone OTP: sends a **6-digit code** via WhatsApp. Codes are short-lived (about **2 minutes**); resend cooldown applies.
+Alternative to SMS OTP: sends a code via **WhatsApp** (Twilio Verify WhatsApp, Twilio Messaging template, or Meta). Resend cooldown applies. **Existing users** (`+962…` vs `079…`) are matched to the same profile — no duplicate account.
 
-**Configure (Twilio Verify WhatsApp — preferred if set):** **`TWILIO_ACCOUNT_SID`**, **`TWILIO_AUTH_TOKEN`**, **`TWILIO_VERIFY_SERVICE_SID`** (`VA…` from [Verify Services](https://console.twilio.com/us1/verify/services) — not `AC…`). In the Twilio Console, create a Verify service and add **WhatsApp** as a channel when using WhatsApp delivery. Set **`TWILIO_VERIFY_CHANNEL=sms`** to deliver OTP by **SMS** instead (same API endpoints; no WhatsApp Business required). See [Verify WhatsApp](https://www.twilio.com/docs/verify/whatsapp).
+**Configure (Twilio Verify WhatsApp — preferred):** **`TWILIO_ACCOUNT_SID`**, **`TWILIO_AUTH_TOKEN`**, **`TWILIO_VERIFY_WHATSAPP_SERVICE_SID`** (`VA…` from [Verify Services](https://console.twilio.com/us1/verify/services) — **separate** from the SMS Verify service). Enable **WhatsApp** on that service. See [Verify WhatsApp](https://www.twilio.com/docs/verify/whatsapp).
 
-**Or (Twilio Messaging + Content template):** **`TWILIO_WHATSAPP_FROM`**, **`TWILIO_WHATSAPP_OTP_CONTENT_SID`**, plus Account SID and Auth Token — [WhatsApp quickstart](https://www.twilio.com/docs/whatsapp/quickstart).
+**SMS live app** continues to use **`TWILIO_VERIFY_SERVICE_SID`** on `/api/auth/twilio/*` — do not reuse the same `VA…` unless both channels are enabled on one service.
+
+**Or (Twilio Messaging + Content template):** used only when **`TWILIO_VERIFY_WHATSAPP_SERVICE_SID`** is not set — **`TWILIO_WHATSAPP_FROM`**, **`TWILIO_WHATSAPP_OTP_CONTENT_SID`**, plus Account SID and Auth Token.
 
 **Or (Meta Cloud API):** **`WHATSAPP_ACCESS_TOKEN`**, **`WHATSAPP_PHONE_NUMBER_ID`**, and optional template/language vars. If no provider is fully configured, endpoints return **503**.
 
@@ -489,13 +496,13 @@ Alternative to Firebase phone OTP: sends a **6-digit code** via WhatsApp. Codes 
 
 **Body:** `{ "phoneNumber": "+9627XXXXXXXX" }` (Jordan numbers normalized server-side)
 
-**Success (200):** `{ "success": true, "verificationId": "...", "expiresIn": 120, "alreadyRegistered": boolean, "channel": "whatsapp", ... }`
+**Success (200):** `{ "success": true, "verificationId": "VE…", "sessionInfo": "VE…", "alreadyRegistered": true|false, "isNewUser": false|true, "channel": "whatsapp", "otpProvider": "twilio", ... }`
 
 **Verify —** `POST /api/auth/whatsapp/verify-code`
 
-**Body:** `{ "phoneNumber": "...", "verificationId": "...", "otp": "123456" }`
+**Body:** `{ "phoneNumber": "...", "verificationId": "...", "otp": "123456" }` (`sessionInfo` accepted as alias for `verificationId`)
 
-**Success (200):** Same session shape as **Verify OTP** (`token`, `firebaseToken` when applicable, `phoneNumber`).
+**Success (200):** Same session shape as **Verify OTP** (`token`, `phoneNumber`, `alreadyRegistered`, `isNewUser`; `firebaseToken` is null for WhatsApp/Twilio login).
 
 ---
 
@@ -3807,7 +3814,7 @@ Requires **`TWILIO_ACCOUNT_SID`**, **`TWILIO_AUTH_TOKEN`**, **`TWILIO_VERIFY_SER
 
 ### Driver WhatsApp OTP
 
-Driver login via WhatsApp uses the **same** Meta WhatsApp config as the customer flow. **Only drivers already registered** in the admin dashboard receive codes (`404` if unknown).
+Driver login via WhatsApp uses **`TWILIO_VERIFY_WHATSAPP_SERVICE_SID`** (Twilio Verify WhatsApp) or Meta/Twilio Messaging fallback — same as customer WhatsApp. **Only drivers already registered** in the admin dashboard receive codes (`404` if unknown).
 
 **Send OTP —** `POST /api/driver/whatsapp/send-otp`  
 **Body:** `{ "mobile": "0790000000" }`  
@@ -4373,7 +4380,21 @@ A comprehensive test client is available at:
 This interactive interface allows you to:
 - ✅ Test authentication flow (Firebase register/verify on `/api/auth/register`; Twilio on `/api/auth/twilio/*`)
 - ✅ **Twilio SMS OTP:** customer **`POST /api/auth/twilio/register`** + **`/api/auth/twilio/verify-otp`**; driver **`POST /api/driver/twilio/send-otp`** + **`/api/driver/twilio/login`**
-- ✅ **WhatsApp OTP:** customer **`POST /api/auth/whatsapp/send-code`** + **`verify-code`**; driver **`POST /api/driver/whatsapp/send-otp`** + **`login`** (requires WhatsApp env on server)
+- ✅ **WhatsApp OTP:** customer **`POST /api/auth/whatsapp/send-code`** + **`verify-code`**; driver **`POST /api/driver/whatsapp/send-otp`** + **`login`** — requires **`TWILIO_VERIFY_WHATSAPP_SERVICE_SID`** (separate Verify service with WhatsApp) on Render
+
+**Render env for Twilio (live SMS + WhatsApp test):**
+
+```env
+TWILIO_ACCOUNT_SID=ACxxxxxxxx
+TWILIO_AUTH_TOKEN=xxxxxxxx
+# SMS — /api/auth/twilio/* and /api/driver/twilio/*
+TWILIO_VERIFY_SERVICE_SID=VAxxxxxxxx_sms_service
+TWILIO_REGISTER_OTP_CHANNEL=sms
+# WhatsApp — /api/auth/whatsapp/* and /api/driver/whatsapp/*
+TWILIO_VERIFY_WHATSAPP_SERVICE_SID=VAxxxxxxxx_whatsapp_service
+```
+
+Use **two different** Verify Service SIDs from Twilio Console (SMS service vs WhatsApp-enabled service). Redeploy Render after saving env vars, then test at **`/test-client/index.html`** → **WhatsApp OTP** tab.
 - ✅ **Admin REST catalog:** all **`/api/admin/*`** routes are listed under [Admin API complete endpoint catalog](#admin-api-complete-endpoint-catalog) in this README.
 - ✅ Browse all data endpoints (categories, products, stores, home)
 - ✅ Search stores and products (GET /api/search?q=text)

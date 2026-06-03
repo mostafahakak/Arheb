@@ -837,7 +837,7 @@ app.post('/api/auth/verify-firebase-token', async (req, res) => {
 });
 
 /**
- * WhatsApp OTP login (customer app): Twilio Verify WhatsApp (TWILIO_VERIFY_SERVICE_SID) if set; else Twilio Messaging Content template; else Meta.
+ * WhatsApp OTP login (customer app): Twilio Verify WhatsApp (TWILIO_VERIFY_WHATSAPP_SERVICE_SID) if set; else Twilio Messaging Content template; else Meta.
  * Verify: https://www.twilio.com/docs/verify/whatsapp — optional TWILIO_VERIFY_PENDING_TTL_MS (stored session, default 10 min).
  */
 app.post('/api/auth/whatsapp/send-code', async (req, res) => {
@@ -846,24 +846,24 @@ app.post('/api/auth/whatsapp/send-code', async (req, res) => {
   if (!phoneNumber || !String(phoneNumber).trim()) {
     return res.status(400).json({ success: false, message: 'phoneNumber is required', case: 2 });
   }
-  const phoneKey = normalizeJordanMobileKey(phoneNumber);
-  if (!phoneKey || phoneKey.replace(/\D/g, '').length < 9) {
+  const identity = resolveAuthPhoneIdentity(phoneNumber);
+  if (!identity.phoneKey || identity.phoneKey.replace(/\D/g, '').length < 9) {
     return res.status(400).json({ success: false, message: 'Invalid phone number', case: 2 });
   }
 
-  const existingUser = findUserByPhoneFlexible(phoneKey);
-  if (existingUser && existingUser.isBlocked) {
+  if (identity.existingUser && identity.existingUser.isBlocked) {
     return res.status(403).json({ success: false, message: 'User is blocked', case: 2 });
   }
 
   try {
-    const sent = await sendCustomerWhatsappLoginOtp(db, phoneNumber, phoneKey);
+    const sent = await sendCustomerWhatsappLoginOtp(db, identity.normalizedPhone, identity.phoneKey);
     const delivery = sent.channel === 'sms' ? 'sms' : 'whatsapp';
     return res.status(200).json({
       success: true,
       message: delivery === 'sms' ? 'OTP sent via SMS (Twilio Verify)' : 'OTP sent via WhatsApp',
       case: 1,
-      alreadyRegistered: Boolean(existingUser && !existingUser.deleted),
+      alreadyRegistered: identity.alreadyRegistered,
+      isNewUser: !identity.alreadyRegistered,
       verificationId: sent.sessionInfo,
       sessionInfo: sent.sessionInfo,
       expiresIn: sent.expiresInSec,
@@ -900,16 +900,33 @@ app.post('/api/auth/whatsapp/verify-code', async (req, res) => {
       case: 2,
     });
   }
-  const phoneKey = normalizeJordanMobileKey(phoneNumber);
-  if (!phoneKey) {
+  const identity = resolveAuthPhoneIdentity(phoneNumber);
+  if (!identity.phoneKey) {
     return res.status(400).json({ success: false, message: 'Invalid phone number', case: 2 });
   }
 
   try {
-    await verifyCustomerWhatsappLoginOtp(db, phoneNumber, phoneKey, verificationId, otp);
-    const sessionBody = finalizePhoneAuthSession(phoneKey, `whatsapp:${verificationId}`, null);
-    const withDriver = attachDriverClaimsToSession(sessionBody, phoneKey, null);
-    return res.status(200).json({ ...withDriver, firebaseToken: null });
+    await verifyCustomerWhatsappLoginOtp(
+      db,
+      identity.normalizedPhone,
+      identity.phoneKey,
+      verificationId,
+      otp,
+    );
+    const sessionBody = finalizePhoneAuthSession(
+      identity.canonicalPhone,
+      `whatsapp:${verificationId}`,
+      null,
+    );
+    const withDriver = attachDriverClaimsToSession(sessionBody, identity.canonicalPhone, null);
+    return res.status(200).json({
+      ...withDriver,
+      firebaseToken: null,
+      otpProvider: 'whatsapp',
+      case: 1,
+      alreadyRegistered: identity.alreadyRegistered,
+      isNewUser: !identity.alreadyRegistered,
+    });
   } catch (error) {
     if (error.statusCode === 403) {
       return res.status(403).json({ success: false, message: error.message, case: 2 });

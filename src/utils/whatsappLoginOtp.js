@@ -73,13 +73,17 @@ const CUSTOMER_WHATSAPP_OTP_CHANNEL = 'customer';
 const DRIVER_WHATSAPP_OTP_CHANNEL = 'driver';
 
 function isTwilioOtpConfigured() {
-  return getTwilioVerifyConfig().complete;
+  return getTwilioVerifySmsConfig().complete;
+}
+
+function isTwilioWhatsappVerifyConfigured() {
+  return getTwilioVerifyWhatsappConfig().complete;
 }
 
 /** SMS vs WhatsApp for Twilio Verify — register/driver SMS routes vs WhatsApp login routes. */
 function getTwilioDeliveryChannelFor(dbChannel) {
   if (dbChannel === CUSTOMER_WHATSAPP_OTP_CHANNEL || dbChannel === DRIVER_WHATSAPP_OTP_CHANNEL) {
-    return getTwilioVerifyChannel();
+    return 'whatsapp';
   }
   return getRegisterOtpChannel();
 }
@@ -104,11 +108,23 @@ function getRegisterOtpChannel() {
  * Clear 503 hint when no provider is configured (safe for clients).
  */
 function getWhatsappOtpNotConfiguredHint() {
+  const waSid = process.env.TWILIO_VERIFY_WHATSAPP_SERVICE_SID?.trim();
+  if (waSid && !waSid.startsWith('VA')) {
+    return 'TWILIO_VERIFY_WHATSAPP_SERVICE_SID must start with VA (Twilio Console → Verify → Services with WhatsApp enabled). Do not use Account SID (AC…) or Messaging Service (MG…).';
+  }
+  const smsSid = process.env.TWILIO_VERIFY_SERVICE_SID?.trim();
+  if (smsSid && !smsSid.startsWith('VA')) {
+    return 'TWILIO_VERIFY_SERVICE_SID must start with VA (Twilio Console → Verify → Services). Do not use Account SID (AC…) here.';
+  }
+  return 'WhatsApp OTP not configured. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_VERIFY_WHATSAPP_SERVICE_SID (VA…, WhatsApp channel enabled), or Meta WHATSAPP_ACCESS_TOKEN + WHATSAPP_PHONE_NUMBER_ID.';
+}
+
+function getSmsOtpNotConfiguredHint() {
   const sid = process.env.TWILIO_VERIFY_SERVICE_SID?.trim();
   if (sid && !sid.startsWith('VA')) {
     return 'TWILIO_VERIFY_SERVICE_SID must start with VA (Twilio Console → Verify → Services). Do not use Account SID (AC…) here.';
   }
-  return 'OTP not configured on server. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_VERIFY_SERVICE_SID (VA…), or Meta WHATSAPP_ACCESS_TOKEN + WHATSAPP_PHONE_NUMBER_ID. Use TWILIO_VERIFY_CHANNEL=sms for SMS without WhatsApp.';
+  return 'SMS OTP not configured. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_VERIFY_SERVICE_SID (VA…), and TWILIO_REGISTER_OTP_CHANNEL=sms.';
 }
 
 /**
@@ -147,7 +163,7 @@ function jordanDigitsToE164Plus(toDigits) {
   return `+${d}`;
 }
 
-function getTwilioVerifyConfig() {
+function getTwilioVerifySmsConfig() {
   const accountSid = process.env.TWILIO_ACCOUNT_SID?.trim();
   const authToken = process.env.TWILIO_AUTH_TOKEN?.trim();
   const serviceSid = process.env.TWILIO_VERIFY_SERVICE_SID?.trim();
@@ -160,6 +176,42 @@ function getTwilioVerifyConfig() {
     authToken,
     serviceSid,
   };
+}
+
+/** Separate Verify service for WhatsApp OTP (/api/auth/whatsapp/*, /api/driver/whatsapp/*). */
+function getTwilioVerifyWhatsappConfig() {
+  const accountSid = process.env.TWILIO_ACCOUNT_SID?.trim();
+  const authToken = process.env.TWILIO_AUTH_TOKEN?.trim();
+  const serviceSid = process.env.TWILIO_VERIFY_WHATSAPP_SERVICE_SID?.trim();
+  const complete = Boolean(
+    accountSid && authToken && serviceSid && serviceSid.startsWith('VA'),
+  );
+  return {
+    complete,
+    accountSid,
+    authToken,
+    serviceSid,
+  };
+}
+
+/** @deprecated use getTwilioVerifySmsConfig — kept for exports */
+function getTwilioVerifyConfig() {
+  return getTwilioVerifySmsConfig();
+}
+
+function getTwilioVerifyConfigForChannel(dbChannel) {
+  if (dbChannel === CUSTOMER_WHATSAPP_OTP_CHANNEL || dbChannel === DRIVER_WHATSAPP_OTP_CHANNEL) {
+    return getTwilioVerifyWhatsappConfig();
+  }
+  return getTwilioVerifySmsConfig();
+}
+
+function getSmsOtpConfig() {
+  const verify = getTwilioVerifySmsConfig();
+  if (verify.complete) {
+    return { configured: true, provider: 'twilio_verify', verify };
+  }
+  return { configured: false, provider: null };
 }
 
 function getTwilioWhatsappConfig() {
@@ -203,7 +255,7 @@ function getMetaWhatsappConfig() {
  * @returns {{ configured: boolean, provider: 'twilio_verify'|'twilio'|'meta'|null } & Record<string, unknown>}
  */
 function getWhatsappConfig() {
-  const verify = getTwilioVerifyConfig();
+  const verify = getTwilioVerifyWhatsappConfig();
   if (verify.complete) {
     return {
       configured: true,
@@ -265,11 +317,11 @@ function buildTwilioOtpContentVariables(otpCode) {
  * @see https://www.twilio.com/docs/verify/whatsapp
  * @see https://www.twilio.com/docs/verify/api/verification
  */
-async function startTwilioVerifyOtp(toDigits, channel) {
-  const v = getTwilioVerifyConfig();
+async function startTwilioVerifyOtp(toDigits, channel, verifyConfig) {
+  const v = verifyConfig || getTwilioVerifySmsConfig();
   if (!v.complete) {
     const err = new Error(
-      'Twilio Verify is not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_VERIFY_SERVICE_SID)',
+      'Twilio Verify is not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and Verify Service SID VA…)',
     );
     err.code = 'WHATSAPP_NOT_CONFIGURED';
     throw err;
@@ -291,18 +343,19 @@ async function startTwilioVerifyOtp(toDigits, channel) {
 }
 
 async function startTwilioVerifyWhatsappOtp(toDigits) {
-  return startTwilioVerifyOtp(toDigits, getTwilioVerifyChannel());
+  return startTwilioVerifyOtp(toDigits, 'whatsapp', getTwilioVerifyWhatsappConfig());
 }
 
 /**
  * @param {string} toDigits
  * @param {string} code
+ * @param {ReturnType<typeof getTwilioVerifyWhatsappConfig>} [verifyConfig]
  * @returns {Promise<boolean>} true if Twilio approved the code
  */
-async function checkTwilioVerifyWhatsappOtp(toDigits, code) {
-  const v = getTwilioVerifyConfig();
+async function checkTwilioVerifyWhatsappOtp(toDigits, code, verifyConfig) {
+  const v = verifyConfig || getTwilioVerifyWhatsappConfig();
   if (!v.complete) {
-    const err = new Error('Twilio Verify is not configured');
+    const err = new Error('Twilio Verify WhatsApp is not configured (TWILIO_VERIFY_WHATSAPP_SERVICE_SID)');
     err.code = 'WHATSAPP_NOT_CONFIGURED';
     throw err;
   }
@@ -480,9 +533,11 @@ function checkResendCooldown(pending, now) {
  * @returns {{ sessionInfo: string, channel: string, expiresInSec: number, otpProvider: 'twilio' }}
  */
 async function sendPhoneLoginOtp(db, phoneNumber, phoneKey, channel) {
-  const cfg = getWhatsappConfig();
+  const isWhatsappRoute =
+    channel === CUSTOMER_WHATSAPP_OTP_CHANNEL || channel === DRIVER_WHATSAPP_OTP_CHANNEL;
+  const cfg = isWhatsappRoute ? getWhatsappConfig() : getSmsOtpConfig();
   if (!cfg.configured) {
-    const err = new Error(getWhatsappOtpNotConfiguredHint());
+    const err = new Error(isWhatsappRoute ? getWhatsappOtpNotConfiguredHint() : getSmsOtpNotConfiguredHint());
     err.code = 'OTP_NOT_CONFIGURED';
     throw err;
   }
@@ -510,7 +565,7 @@ async function sendPhoneLoginOtp(db, phoneNumber, phoneKey, channel) {
 
   if (cfg.provider === 'twilio_verify') {
     deliveryChannel = getTwilioDeliveryChannelFor(channel);
-    const verification = await startTwilioVerifyOtp(dest.digits, deliveryChannel);
+    const verification = await startTwilioVerifyOtp(dest.digits, deliveryChannel, cfg.verify);
     sessionInfo = verification.sid;
     ttlMs = TWILIO_VERIFY_PENDING_TTL_MS;
     upsertWhatsappOtp(db, {
@@ -560,7 +615,8 @@ async function verifyPhoneLoginOtp(db, phoneNumber, phoneKey, sessionInfo, otp, 
   if (isTwilioVerifyVerificationId(pending.verificationId) && otpDigits) {
     let approved = false;
     try {
-      approved = await checkTwilioVerifyWhatsappOtp(otpDigits, otp);
+      const verifyCfg = getTwilioVerifyConfigForChannel(channel);
+      approved = await checkTwilioVerifyWhatsappOtp(otpDigits, otp, verifyCfg);
     } catch (e) {
       const err = new Error(e.message || 'Verification check failed');
       err.code = e.code || 'VERIFY_FAILED';
@@ -631,6 +687,7 @@ module.exports = {
   CUSTOMER_WHATSAPP_OTP_CHANNEL,
   DRIVER_WHATSAPP_OTP_CHANNEL,
   isTwilioOtpConfigured,
+  isTwilioWhatsappVerifyConfigured,
   OTP_TTL_MS,
   TWILIO_VERIFY_PENDING_TTL_MS,
   MIN_RESEND_INTERVAL_MS,
@@ -643,8 +700,13 @@ module.exports = {
   getTwilioVerifyChannel,
   getRegisterOtpChannel,
   getWhatsappOtpNotConfiguredHint,
+  getSmsOtpNotConfiguredHint,
   getWhatsappConfig,
+  getSmsOtpConfig,
   getTwilioVerifyConfig,
+  getTwilioVerifySmsConfig,
+  getTwilioVerifyWhatsappConfig,
+  getTwilioVerifyConfigForChannel,
   getTwilioWhatsappConfig,
   getMetaWhatsappConfig,
   buildAuthenticationTemplatePayload,
