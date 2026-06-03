@@ -568,10 +568,9 @@
               Set the <strong>API base URL</strong> in the header. This page calls the same production endpoints as your apps.
             </p>
             <ul style="font-size: 0.8rem; color: #2f855a; margin: 0; padding-left: 1.2rem;">
-              <li><strong>SMS (live):</strong> <code>TWILIO_VERIFY_SERVICE_SID</code> (<strong>VA…</strong>, SMS) — <code>/api/auth/twilio/*</code> (Authentication tab).</li>
-              <li><strong>WhatsApp-only (this tab):</strong> set <code>TWILIO_WHATSAPP_MESSAGING_SERVICE_SID</code> (<strong>MG…</strong>) + <code>TWILIO_WHATSAPP_OTP_CONTENT_SID</code> (<strong>HX…</strong>). This path sends to <code>whatsapp:+...</code> and will not fall back to SMS.</li>
-              <li><strong>Verify WhatsApp fallback:</strong> <code>TWILIO_VERIFY_WHATSAPP_SERVICE_SID</code> (<strong>VA…</strong>) can be used, but Twilio Verify may fall back to SMS depending on service settings.</li>
-              <li><strong>Meta Cloud API:</strong> <code>WHATSAPP_ACCESS_TOKEN</code>, <code>WHATSAPP_PHONE_NUMBER_ID</code>, template env vars.</li>
+              <li><strong>Live app:</strong> <code>/api/auth/twilio/*</code> + <code>/api/driver/twilio/*</code> — tries WhatsApp (<strong>MG…</strong> + <strong>HX…</strong>) first; falls back to SMS Verify (<strong>VA…</strong>) if WhatsApp fails.</li>
+              <li><strong>WhatsApp-only (this tab):</strong> <code>/api/auth/whatsapp/*</code> + <code>/api/driver/whatsapp/*</code> — requires <code>TWILIO_WHATSAPP_MESSAGING_SERVICE_SID</code> (<strong>MG…</strong>) + <code>TWILIO_WHATSAPP_OTP_CONTENT_SID</code> (<strong>HX…</strong>). Never sends SMS, even on failure.</li>
+              <li><strong>Meta Cloud API:</strong> <code>WHATSAPP_ACCESS_TOKEN</code>, <code>WHATSAPP_PHONE_NUMBER_ID</code>, template env vars (WhatsApp-only routes only).</li>
             </ul>
             <p style="font-size: 0.8rem; color: #276749; margin: 0.75rem 0 0 0;">
               Existing users are matched by phone (<code>079…</code> = <code>+962…</code>) — login returns <code>alreadyRegistered: true</code> instead of creating a duplicate profile.
@@ -1832,7 +1831,7 @@
           showStatus(
             'waCustomerSendStatus',
             res.ok
-              ? `${data.alreadyRegistered ? 'Existing user — ' : ''}${String(vid || '').startsWith('VE') ? 'Code sent via Twilio Verify WhatsApp.' : 'Code sent (check WhatsApp).'}`
+              ? `${data.alreadyRegistered ? 'Existing user — ' : ''}${data.channel === 'whatsapp' ? 'Code sent (check WhatsApp).' : (data.message || 'Sent.')}`
               : (data.message || res.statusText || 'Failed'),
             res.ok ? 'success' : 'error',
           );
