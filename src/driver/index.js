@@ -28,6 +28,8 @@ const {
   verifyDriverLoginOtp,
   sendDriverWhatsappLoginOtp,
   verifyDriverWhatsappLoginOtp,
+  sendDriverMetaWhatsappLoginOtp,
+  verifyDriverMetaWhatsappLoginOtp,
 } = require('../utils/whatsappLoginOtp');
 
 /** After a driver accepts (or is assigned) a store order — before "On the way". Legacy DB rows may still say "Driver to pick". */
@@ -795,6 +797,135 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
         token: `Bearer ${token}`,
         refreshToken: null,
         channel: 'whatsapp',
+      },
+    });
+  });
+
+  // Meta Cloud API WhatsApp OTP (test) — never Twilio, never SMS.
+  app.post('/api/driver/meta/whatsapp/send-otp', async (req, res) => {
+    const { mobile } = req.body || {};
+    console.log('driver/meta/whatsapp/send-otp hit', { mobile: maskPhoneForLog(mobile) });
+    if (!mobile || !String(mobile).trim()) {
+      return res.status(400).json({ success: false, message: 'mobile is required' });
+    }
+    const driver = findDriverByMobileFlexible(mobile);
+    if (!driver || driver.deleted) {
+      return res.status(404).json({
+        success: false,
+        message: 'Driver not found. Contact admin to be added.',
+      });
+    }
+    if (driver.isBlocked) {
+      return res.status(403).json({ success: false, message: 'Account is blocked' });
+    }
+    const canonicalMobile = String(driver.mobile).trim();
+    const phoneKey = normalizeJordanMobileKey(canonicalMobile) || canonicalMobile;
+    try {
+      const sent = await sendDriverMetaWhatsappLoginOtp(db, canonicalMobile, phoneKey);
+      return res.status(200).json({
+        success: true,
+        message: 'OTP sent via WhatsApp (Meta Cloud API)',
+        case: 1,
+        alreadyRegistered: true,
+        data: {
+          verificationId: sent.sessionInfo,
+          sessionInfo: sent.sessionInfo,
+          expiresIn: sent.expiresInSec,
+          mobile: canonicalMobile,
+          channel: sent.channel,
+          otpProvider: sent.otpProvider,
+        },
+      });
+    } catch (error) {
+      if (error.code === 'RATE_LIMIT') {
+        return res.status(429).json({
+          success: false,
+          message: error.message,
+          retryAfterSec: error.retryAfterSec,
+        });
+      }
+      if (error.code === 'OTP_NOT_CONFIGURED') {
+        return res.status(503).json({ success: false, message: error.message });
+      }
+      const raw = error.message || 'Meta WhatsApp send failed';
+      console.error('driver/meta/whatsapp/send-otp error:', raw);
+      return res.status(502).json({ success: false, message: String(raw) });
+    }
+  });
+
+  app.post('/api/driver/meta/whatsapp/login', async (req, res) => {
+    const { mobile, otpCode, verificationId, sessionInfo } = req.body || {};
+    const verifyId = verificationId || sessionInfo;
+    console.log('driver/meta/whatsapp/login hit', {
+      mobile: maskPhoneForLog(mobile),
+      otpLength: String(otpCode ?? '').length,
+      hasVerificationId: Boolean(verifyId),
+    });
+    if (!mobile || otpCode === undefined || otpCode === null || otpCode === '') {
+      return res.status(400).json({ success: false, message: 'mobile and otpCode are required' });
+    }
+    if (!verifyId) {
+      return res.status(400).json({
+        success: false,
+        message: 'verificationId (or sessionInfo) is required from meta/whatsapp/send-otp',
+      });
+    }
+    const driver = findDriverByMobileFlexible(mobile);
+    if (!driver || driver.deleted) {
+      return res.status(401).json({ success: false, message: 'Driver not found. Contact admin to be added.' });
+    }
+    if (driver.isBlocked) {
+      return res.status(403).json({ success: false, message: 'Account is blocked' });
+    }
+    const canonicalMobile = String(driver.mobile).trim();
+    const phoneKey = normalizeJordanMobileKey(canonicalMobile) || canonicalMobile;
+    try {
+      await verifyDriverMetaWhatsappLoginOtp(db, canonicalMobile, phoneKey, verifyId, otpCode);
+    } catch (error) {
+      if (error.code === 'INVALID_SESSION' || error.code === 'INVALID_OTP') {
+        return res.status(401).json({ success: false, message: error.message });
+      }
+      console.error('driver/meta/whatsapp/login error:', error?.message || error);
+      return res.status(502).json({
+        success: false,
+        message: error.message || 'Verification failed',
+      });
+    }
+
+    const token = jwt.sign(
+      { driverId: driver.id, mobile: driver.mobile },
+      JWT_SECRET,
+      { expiresIn: '7d' },
+    );
+    const d = { ...driver };
+    delete d.licenseNumber;
+    const defaultPct = getDriverDeliveryDefaultPercent(db);
+    const commissionPercent =
+      d.commissionPercent != null && Number.isFinite(Number(d.commissionPercent))
+        ? Number(d.commissionPercent)
+        : defaultPct;
+    return res.status(200).json({
+      success: true,
+      message: 'Login successful',
+      data: {
+        driver: {
+          id: String(d.id),
+          name: d.name,
+          photo: d.photo,
+          mobile: d.mobile,
+          email: d.email,
+          vehicleType: d.vehicleType,
+          vehicleNumber: d.vehicleNumber,
+          latitude: d.latitude,
+          longitude: d.longitude,
+          rating: d.rating ?? 5,
+          isVerified: Boolean(d.isVerified),
+          commissionPercent,
+        },
+        token: `Bearer ${token}`,
+        refreshToken: null,
+        channel: 'whatsapp',
+        otpProvider: 'meta',
       },
     });
   });

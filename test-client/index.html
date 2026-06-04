@@ -465,6 +465,7 @@
         <h2>Navigation</h2>
         <a class="nav-item active" data-section="auth">🔐 Authentication</a>
         <a class="nav-item" data-section="whatsapp">💬 WhatsApp OTP</a>
+        <a class="nav-item" data-section="metaWhatsapp">📱 Meta Cloud API</a>
         <a class="nav-item" data-section="products">📦 Products</a>
         <a class="nav-item" data-section="stores">🏪 Stores</a>
         <a class="nav-item" data-section="categories">📂 Categories</a>
@@ -634,6 +635,79 @@
             <button id="waDriverLoginBtn" type="button" class="secondary">Driver WhatsApp login</button>
             <div id="waDriverLoginStatus" class="status info" style="display: none;"></div>
             <div id="waDriverLoginOutput" class="output" style="display: none;"></div>
+          </div>
+        </section>
+
+        <!-- Meta Cloud API WhatsApp OTP (separate from Twilio) -->
+        <section id="metaWhatsapp" class="section">
+          <h2>Meta Cloud API WhatsApp OTP <span class="badge public">Public</span></h2>
+          <div class="card" style="margin-bottom: 1rem; background: #ebf8ff; border: 1px solid #90cdf4;">
+            <h3 style="margin-top: 0;">Server env (Render)</h3>
+            <ul style="font-size: 0.8rem; color: #2b6cb0; margin: 0; padding-left: 1.2rem;">
+              <li><code>WHATSAPP_ACCESS_TOKEN</code> — System user token from Meta Business Settings</li>
+              <li><code>WHATSAPP_PHONE_NUMBER_ID</code> — Meta app → WhatsApp → API setup → Phone number ID</li>
+              <li><code>WHATSAPP_OTP_TEMPLATE_NAME</code> — approved auth template (default: <code>arheb_login_otp_ar</code>)</li>
+              <li><code>WHATSAPP_OTP_LANG</code> — template language (default: <code>ar</code>)</li>
+            </ul>
+            <p style="font-size: 0.8rem; color: #2c5282; margin: 0.75rem 0 0 0;">
+              These routes use <strong>Meta only</strong> — never Twilio, never SMS. Twilio env vars can stay set.
+            </p>
+          </div>
+
+          <div class="card">
+            <h3>Customer — Send code</h3>
+            <p style="font-size: 0.8rem; color: #718096;">POST <code>/api/auth/meta/whatsapp/send-code</code></p>
+            <div class="form-group">
+              <label for="metaCustomerPhone">Phone number</label>
+              <input id="metaCustomerPhone" type="tel" placeholder="+962791234567 or 0791234567" dir="ltr" />
+            </div>
+            <button id="metaCustomerSendBtn" type="button">Send Meta WhatsApp code</button>
+            <div id="metaCustomerSendStatus" class="status info" style="display: none;"></div>
+            <div id="metaCustomerSendOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Customer — Verify (test login)</h3>
+            <p style="font-size: 0.8rem; color: #718096;">POST <code>/api/auth/meta/whatsapp/verify-code</code></p>
+            <div class="form-group">
+              <label for="metaCustomerVerificationId">verificationId</label>
+              <input id="metaCustomerVerificationId" type="text" placeholder="From send-code response" dir="ltr" />
+            </div>
+            <div class="form-group">
+              <label for="metaCustomerOtp">OTP from WhatsApp</label>
+              <input id="metaCustomerOtp" type="text" inputmode="numeric" maxlength="12" placeholder="123456" dir="ltr" />
+            </div>
+            <button id="metaCustomerVerifyBtn" type="button" class="secondary">Verify &amp; login (Meta test)</button>
+            <div id="metaCustomerVerifyStatus" class="status info" style="display: none;"></div>
+            <div id="metaCustomerVerifyOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Driver — Send OTP</h3>
+            <p style="font-size: 0.8rem; color: #718096;">POST <code>/api/driver/meta/whatsapp/send-otp</code></p>
+            <div class="form-group">
+              <label for="metaDriverMobile">Driver mobile</label>
+              <input id="metaDriverMobile" type="tel" placeholder="0790000000" dir="ltr" />
+            </div>
+            <button id="metaDriverSendBtn" type="button">Send Meta driver OTP</button>
+            <div id="metaDriverSendStatus" class="status info" style="display: none;"></div>
+            <div id="metaDriverSendOutput" class="output" style="display: none;"></div>
+          </div>
+
+          <div class="card">
+            <h3>Driver — Login</h3>
+            <p style="font-size: 0.8rem; color: #718096;">POST <code>/api/driver/meta/whatsapp/login</code></p>
+            <div class="form-group">
+              <label for="metaDriverVerificationId">verificationId</label>
+              <input id="metaDriverVerificationId" type="text" placeholder="From send-otp response" dir="ltr" />
+            </div>
+            <div class="form-group">
+              <label for="metaDriverOtp">OTP from WhatsApp</label>
+              <input id="metaDriverOtp" type="text" inputmode="numeric" maxlength="12" placeholder="123456" dir="ltr" />
+            </div>
+            <button id="metaDriverLoginBtn" type="button" class="secondary">Meta driver login</button>
+            <div id="metaDriverLoginStatus" class="status info" style="display: none;"></div>
+            <div id="metaDriverLoginOutput" class="output" style="display: none;"></div>
           </div>
         </section>
 
@@ -1927,6 +2001,126 @@
           );
         } catch (error) {
           showStatus('waDriverLoginStatus', `Error: ${error.message}`, 'error');
+        }
+      });
+
+      // Meta Cloud API WhatsApp OTP
+      document.getElementById('metaCustomerSendBtn').addEventListener('click', async () => {
+        const phoneNumber = document.getElementById('metaCustomerPhone').value.trim();
+        if (!phoneNumber) {
+          showStatus('metaCustomerSendStatus', 'Enter phone number', 'error');
+          return;
+        }
+        showStatus('metaCustomerSendStatus', 'Sending via Meta…', 'info');
+        try {
+          const res = await fetch(`${getBackendBase()}/api/auth/meta/whatsapp/send-code`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phoneNumber }),
+          });
+          const data = await res.json().catch(() => ({}));
+          showOutput('metaCustomerSendOutput', data);
+          const vid = data.verificationId ?? data.sessionInfo;
+          if (vid) document.getElementById('metaCustomerVerificationId').value = vid;
+          showStatus(
+            'metaCustomerSendStatus',
+            res.ok
+              ? `${data.alreadyRegistered ? 'Existing user — ' : ''}Meta WhatsApp OTP sent (otpProvider: ${data.otpProvider || 'meta'}).`
+              : (data.message || res.statusText || 'Failed'),
+            res.ok ? 'success' : 'error',
+          );
+        } catch (error) {
+          showStatus('metaCustomerSendStatus', `Error: ${error.message}`, 'error');
+        }
+      });
+
+      document.getElementById('metaCustomerVerifyBtn').addEventListener('click', async () => {
+        const phoneNumber = document.getElementById('metaCustomerPhone').value.trim();
+        const verificationId = document.getElementById('metaCustomerVerificationId').value.trim();
+        const otp = document.getElementById('metaCustomerOtp').value.trim();
+        if (!phoneNumber || !verificationId || !otp) {
+          showStatus('metaCustomerVerifyStatus', 'Phone, verificationId, and OTP required', 'error');
+          return;
+        }
+        showStatus('metaCustomerVerifyStatus', 'Verifying via Meta…', 'info');
+        try {
+          const res = await fetch(`${getBackendBase()}/api/auth/meta/whatsapp/verify-code`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phoneNumber, verificationId, otp }),
+          });
+          const data = await res.json().catch(() => ({}));
+          showOutput('metaCustomerVerifyOutput', data);
+          if (data.success && data.token) {
+            lastAppToken = data.token;
+            lastFirebaseToken = data.firebaseToken || '';
+          }
+          showStatus(
+            'metaCustomerVerifyStatus',
+            res.ok && data.success
+              ? `Logged in (Meta test) — token saved.`
+              : (data.message || 'Verification failed'),
+            res.ok && data.success ? 'success' : 'error',
+          );
+        } catch (error) {
+          showStatus('metaCustomerVerifyStatus', `Error: ${error.message}`, 'error');
+        }
+      });
+
+      document.getElementById('metaDriverSendBtn').addEventListener('click', async () => {
+        const mobile = document.getElementById('metaDriverMobile').value.trim();
+        if (!mobile) {
+          showStatus('metaDriverSendStatus', 'Enter driver mobile', 'error');
+          return;
+        }
+        showStatus('metaDriverSendStatus', 'Sending via Meta…', 'info');
+        try {
+          const res = await fetch(`${getBackendBase()}/api/driver/meta/whatsapp/send-otp`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mobile }),
+          });
+          const data = await res.json().catch(() => ({}));
+          showOutput('metaDriverSendOutput', data);
+          const vid = data.data?.verificationId ?? data.verificationId;
+          if (vid) document.getElementById('metaDriverVerificationId').value = vid;
+          showStatus(
+            'metaDriverSendStatus',
+            res.ok ? 'Meta WhatsApp OTP sent to driver.' : (data.message || res.statusText || 'Failed'),
+            res.ok ? 'success' : 'error',
+          );
+        } catch (error) {
+          showStatus('metaDriverSendStatus', `Error: ${error.message}`, 'error');
+        }
+      });
+
+      document.getElementById('metaDriverLoginBtn').addEventListener('click', async () => {
+        const mobile = document.getElementById('metaDriverMobile').value.trim();
+        const verificationId = document.getElementById('metaDriverVerificationId').value.trim();
+        const otpCode = document.getElementById('metaDriverOtp').value.trim();
+        if (!mobile || !verificationId || !otpCode) {
+          showStatus('metaDriverLoginStatus', 'Mobile, verificationId, and OTP required', 'error');
+          return;
+        }
+        showStatus('metaDriverLoginStatus', 'Logging in via Meta…', 'info');
+        try {
+          const res = await fetch(`${getBackendBase()}/api/driver/meta/whatsapp/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mobile, otpCode, verificationId }),
+          });
+          const data = await res.json().catch(() => ({}));
+          showOutput('metaDriverLoginOutput', data);
+          if (res.ok && data.success && data.data?.token) {
+            lastDriverToken = data.data.token;
+          }
+          showStatus(
+            'metaDriverLoginStatus',
+            res.ok && data.success ? 'Driver logged in (Meta) — token saved.' : (data.message || 'Login failed'),
+            res.ok && data.success ? 'success' : 'error',
+          );
+        } catch (error) {
+          showStatus('metaDriverLoginStatus', `Error: ${error.message}`, 'error');
         }
       });
 

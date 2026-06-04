@@ -81,6 +81,10 @@ const DRIVER_LOGIN_OTP_CHANNEL = 'driver_login';
 const CUSTOMER_WHATSAPP_OTP_CHANNEL = 'customer';
 /** DB channel for POST /api/driver/whatsapp/send-otp + login. */
 const DRIVER_WHATSAPP_OTP_CHANNEL = 'driver';
+/** DB channel for POST /api/auth/meta/whatsapp/* (Meta Cloud API test). */
+const CUSTOMER_META_WHATSAPP_OTP_CHANNEL = 'customer_meta';
+/** DB channel for POST /api/driver/meta/whatsapp/* (Meta Cloud API test). */
+const DRIVER_META_WHATSAPP_OTP_CHANNEL = 'driver_meta';
 
 function isTwilioOtpConfigured() {
   return getWhatsappConfig().configured;
@@ -552,23 +556,50 @@ function buildAuthenticationTemplatePayload(toDigits, otpCode, cfg) {
   };
 }
 
+function getMetaOtpNotConfiguredHint() {
+  return 'Meta WhatsApp OTP not configured. Set WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID. Optional: WHATSAPP_OTP_TEMPLATE_NAME, WHATSAPP_OTP_LANG, WHATSAPP_GRAPH_API_VERSION.';
+}
+
+function isMetaWhatsappOtpConfigured() {
+  return getMetaWhatsappConfig().configured;
+}
+
 async function sendMetaWhatsappAuthenticationOtp(toDigits, otpCode) {
   const cfg = getMetaWhatsappConfig();
   if (!cfg.configured) {
-    const err = new Error('WhatsApp OTP is not configured (WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID)');
+    const err = new Error(getMetaOtpNotConfiguredHint());
     err.code = 'WHATSAPP_NOT_CONFIGURED';
     throw err;
   }
   const url = `https://graph.facebook.com/${cfg.graphVersion}/${cfg.phoneNumberId}/messages`;
   const payload = buildAuthenticationTemplatePayload(toDigits, otpCode, cfg);
-  const res = await axios.post(url, payload, {
-    timeout: 20000,
-    headers: {
-      Authorization: `Bearer ${cfg.accessToken}`,
-      'Content-Type': 'application/json',
-    },
-  });
-  return res.data;
+  try {
+    const res = await axios.post(url, payload, {
+      timeout: 20000,
+      headers: {
+        Authorization: `Bearer ${cfg.accessToken}`,
+        'Content-Type': 'application/json',
+      },
+    });
+    console.log('[meta-whatsapp-otp] message sent', {
+      to: maskDigitsForLog(toDigits),
+      template: cfg.templateName,
+      messageId: res.data?.messages?.[0]?.id || null,
+    });
+    return res.data;
+  } catch (error) {
+    const metaErr = error.response?.data?.error;
+    const msg =
+      metaErr?.error_user_msg ||
+      metaErr?.message ||
+      error.message ||
+      'Meta WhatsApp send failed';
+    const err = new Error(String(msg));
+    err.code = 'META_SEND_FAILED';
+    err.metaErrorCode = metaErr?.code;
+    err.metaErrorSubcode = metaErr?.error_subcode;
+    throw err;
+  }
 }
 
 async function sendWhatsappAuthenticationOtp(toDigits, otpCode) {
@@ -836,12 +867,79 @@ async function verifyDriverWhatsappLoginOtp(db, phoneNumber, phoneKey, verificat
   return verifyPhoneLoginOtp(db, phoneNumber, phoneKey, verificationId, otp, DRIVER_WHATSAPP_OTP_CHANNEL);
 }
 
+/**
+ * Meta Cloud API only — never Twilio, never SMS fallback.
+ * @returns {{ sessionInfo: string, channel: 'whatsapp', expiresInSec: number, otpProvider: 'meta' }}
+ */
+async function sendMetaPhoneLoginOtp(db, phoneNumber, phoneKey, channel) {
+  if (!isMetaWhatsappOtpConfigured()) {
+    const err = new Error(getMetaOtpNotConfiguredHint());
+    err.code = 'OTP_NOT_CONFIGURED';
+    throw err;
+  }
+  const dest = resolveOtpDestination(phoneNumber, phoneKey);
+  if (!dest) {
+    const err = new Error('Could not format phone for OTP');
+    err.code = 'INVALID_PHONE';
+    throw err;
+  }
+
+  const now = Date.now();
+  const pending = getPendingWhatsappOtp(db, phoneKey, channel);
+  const cooldown = checkResendCooldown(pending, now);
+  if (!cooldown.ok) {
+    const err = new Error(`Wait ${cooldown.waitSec}s before requesting another code`);
+    err.code = 'RATE_LIMIT';
+    err.retryAfterSec = cooldown.waitSec;
+    throw err;
+  }
+
+  const code = generateOtpCode();
+  const verificationId = generateVerificationId();
+  const ttlMs = TWILIO_VERIFY_PENDING_TTL_MS;
+  await sendMetaWhatsappAuthenticationOtp(dest.digits, code);
+  upsertWhatsappOtp(db, {
+    phoneKey,
+    channel,
+    code,
+    verificationId,
+    now,
+    ttlMs,
+  });
+
+  return {
+    sessionInfo: verificationId,
+    channel: 'whatsapp',
+    expiresInSec: Math.floor(ttlMs / 1000),
+    otpProvider: 'meta',
+  };
+}
+
+async function sendCustomerMetaWhatsappLoginOtp(db, phoneNumber, phoneKey) {
+  return sendMetaPhoneLoginOtp(db, phoneNumber, phoneKey, CUSTOMER_META_WHATSAPP_OTP_CHANNEL);
+}
+
+async function verifyCustomerMetaWhatsappLoginOtp(db, phoneNumber, phoneKey, verificationId, otp) {
+  return verifyPhoneLoginOtp(db, phoneNumber, phoneKey, verificationId, otp, CUSTOMER_META_WHATSAPP_OTP_CHANNEL);
+}
+
+async function sendDriverMetaWhatsappLoginOtp(db, phoneNumber, phoneKey) {
+  return sendMetaPhoneLoginOtp(db, phoneNumber, phoneKey, DRIVER_META_WHATSAPP_OTP_CHANNEL);
+}
+
+async function verifyDriverMetaWhatsappLoginOtp(db, phoneNumber, phoneKey, verificationId, otp) {
+  return verifyPhoneLoginOtp(db, phoneNumber, phoneKey, verificationId, otp, DRIVER_META_WHATSAPP_OTP_CHANNEL);
+}
+
 module.exports = {
   REGISTER_OTP_CHANNEL,
   DRIVER_LOGIN_OTP_CHANNEL,
   CUSTOMER_WHATSAPP_OTP_CHANNEL,
   DRIVER_WHATSAPP_OTP_CHANNEL,
+  CUSTOMER_META_WHATSAPP_OTP_CHANNEL,
+  DRIVER_META_WHATSAPP_OTP_CHANNEL,
   isTwilioOtpConfigured,
+  isMetaWhatsappOtpConfigured,
   isTwilioWhatsappVerifyConfigured,
   OTP_TTL_MS,
   TWILIO_VERIFY_PENDING_TTL_MS,
@@ -864,7 +962,9 @@ module.exports = {
   getTwilioVerifyConfigForChannel,
   getTwilioWhatsappConfig,
   getMetaWhatsappConfig,
+  getMetaOtpNotConfiguredHint,
   buildAuthenticationTemplatePayload,
+  sendMetaWhatsappAuthenticationOtp,
   startTwilioVerifyOtp,
   startTwilioVerifyWhatsappOtp,
   checkTwilioVerifyWhatsappOtp,
@@ -884,4 +984,8 @@ module.exports = {
   verifyCustomerWhatsappLoginOtp,
   sendDriverWhatsappLoginOtp,
   verifyDriverWhatsappLoginOtp,
+  sendCustomerMetaWhatsappLoginOtp,
+  verifyCustomerMetaWhatsappLoginOtp,
+  sendDriverMetaWhatsappLoginOtp,
+  verifyDriverMetaWhatsappLoginOtp,
 };

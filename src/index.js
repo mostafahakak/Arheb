@@ -245,6 +245,8 @@ const {
   verifyRegisterOtp,
   sendCustomerWhatsappLoginOtp,
   verifyCustomerWhatsappLoginOtp,
+  sendCustomerMetaWhatsappLoginOtp,
+  verifyCustomerMetaWhatsappLoginOtp,
 } = require('./utils/whatsappLoginOtp');
 
 function pickCanonicalUserRow(matches) {
@@ -935,6 +937,108 @@ app.post('/api/auth/whatsapp/verify-code', async (req, res) => {
       return res.status(401).json({ success: false, message: error.message, case: 2 });
     }
     console.error('whatsapp/verify-code error:', error?.message || error);
+    return res.status(502).json({
+      success: false,
+      message: error.message || 'Verification failed',
+      case: 2,
+    });
+  }
+});
+
+/** Meta Cloud API WhatsApp OTP (test) — never Twilio, never SMS. */
+app.post('/api/auth/meta/whatsapp/send-code', async (req, res) => {
+  const body = req.body || {};
+  const phoneNumber = body.phoneNumber || body.mobile;
+  if (!phoneNumber || !String(phoneNumber).trim()) {
+    return res.status(400).json({ success: false, message: 'phoneNumber is required', case: 2 });
+  }
+  const identity = resolveAuthPhoneIdentity(phoneNumber);
+  if (!identity.phoneKey || identity.phoneKey.replace(/\D/g, '').length < 9) {
+    return res.status(400).json({ success: false, message: 'Invalid phone number', case: 2 });
+  }
+  if (identity.existingUser && identity.existingUser.isBlocked) {
+    return res.status(403).json({ success: false, message: 'User is blocked', case: 2 });
+  }
+
+  try {
+    const sent = await sendCustomerMetaWhatsappLoginOtp(db, identity.normalizedPhone, identity.phoneKey);
+    return res.status(200).json({
+      success: true,
+      message: 'OTP sent via WhatsApp (Meta Cloud API)',
+      case: 1,
+      alreadyRegistered: identity.alreadyRegistered,
+      isNewUser: !identity.alreadyRegistered,
+      verificationId: sent.sessionInfo,
+      sessionInfo: sent.sessionInfo,
+      expiresIn: sent.expiresInSec,
+      channel: sent.channel,
+      otpProvider: sent.otpProvider,
+    });
+  } catch (error) {
+    if (error.code === 'RATE_LIMIT') {
+      return res.status(429).json({
+        success: false,
+        message: error.message,
+        case: 2,
+        retryAfterSec: error.retryAfterSec,
+      });
+    }
+    if (error.code === 'OTP_NOT_CONFIGURED') {
+      return res.status(503).json({ success: false, message: error.message, case: 2 });
+    }
+    const raw = error.message || 'Meta WhatsApp send failed';
+    console.error('meta/whatsapp/send-code error:', raw, error.metaErrorCode || '');
+    return res.status(502).json({ success: false, message: String(raw), case: 2 });
+  }
+});
+
+app.post('/api/auth/meta/whatsapp/verify-code', async (req, res) => {
+  const body = req.body || {};
+  const phoneNumber = body.phoneNumber || body.mobile;
+  const verificationId = body.verificationId || body.sessionInfo;
+  const otp = body.otp ?? body.otpCode;
+  if (!phoneNumber || !verificationId || otp === undefined || otp === null || otp === '') {
+    return res.status(400).json({
+      success: false,
+      message: 'phoneNumber, verificationId, and otp are required',
+      case: 2,
+    });
+  }
+  const identity = resolveAuthPhoneIdentity(phoneNumber);
+  if (!identity.phoneKey) {
+    return res.status(400).json({ success: false, message: 'Invalid phone number', case: 2 });
+  }
+
+  try {
+    await verifyCustomerMetaWhatsappLoginOtp(
+      db,
+      identity.normalizedPhone,
+      identity.phoneKey,
+      verificationId,
+      otp,
+    );
+    const sessionBody = finalizePhoneAuthSession(
+      identity.canonicalPhone,
+      `meta:${verificationId}`,
+      null,
+    );
+    const withDriver = attachDriverClaimsToSession(sessionBody, identity.canonicalPhone, null);
+    return res.status(200).json({
+      ...withDriver,
+      firebaseToken: null,
+      otpProvider: 'meta',
+      case: 1,
+      alreadyRegistered: identity.alreadyRegistered,
+      isNewUser: !identity.alreadyRegistered,
+    });
+  } catch (error) {
+    if (error.statusCode === 403) {
+      return res.status(403).json({ success: false, message: error.message, case: 2 });
+    }
+    if (error.code === 'INVALID_SESSION' || error.code === 'INVALID_OTP') {
+      return res.status(401).json({ success: false, message: error.message, case: 2 });
+    }
+    console.error('meta/whatsapp/verify-code error:', error?.message || error);
     return res.status(502).json({
       success: false,
       message: error.message || 'Verification failed',
