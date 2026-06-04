@@ -542,7 +542,8 @@
           <div class="card" style="background: #fffaf0; border: 1px solid #fbd38d;">
             <h3>Twilio WhatsApp (live app)</h3>
             <p style="font-size: 0.8rem; color: #744210; margin-top: 0;">
-              <code>POST /api/auth/twilio/register</code> + <code>/api/auth/twilio/verify-otp</code> — same URLs as the mobile app. WhatsApp via <strong>TWILIO_WHATSAPP_OTP_CONTENT_SID</strong> (HX…). No reCAPTCHA.
+              <code>POST /api/auth/twilio/register</code> + <code>/api/auth/twilio/verify-otp</code> — same URLs as the mobile app.
+              Tries <strong>Meta Cloud API</strong> first (<code>WHATSAPP_ACCESS_TOKEN</code> + <code>WHATSAPP_PHONE_NUMBER_ID</code>), then Twilio WhatsApp (<strong>HX…</strong>), then SMS Verify if WhatsApp fails.
             </p>
             <button id="twilioSendOtpBtn" type="button">Live app: Request OTP</button>
             <button id="twilioVerifyOtpBtn" type="button" class="secondary">Live app: Verify OTP</button>
@@ -569,7 +570,7 @@
               Set the <strong>API base URL</strong> in the header. This page calls the same production endpoints as your apps.
             </p>
             <ul style="font-size: 0.8rem; color: #2f855a; margin: 0; padding-left: 1.2rem;">
-              <li><strong>Live app:</strong> <code>/api/auth/twilio/*</code> + <code>/api/driver/twilio/*</code> — tries WhatsApp (<strong>MG…</strong> + <strong>HX…</strong>) first; falls back to SMS Verify (<strong>VA…</strong>) if WhatsApp fails.</li>
+              <li><strong>Live app:</strong> <code>/api/auth/twilio/*</code> + <code>/api/driver/twilio/*</code> — Meta Cloud API first, then Twilio WhatsApp (<strong>MG…</strong> + <strong>HX…</strong>), then SMS Verify (<strong>VA…</strong>) if WhatsApp fails.</li>
               <li><strong>WhatsApp-only (this tab):</strong> <code>/api/auth/whatsapp/*</code> + <code>/api/driver/whatsapp/*</code> — requires <code>TWILIO_WHATSAPP_MESSAGING_SERVICE_SID</code> (<strong>MG…</strong>) + <code>TWILIO_WHATSAPP_OTP_CONTENT_SID</code> (<strong>HX…</strong>). Never sends SMS, even on failure.</li>
               <li><strong>Meta Cloud API:</strong> <code>WHATSAPP_ACCESS_TOKEN</code>, <code>WHATSAPP_PHONE_NUMBER_ID</code>, template env vars (WhatsApp-only routes only).</li>
             </ul>

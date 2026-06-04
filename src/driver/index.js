@@ -541,7 +541,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     });
   });
 
-  // POST /api/driver/twilio/send-otp — live driver OTP (WhatsApp; same JSON as before)
+  // POST /api/driver/twilio/send-otp — live driver OTP (Meta first, then Twilio WhatsApp + SMS fallback)
   app.post('/api/driver/twilio/send-otp', async (req, res) => {
     const { mobile } = req.body || {};
     console.log('driver/twilio/send-otp hit', { mobile: maskPhoneForLog(mobile) });

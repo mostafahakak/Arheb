@@ -828,15 +828,36 @@ async function verifyPhoneLoginOtp(db, phoneNumber, phoneKey, sessionInfo, otp, 
 }
 
 /**
- * Send OTP for live POST /api/auth/twilio/* (WhatsApp via Content template or Verify fallback).
+ * Live app OTP: Meta Cloud API first (if configured), then Twilio WhatsApp with SMS fallback.
+ * Same URLs and response fields as before — no app update required.
+ */
+async function sendLivePhoneLoginOtp(db, phoneNumber, phoneKey, channel) {
+  const metaFirst = process.env.LIVE_OTP_META_FIRST !== '0';
+  if (metaFirst && isMetaWhatsappOtpConfigured()) {
+    try {
+      const sent = await sendMetaPhoneLoginOtp(db, phoneNumber, phoneKey, channel);
+      return { ...sent, otpProvider: 'twilio' };
+    } catch (metaErr) {
+      console.warn(
+        '[whatsapp-otp] Meta live OTP failed, falling back to Twilio:',
+        metaErr.message,
+        metaErr.metaErrorCode || '',
+      );
+    }
+  }
+  return sendPhoneLoginOtp(db, phoneNumber, phoneKey, channel);
+}
+
+/**
+ * Send OTP for live POST /api/auth/twilio/* (Meta → Twilio WhatsApp → SMS fallback).
  * Returns sessionInfo string for verify-otp (same contract as legacy Firebase sessionInfo).
  */
 async function sendRegisterOtp(db, phoneNumber, phoneKey) {
-  return sendPhoneLoginOtp(db, phoneNumber, phoneKey, REGISTER_OTP_CHANNEL);
+  return sendLivePhoneLoginOtp(db, phoneNumber, phoneKey, REGISTER_OTP_CHANNEL);
 }
 
 async function sendDriverLoginOtp(db, phoneNumber, phoneKey) {
-  return sendPhoneLoginOtp(db, phoneNumber, phoneKey, DRIVER_LOGIN_OTP_CHANNEL);
+  return sendLivePhoneLoginOtp(db, phoneNumber, phoneKey, DRIVER_LOGIN_OTP_CHANNEL);
 }
 
 /**
