@@ -49,6 +49,7 @@ function ensurePersistentDirSeeded() {
   if (arhebJsonDir === REPO_JSON_DIR) return;
   const files = [
     'categories_response.json',
+    'food_types_response.json',
     'stores_listing_response.json',
     'products_listing_response.json',
     'popup.json',

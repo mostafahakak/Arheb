@@ -9,6 +9,7 @@ const Database = require('better-sqlite3');
 const jwt = require('jsonwebtoken');
 const dotenv = require('dotenv');
 const attachCategoriesRoutes = require('./categories');
+const attachFoodTypesRoutes = require('./foodTypes');
 const attachProductsRoutes = require('./products');
 const attachHomeRoutes = require('./home');
 const attachStoresRoutes = require('./stores');
@@ -384,6 +385,7 @@ try {
 }
 
 attachCategoriesRoutes(app, db);
+attachFoodTypesRoutes(app, db);
 attachProductsRoutes(app, db);
 attachHomeRoutes(app, db, JWT_SECRET);
 attachStoresRoutes(app, db);

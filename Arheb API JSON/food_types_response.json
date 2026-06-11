@@ -1,0 +1,32 @@
+{
+  "success": true,
+  "message": "Food types",
+  "data": {
+    "foodTypes": [
+      {
+        "id": "1",
+        "name": "shawarma",
+        "nameEn": "Shawarma",
+        "nameAr": "شاورما",
+        "image": "",
+        "displayOrder": 1
+      },
+      {
+        "id": "2",
+        "name": "burger",
+        "nameEn": "Burger",
+        "nameAr": "برجر",
+        "image": "",
+        "displayOrder": 2
+      },
+      {
+        "id": "3",
+        "name": "arabic_cuisine",
+        "nameEn": "Arabic Cuisine",
+        "nameAr": "مطبخ عربي",
+        "image": "",
+        "displayOrder": 3
+      }
+    ]
+  }
+}

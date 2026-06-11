@@ -14,6 +14,7 @@ const { enrichOpeningHoursObject } = require('../utils/openingHoursJordan');
 const { upsertStoreFcmToken } = require('../storeFcm');
 const { getPlatformCheckoutFeeTiers } = require('../utils/platformCheckoutFees');
 const { effectiveStoreListingDeliveryFeeJod } = require('../utils/deliveryFees');
+const { resolveStoreFoodTypes } = require('../foodTypes');
 
 const storesResponsePath = getJsonPath('stores_listing_response.json');
 
@@ -193,6 +194,7 @@ function toPublicStore(store, platformTiers) {
     openingTime: store.openingHours?.open ?? store.openingTime ?? null,
     openingHours,
     storeCategories: Array.isArray(store.storeCategories) ? store.storeCategories : [],
+    foodTypes: resolveStoreFoodTypes(store),
     status: computeStoreStatus(store),
     paymentMethods: getStorePaymentMethods(store),
   };
@@ -213,6 +215,7 @@ function storePayloadForProductRoutes(store) {
     closingTime: store.closingTime ?? null,
     openingTime: store.openingHours?.open ?? store.openingTime ?? null,
     storeCategories: Array.isArray(store.storeCategories) ? store.storeCategories : [],
+    foodTypes: resolveStoreFoodTypes(store),
     status: computeStoreStatus(store),
     isOpen: customerFacingIsOpen(store),
     isExclusive: store.isExclusive === true,

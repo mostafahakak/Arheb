@@ -21,6 +21,12 @@ const {
 } = require('./middleware');
 const { ensureActivityLogTable, logActivity, handleActivityLogList } = require('./activityLog');
 const { syncCategoriesToDb } = require('../categories');
+const {
+  loadFoodTypes,
+  saveFoodTypes,
+  sortFoodTypes,
+  publicFoodType,
+} = require('../foodTypes');
 const { getJsonPath } = require('../config/jsonPaths');
 const fcm = require('../fcm');
 const { getActiveFromListWithDistance, getActiveDriversWithLocation, isValidDriverGps } = require('../driverPresence');
@@ -111,6 +117,17 @@ const {
   seedDefaultDeliveryFixedZonesIfEmpty,
 } = require('../utils/deliveryFixedZones');
 const { round2: round2Money } = require('../utils/deliveryFees');
+const { enrichAdminOrderMetrics, isCashPaymentType, orderGrandTotalJod } = require('../utils/orderAdminMetrics');
+const { ensureOrderStatusTimestampColumns, recordOrderStatusTimestamp } = require('../utils/orderStatusTimestamps');
+const {
+  ensureDriverCashCeilingColumns,
+  driverCanAcceptCashOrderRow,
+  addDriverCashCollected,
+  resetDriverCashCollected,
+  getDriverCashState,
+} = require('../utils/driverCashCeiling');
+const { loadStoreOrderStatsMap, sortStoresByMetric, buildStoreProfileStats } = require('../utils/storeAdminStats');
+const { buildAdminStatsOverview, statsOverviewToExportRows } = require('../utils/adminStatsOverview');
 
 const storesResponsePath = getJsonPath('stores_listing_response.json');
 const productsResponsePath = getJsonPath('products_listing_response.json');
@@ -124,6 +141,21 @@ function ensureJsonFile(filePath, defaultData) {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(filePath, JSON.stringify(defaultData, null, 2), 'utf-8');
   }
+}
+
+/** Store `foodTypes` is stored as an array of food-type id strings (deduped). Accepts ids or objects. */
+function normalizeStoreFoodTypeIds(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const entry of value) {
+    const id = entry != null && typeof entry === 'object' ? String(entry.id ?? '') : String(entry ?? '');
+    const trimmed = id.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
 }
 
 /** Dashboard / JSON may send booleans as strings; `Boolean('false')` is wrongly true. */
@@ -263,6 +295,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   ensureActivityLogTable(db);
   ensureOrderAssignmentColumns(db);
   ensurePlatformCheckoutFeesTable(db);
+  ensureOrderStatusTimestampColumns(db);
+  ensureDriverCashCeilingColumns(db);
 
   /** Default: Jordan today→today. Pass allDates=true for no date filter (all time). */
   function resolveOrdersListDateRange(query) {
@@ -1104,6 +1138,21 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
 
     const bucketOrder = { open: 0, paused: 1, closed: 2 };
     const tierWeight = (s) => (s.isExclusive === true ? 0 : s.isPremium === true ? 1 : 2);
+    const sortBy = String(req.query.sortBy || req.query.sort || '').trim();
+    const sortDir = String(req.query.sortDir || req.query.order || 'desc').trim();
+    const withStats =
+      sortBy ||
+      req.query.withStats === '1' ||
+      req.query.withStats === 'true';
+    let statsMap = {};
+    if (withStats && isAdminOrSuper) {
+      const df = req.query.dateFrom ? String(req.query.dateFrom).slice(0, 10) : '';
+      const dt = req.query.dateTo ? String(req.query.dateTo).slice(0, 10) : '';
+      statsMap = loadStoreOrderStatsMap(db, df || null, dt || null);
+    }
+    if (sortBy && isAdminOrSuper) {
+      list = sortStoresByMetric(list, statsMap, sortBy, sortDir);
+    } else {
     list.sort((a, b) => {
       const da = typeof a.displayOrder === 'number' ? a.displayOrder : Infinity;
       const db_ = typeof b.displayOrder === 'number' ? b.displayOrder : Infinity;
@@ -1118,6 +1167,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       const nb = String(b.name ?? b.nameEn ?? b.id ?? '');
       return na.localeCompare(nb, undefined, { sensitivity: 'base' });
     });
+    }
 
     const { isStoreAdminOnline } = require('../merchantPresence');
     const mapStore = (s) => {
@@ -1138,6 +1188,17 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         isPremium: base.isPremium === true,
         hiddenFromCustomers: base.hiddenFromCustomers === true,
         merchantOnline: isStoreAdminOnline(s.id),
+        ...(withStats && isAdminOrSuper
+          ? {
+              stats: statsMap[String(s.id)] || {
+                orderCount: 0,
+                ordersGrandTotalJod: 0,
+                avgPreparationTimeMinutes: null,
+                avgDeliveryTimeMinutes: null,
+                avgResponseTimeMinutes: null,
+              },
+            }
+          : {}),
       };
     };
 
@@ -1311,6 +1372,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       closingTime: closingTimeResolved,
       arhebFee: req.admin.role === ROLES.SUPERADMIN && body.arhebFee != null ? (typeof body.arhebFee === 'number' ? body.arhebFee : parseFloat(body.arhebFee)) : null,
       storeCategories: Array.isArray(body.storeCategories) ? body.storeCategories : [],
+      foodTypes: normalizeStoreFoodTypeIds(body.foodTypes),
       paused: false,
       blocked: false,
     };
@@ -1375,9 +1437,67 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     if (!store) return res.status(404).json({ success: false, message: 'Store not found' });
     let out = req.admin.role === ROLES.SUPERADMIN ? { ...store } : (() => { const { arhebFee, ...rest } = store; return rest; })();
     out.storeCategories = Array.isArray(out.storeCategories) ? out.storeCategories : [];
+    out.foodTypes = normalizeStoreFoodTypeIds(out.foodTypes);
     out = enrichStoreOpeningHours(out);
     out.fcmToken = getStoreFcmToken(db, store.id) ?? null;
     return res.status(200).json({ success: true, data: { store: out } });
+  });
+
+  app.get('/api/admin/stores/:id/stats', auth, requireStoreAccess((req) => req.params.id), (req, res) => {
+    const storeId = String(req.params.id);
+    const stores = loadStores();
+    const store = stores.find((s) => String(s.id) === storeId);
+    if (!store) return res.status(404).json({ success: false, message: 'Store not found' });
+    const dateFrom = req.query.dateFrom ? String(req.query.dateFrom).slice(0, 10) : '';
+    const dateTo = req.query.dateTo ? String(req.query.dateTo).slice(0, 10) : '';
+    const stats = buildStoreProfileStats(db, storeId, dateFrom || null, dateTo || null);
+    let out = req.admin.role === ROLES.SUPERADMIN ? { ...store } : (() => { const { arhebFee, ...rest } = store; return rest; })();
+    out = enrichStoreOpeningHours(out);
+    return res.status(200).json({
+      success: true,
+      data: {
+        store: out,
+        stats,
+        customPreparingTimeMinutes:
+          store.preparingTimeMinutes != null && Number.isFinite(Number(store.preparingTimeMinutes))
+            ? Number(store.preparingTimeMinutes)
+            : null,
+        systemAvgPreparationTimeMinutes: stats.summary.avgPreparationTimeMinutes,
+      },
+    });
+  });
+
+  app.get('/api/admin/stats/overview', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      const dateFrom = req.query.dateFrom ? String(req.query.dateFrom).slice(0, 10) : '';
+      const dateTo = req.query.dateTo ? String(req.query.dateTo).slice(0, 10) : '';
+      const overview = buildAdminStatsOverview(db, loadStores(), dateFrom || null, dateTo || null);
+      return res.status(200).json({ success: true, data: overview });
+    } catch (e) {
+      console.error('Admin stats overview error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to load stats' });
+    }
+  });
+
+  app.get('/api/admin/stats/export', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      const dateFrom = req.query.dateFrom ? String(req.query.dateFrom).slice(0, 10) : '';
+      const dateTo = req.query.dateTo ? String(req.query.dateTo).slice(0, 10) : '';
+      const overview = buildAdminStatsOverview(db, loadStores(), dateFrom || null, dateTo || null);
+      const { storeRows, driverRows } = statsOverviewToExportRows(overview);
+      const wb = XLSX.utils.book_new();
+      const wsStores = XLSX.utils.json_to_sheet(storeRows.length ? storeRows : [{ message: 'No store stats' }]);
+      XLSX.utils.book_append_sheet(wb, wsStores, 'Stores');
+      const wsDrivers = XLSX.utils.json_to_sheet(driverRows.length ? driverRows : [{ message: 'No driver stats' }]);
+      XLSX.utils.book_append_sheet(wb, wsDrivers, 'Drivers');
+      const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', 'attachment; filename="stats-export.xlsx"');
+      return res.send(buf);
+    } catch (e) {
+      console.error('Admin stats export error:', e);
+      return res.status(500).json({ success: false, message: 'Export failed' });
+    }
   });
 
   app.patch('/api/admin/stores/:id', auth, requireStoreAccess((req) => req.params.id), (req, res) => {
@@ -1388,13 +1508,16 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     if (store.blocked === true && req.admin.role === ROLES.STORE_ADMIN) {
       return res.status(403).json({ success: false, message: 'Store is blocked. Only Admin or SuperAdmin can make changes.' });
     }
-    const allowed = ['name', 'nameAr', 'nameEn', 'cover', 'logo', 'deliveryTime', 'deliveryFee', 'minimumOrder', 'isOpen', 'openingHours', 'address', 'addressAr', 'addressEn', 'phone', 'category', 'categoryAr', 'categoryEn', 'subCategories', 'mapsUrl', 'closingTime'];
+    const allowed = ['name', 'nameAr', 'nameEn', 'cover', 'logo', 'deliveryTime', 'deliveryFee', 'minimumOrder', 'isOpen', 'openingHours', 'address', 'addressAr', 'addressEn', 'phone', 'category', 'categoryAr', 'categoryEn', 'subCategories', 'mapsUrl', 'closingTime', 'preparingTimeMinutes'];
     const body = req.body || {};
     if (body.subCategories !== undefined) {
       stores[idx].subCategories = Array.isArray(body.subCategories) ? body.subCategories : [];
     }
     if (body.storeCategories !== undefined) {
       stores[idx].storeCategories = Array.isArray(body.storeCategories) ? body.storeCategories : [];
+    }
+    if (body.foodTypes !== undefined) {
+      stores[idx].foodTypes = normalizeStoreFoodTypeIds(body.foodTypes);
     }
     if (body.isPremium !== undefined) {
       if (req.admin.role === ROLES.STORE_ADMIN) {
@@ -2722,7 +2845,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       if (db2 !== da) return db2 - da;
       return (b.id || 0) - (a.id || 0);
     });
-    return { orders: dateFiltered, dateRange: range };
+    const storesForMetrics = loadStores();
+    const storeByIdMetrics = Object.fromEntries(storesForMetrics.map((s) => [String(s.id), s]));
+    const ordersWithMetrics = dateFiltered.map((o) => enrichAdminOrderMetrics(o, storeByIdMetrics));
+    return { orders: ordersWithMetrics, dateRange: range };
   }
 
   app.get('/api/admin/orders', auth, (req, res) => {
@@ -2735,16 +2861,30 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       const { orders: withItems } = buildAdminOrdersList(req);
       const rows = withItems.map((o) => ({
         id: o.id,
+        orderType: o.orderType || 'store',
         createdAt: o.createdAt,
         createdAtJordan: o.createdAtJordan ?? '',
         status: o.status,
         storeName: o.storeName,
+        storeId: o.storeId ?? '',
         name: o.name,
         phoneNumber: o.phoneNumber,
+        itemsJod: o.itemsSubtotalJod ?? o.totalAmount ?? '',
+        restaurantSalesBeforeFeeJod: o.restaurantSalesBeforeFeeJod ?? '',
+        restaurantResPercent: o.restaurantResPercent ?? '',
+        restaurantResValueJod: o.restaurantResValueJod ?? '',
         totalAmount: o.totalAmount,
         deliveryFee: o.deliveryFee ?? '',
+        serviceFee: o.serviceFee ?? '',
+        feesTax: o.feesTax ?? '',
+        grandTotalJod: o.grandTotalJod ?? '',
         paymentType: o.paymentType,
+        driverId: o.driverId ?? '',
         driverName: o.driverName || '',
+        driverJod: o.driverEarningsJod ?? '',
+        netDel: o.deliveryNetAfterDriverJod ?? '',
+        prepTimeMinutes: o.preparationTimeMinutes ?? '',
+        deliveryTimeMinutes: o.deliveryTimeMinutes ?? '',
         notes: o.notes != null && String(o.notes).trim() !== '' ? String(o.notes).trim() : '',
         itemsSummary: (o.items || [])
           .map((i) => {
@@ -2791,22 +2931,24 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     const storesList = loadStores();
     const store = order.storeId ? storesList.find((s) => String(s.id) === String(order.storeId)) : null;
     const storeName = store ? (store.nameEn || store.name || store.nameAr) : (order.storeId || '-');
+    const storeByIdMetrics = Object.fromEntries(storesList.map((s) => [String(s.id), s]));
+    const enriched = enrichAdminOrderMetrics(
+      {
+        ...order,
+        orderType: 'store',
+        storeName,
+        storeAddress: store ? (store.addressEn || store.address || store.addressAr || null) : null,
+        storeMapsUrl: store ? (store.mapsUrl || null) : null,
+        storeLatitude: store?.latitude ?? store?.lat ?? null,
+        storeLongitude: store?.longitude ?? store?.long ?? null,
+        items: mapOrderItemsForAdmin(items),
+      },
+      storeByIdMetrics,
+    );
     return res.status(200).json({
       success: true,
       data: {
-        order: enrichWithJordanTime(
-          {
-            ...order,
-            orderType: 'store',
-            storeName,
-            storeAddress: store ? (store.addressEn || store.address || store.addressAr || null) : null,
-            storeMapsUrl: store ? (store.mapsUrl || null) : null,
-            storeLatitude: store?.latitude ?? store?.lat ?? null,
-            storeLongitude: store?.longitude ?? store?.long ?? null,
-            items: mapOrderItemsForAdmin(items),
-          },
-          ['createdAt'],
-        ),
+        order: enrichWithJordanTime(enriched, ['createdAt']),
       },
     });
   });
@@ -2863,8 +3005,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       });
     }
     if (nextStatus.toLowerCase() === 'on the way') {
+      recordOrderStatusTimestamp(db, orderId, nextStatus);
       db.prepare('UPDATE orders SET status = ?, nearArrivalNotified = 0 WHERE id = ?').run(nextStatus, orderId);
     } else {
+      recordOrderStatusTimestamp(db, orderId, nextStatus);
       db.prepare('UPDATE orders SET status = ? WHERE id = ?').run(nextStatus, orderId);
     }
     try {
@@ -2885,6 +3029,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     }
 
     if (nextStatus.toLowerCase() === 'delivered') {
+      if (normalizeOrderStatusKey(order.status) !== 'delivered' && updated.driverId != null && isCashPaymentType(updated.paymentType)) {
+        addDriverCashCollected(db, updated.driverId, orderGrandTotalJod(updated));
+      }
       if (isEinvoicePaused(db)) {
         try {
           db.prepare(`UPDATE orders SET einvoiceStatus = 'paused', einvoiceError = ? WHERE id = ?`).run('E-invoice submissions are paused', orderId);
@@ -3243,8 +3390,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         data: { order: { ...updatedSame, items: mapOrderItemsForAdmin(itemsSame) } },
       });
     }
-    const driver = db.prepare('SELECT id, name FROM drivers WHERE id = ? AND isBlocked = 0').get(driverIdNum);
+    const driver = db.prepare('SELECT id, name FROM drivers WHERE id = ? AND isBlocked = 0 AND (deleted IS NULL OR deleted = 0)').get(driverIdNum);
     if (!driver) return res.status(400).json({ success: false, message: 'Invalid or blocked driver' });
+    const cashCheck = driverCanAcceptCashOrderRow(db, driverIdNum, order);
+    if (!cashCheck.ok) return res.status(400).json({ success: false, message: cashCheck.message });
     clearStoreOrderOfferTimeout(orderId);
     rejectAllPendingDriverRequestsForStoreOrder(db, orderId);
     assignDriverToOrder(db, orderId, driverIdNum, driver.name, 'In progress');
@@ -3321,8 +3470,10 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       });
     }
     const oldDriverId = order.driverId != null ? Number(order.driverId) : null;
-    const driver = db.prepare('SELECT id, name FROM drivers WHERE id = ? AND isBlocked = 0').get(driverIdNum);
+    const driver = db.prepare('SELECT id, name FROM drivers WHERE id = ? AND isBlocked = 0 AND (deleted IS NULL OR deleted = 0)').get(driverIdNum);
     if (!driver) return res.status(400).json({ success: false, message: 'Invalid or blocked driver' });
+    const cashCheck = driverCanAcceptCashOrderRow(db, driverIdNum, order);
+    if (!cashCheck.ok) return res.status(400).json({ success: false, message: cashCheck.message });
     const keepStatus = order.status || 'Preparing';
     clearStoreOrderOfferTimeout(orderId);
     rejectAllPendingDriverRequestsForStoreOrder(db, orderId);
@@ -4482,12 +4633,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       const appDefaultRule = getDriverDefaultCommissionRule(db);
       const rows = db
         .prepare(
-          'SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, photo, latitude, longitude, rating, ratingCount, isVerified, isBlocked, createdAt, commissionPercent, commissionType, commissionValue FROM drivers ORDER BY id',
+          'SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, photo, latitude, longitude, rating, ratingCount, isVerified, isBlocked, createdAt, commissionPercent, commissionType, commissionValue, cashCeilingJod, cashCollectedJod FROM drivers WHERE (deleted IS NULL OR deleted = 0) ORDER BY id',
         )
         .all();
       const drivers = rows.map((r) => {
         const effective = resolveDriverCommissionRule(db, r.id);
         const useAppDefault = !driverRowHasCustomCommission(r);
+        const cashState = getDriverCashState(db, r.id);
         return {
           id: r.id,
           name: r.name,
@@ -4515,6 +4667,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
                 ? Number(r.commissionPercent)
                 : null,
           commissionPercent: effective.type === 'percent' ? effective.value : null,
+          cashCeilingJod: r.cashCeilingJod != null ? Number(r.cashCeilingJod) : null,
+          cashCollectedJod: Number(r.cashCollectedJod) || 0,
+          cashRemainingJod: cashState?.remaining ?? null,
           createdAt: r.createdAt,
         };
       });
@@ -4548,10 +4703,12 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       ensureDriverCommissionRuleColumns(db);
       const driver = db
         .prepare(
-          'SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, createdAt, rating, ratingCount, commissionPercent, commissionType, commissionValue FROM drivers WHERE id = ?'
+          'SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, createdAt, rating, ratingCount, commissionPercent, commissionType, commissionValue, cashCeilingJod, cashCollectedJod FROM drivers WHERE id = ?'
         )
         .get(id);
       if (!driver) return res.status(404).json({ success: false, message: 'Driver not found' });
+
+      const cashState = getDriverCashState(db, id);
 
       const statusFilter = req.query.status ? String(req.query.status).trim() : '';
       const dateFrom = req.query.dateFrom ? String(req.query.dateFrom).slice(0, 10) : '';
@@ -4579,6 +4736,11 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       }
       if (dateTo) {
         orderRows = orderRows.filter((o) => String(o.createdAt || '').slice(0, 10) <= dateTo);
+      }
+      const paymentTypeFilter = req.query.paymentType ? String(req.query.paymentType).trim() : '';
+      if (paymentTypeFilter) {
+        const want = paymentTypeFilter.toLowerCase();
+        orderRows = orderRows.filter((o) => String(o.paymentType || '').trim().toLowerCase() === want);
       }
 
       const deliveredFiltered = orderRows.filter((o) => String(o.status || '') === 'Delivered');
@@ -4619,6 +4781,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           status: o.status,
           totalAmount: o.totalAmount,
           deliveryFee: o.deliveryFee,
+          serviceFee: o.serviceFee,
+          feesTax: o.feesTax,
+          paymentType: o.paymentType,
           createdAt: o.createdAt,
           storeId: o.storeId,
           driverShare: {
@@ -4669,6 +4834,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             useAppDefaultCommission: useAppDefault,
             effectiveCommissionType: effectiveRule.type,
             effectiveCommissionValue: effectiveRule.value,
+            cashCeilingJod: driver.cashCeilingJod != null ? Number(driver.cashCeilingJod) : null,
+            cashCollectedJod: Number(driver.cashCollectedJod) || 0,
+            cashRemainingJod: cashState?.remaining ?? null,
           },
           commission: {
             useAppDefault,
@@ -4836,6 +5004,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     ensureDriverCommissionPercentColumn(db);
     ensureDriverCommissionRuleColumns(db);
     ensureContactUsDriverDeliveryPercentColumn(db);
+    ensureDriverCashCeilingColumns(db);
     const {
       name,
       mobile,
@@ -4848,9 +5017,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       commissionType,
       commissionValue,
       useAppDefaultCommission,
+      cashCeilingJod,
+      resetCashCollected,
     } = req.body || {};
     const updates = [];
     const values = [];
+    if (resetCashCollected === true) {
+      resetDriverCashCollected(db, id);
+    }
     if (name !== undefined) { updates.push('name = ?'); values.push(String(name).trim()); }
     if (mobile !== undefined) { updates.push('mobile = ?'); values.push(String(mobile).trim()); }
     if (email !== undefined) { updates.push('email = ?'); values.push(email ? String(email).trim() : null); }
@@ -4858,6 +5032,16 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     if (vehicleNumber !== undefined) { updates.push('vehicleNumber = ?'); values.push(vehicleNumber ? String(vehicleNumber).trim() : null); }
     if (licenseNumber !== undefined) { updates.push('licenseNumber = ?'); values.push(licenseNumber ? String(licenseNumber).trim() : null); }
     if (isBlocked !== undefined) { updates.push('isBlocked = ?'); values.push(isBlocked ? 1 : 0); }
+    if (cashCeilingJod !== undefined) {
+      updates.push('cashCeilingJod = ?');
+      values.push(
+        cashCeilingJod === null || cashCeilingJod === ''
+          ? null
+          : Number.isFinite(Number(cashCeilingJod))
+            ? Number(cashCeilingJod)
+            : null,
+      );
+    }
     if (useAppDefaultCommission === true) {
       updates.push('commissionPercent = ?');
       values.push(null);
@@ -4898,15 +5082,17 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         throw err;
       }
     }
-    if (updates.length === 0) {
+    if (updates.length === 0 && resetCashCollected !== true) {
       return res.status(400).json({ success: false, message: 'No fields to update' });
     }
-    values.push(id);
-    try {
+    if (updates.length > 0) {
+      values.push(id);
       db.prepare(`UPDATE drivers SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+    }
+    try {
       const effectiveRule = resolveDriverCommissionRule(db, id);
       const updated = db
-        .prepare('SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, createdAt, commissionPercent, commissionType, commissionValue FROM drivers WHERE id = ?')
+        .prepare('SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, createdAt, commissionPercent, commissionType, commissionValue, cashCeilingJod, cashCollectedJod FROM drivers WHERE id = ?')
         .get(id);
       logActivity(db, req, {
         action: 'edit',
@@ -4948,16 +5134,16 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     try {
       const driver = db.prepare('SELECT id, name, mobile FROM drivers WHERE id = ?').get(id);
       if (!driver) return res.status(404).json({ success: false, message: 'Driver not found' });
-      db.prepare('UPDATE orders SET driverId = NULL, driverName = NULL WHERE driverId = ?').run(id);
-      db.prepare('DELETE FROM drivers WHERE id = ?').run(id);
+      const now = new Date().toISOString();
+      db.prepare('UPDATE drivers SET deleted = 1, deletedAt = ?, isBlocked = 1 WHERE id = ?').run(now, id);
       logActivity(db, req, {
         action: 'delete',
         resourceType: 'driver',
         resourceId: String(id),
         storeScopeId: null,
-        summary: `Deleted driver ${driver.name} (#${id})`,
+        summary: `Archived driver ${driver.name} (#${id}) — historical orders retained`,
       });
-      return res.status(200).json({ success: true, message: 'Driver removed' });
+      return res.status(200).json({ success: true, message: 'Driver archived (historical data retained)' });
     } catch (e) {
       console.error('Admin delete driver error:', e);
       return res.status(500).json({ success: false, message: 'Failed to remove driver' });
@@ -5058,6 +5244,110 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       summary: `Deleted category ${idParam}`,
     });
     return res.status(200).json({ success: true, message: 'Category deleted' });
+  });
+
+  // ——— Food types (SuperAdmin / Admin only) ———
+  // Cross-cutting list of what a store sells (e.g. Shawarma, Burger). Stores select one or more
+  // by id via PATCH /api/admin/stores/:id { foodTypes: ["1","2"] }. Public list: GET /api/food-types.
+  app.get('/api/admin/food-types', auth, requireAdminOrSuper, (req, res) => {
+    const foodTypes = sortFoodTypes(loadFoodTypes()).map(publicFoodType);
+    return res.status(200).json({ success: true, data: { foodTypes } });
+  });
+
+  app.post('/api/admin/food-types', auth, requireAdminOrSuper, (req, res) => {
+    const foodTypes = loadFoodTypes();
+    const body = req.body || {};
+    const nameEn = String(body.nameEn ?? body.name ?? '').trim();
+    const nameAr = String(body.nameAr ?? body.name ?? '').trim();
+    if (!nameEn && !nameAr) {
+      return res.status(400).json({ success: false, message: 'nameEn or nameAr is required' });
+    }
+    const id = String(foodTypes.length ? Math.max(...foodTypes.map((c) => parseInt(c.id, 10) || 0)) + 1 : 1);
+    const newType = {
+      id,
+      name: body.name ?? (nameEn || nameAr).toLowerCase().replace(/\s+/g, '_').trim(),
+      nameEn: nameEn || nameAr,
+      nameAr: nameAr || nameEn,
+      image: body.image ?? '',
+      displayOrder:
+        body.displayOrder != null && body.displayOrder !== '' ? Number(body.displayOrder) : foodTypes.length + 1,
+    };
+    foodTypes.push(newType);
+    saveFoodTypes(foodTypes);
+    logActivity(db, req, {
+      action: 'add',
+      resourceType: 'food_type',
+      resourceId: String(newType.id),
+      storeScopeId: null,
+      summary: `Added food type ${newType.nameEn || newType.nameAr || newType.id}`,
+    });
+    return res.status(201).json({ success: true, data: { foodType: publicFoodType(newType) } });
+  });
+
+  app.patch('/api/admin/food-types/:id', auth, requireAdminOrSuper, (req, res) => {
+    const foodTypes = loadFoodTypes();
+    const idParam = String(req.params.id);
+    const idx = foodTypes.findIndex((c) => String(c.id) === idParam);
+    if (idx === -1) return res.status(404).json({ success: false, message: 'Food type not found' });
+    const body = req.body || {};
+    const allowed = ['name', 'nameAr', 'nameEn', 'image', 'displayOrder'];
+    for (const key of allowed) {
+      if (body[key] === undefined) continue;
+      if (key === 'displayOrder') {
+        foodTypes[idx].displayOrder = body.displayOrder === null || body.displayOrder === '' ? undefined : Number(body.displayOrder);
+      } else {
+        foodTypes[idx][key] = body[key];
+      }
+    }
+    if (body.nameEn !== undefined && body.name === undefined && foodTypes[idx].nameEn) {
+      foodTypes[idx].name = String(foodTypes[idx].nameEn).toLowerCase().replace(/\s+/g, '_').trim() || foodTypes[idx].name;
+    }
+    saveFoodTypes(foodTypes);
+    logActivity(db, req, {
+      action: 'edit',
+      resourceType: 'food_type',
+      resourceId: idParam,
+      storeScopeId: null,
+      summary: `Updated food type ${idParam}`,
+      details: { keys: Object.keys(body) },
+    });
+    return res.status(200).json({ success: true, data: { foodType: publicFoodType(foodTypes[idx]) } });
+  });
+
+  app.delete('/api/admin/food-types/:id', auth, requireAdminOrSuper, (req, res) => {
+    const foodTypes = loadFoodTypes();
+    const idParam = String(req.params.id);
+    const idx = foodTypes.findIndex((c) => String(c.id) === idParam);
+    if (idx === -1) return res.status(404).json({ success: false, message: 'Food type not found' });
+    foodTypes.splice(idx, 1);
+    saveFoodTypes(foodTypes);
+    // Drop the deleted id from any store that selected it so listings stay consistent.
+    try {
+      const stores = loadStores();
+      let changed = false;
+      for (const s of stores) {
+        if (!Array.isArray(s.foodTypes) || s.foodTypes.length === 0) continue;
+        const next = s.foodTypes.filter((ft) => {
+          const ftId = ft != null && typeof ft === 'object' ? String(ft.id) : String(ft);
+          return ftId !== idParam;
+        });
+        if (next.length !== s.foodTypes.length) {
+          s.foodTypes = next;
+          changed = true;
+        }
+      }
+      if (changed) saveStores(stores);
+    } catch (e) {
+      console.error('Failed to prune deleted food type from stores:', e.message || e);
+    }
+    logActivity(db, req, {
+      action: 'delete',
+      resourceType: 'food_type',
+      resourceId: idParam,
+      storeScopeId: null,
+      summary: `Deleted food type ${idParam}`,
+    });
+    return res.status(200).json({ success: true, message: 'Food type deleted' });
   });
 
   // ——— Popup (SuperAdmin / Admin only) ———

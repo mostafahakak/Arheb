@@ -22,10 +22,12 @@ const {
   paymentMethodRejectedUserMessage,
 } = require('../utils/storePaymentMethods');
 const { resolveStorePickupLocation } = require('../utils/mapsUrlResolve');
+const { ensureOrderStatusTimestampColumns, recordOrderStatusTimestamp } = require('../utils/orderStatusTimestamps');
 
 module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   const { getJsonPath } = require('../config/jsonPaths');
   ensurePlatformCheckoutFeesTable(db);
+  ensureOrderStatusTimestampColumns(db);
   seedDefaultDeliveryFixedZonesIfEmpty(db);
   const FEES_TAX_RATE = 0;
 
@@ -374,6 +376,19 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       });
     }
 
+    if (orderData.storeArhebFeePercent != null && Number.isFinite(Number(orderData.storeArhebFeePercent))) {
+      try {
+        db.prepare('UPDATE orders SET storeArhebFeePercent = ? WHERE id = ?').run(Number(orderData.storeArhebFeePercent), orderId);
+      } catch (e) {
+        /* ignore */
+      }
+    }
+    try {
+      recordOrderStatusTimestamp(db, orderId, orderData.status || 'Waiting confirmation');
+    } catch (e) {
+      /* ignore */
+    }
+
     return orderId;
   });
 
@@ -629,6 +644,10 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
 
     let orderId;
     try {
+      const feeSnap =
+        storeJsonForFees?.arhebFee != null && Number.isFinite(Number(storeJsonForFees.arhebFee))
+          ? Number(storeJsonForFees.arhebFee)
+          : null;
       orderId = createOrder({
         userId,
         phoneNumber,
@@ -650,6 +669,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         notes: notes || null,
         paymentVerificationImage: paymentVerificationImage || null,
         items: itemsCopy,
+        storeArhebFeePercent: feeSnap,
       });
     } catch (e) {
       console.error('createOrderFromCheckoutBody error:', e);

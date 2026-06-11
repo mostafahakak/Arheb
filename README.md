@@ -141,7 +141,9 @@ A separate **Admin Dashboard** (React + Next.js) is in the `dashboard/` folder. 
 - **Arheb Box**: Admins can list requests, open **detail** (**GET /api/admin/arheb-box/:id**), update status, **assign** (**POST /api/admin/arheb-box/:id/assign-driver**) or **reassign** (**POST /api/admin/arheb-box/:id/reassign-driver**, Admin/SuperAdmin — same idea as **POST /api/admin/orders/:orderId/reassign-driver**), and track pricing fields. **SuperAdmin** can **permanently delete** a request (**DELETE /api/admin/arheb-box/:id**), same idea as deleting a store order. Requests are submitted by users with Bearer token and stored in the database.
 - **English and Arabic** (language switcher in the UI).
 - **HTTP API:** all data operations use this backend’s **`/api/admin/*`** routes (see [Admin Dashboard HTTP usage](#admin-dashboard-http-usage)); the dashboard also uploads images to **Firebase Storage** in the browser, then persists returned URLs via **`PATCH`** endpoints.
-- **Driver earnings:** Each driver can have a **per-driver commission percent** (`commissionPercent` on the driver row). If unset, the effective rate comes from **App info** — **`driverDeliveryPercent`** on **GET/PATCH /api/admin/info** (same screen as email/phone/Cliq). If that is also unset, the legacy **global driver commission** setting (**GET/PATCH /api/admin/settings/driver-commission**) is used. The **Drivers** list links to a **driver profile** page (`/dashboard/drivers/profile/?id=`) with filters (status, date range), delivered-order profit totals, and full customer **driver ratings** (stars + notes). Drivers only see their **average rating** in the driver app, not individual reviews.
+- **Driver earnings:** Each driver can have a **per-driver commission percent** (`commissionPercent` on the driver row). If unset, the effective rate comes from **App info** — **`driverDeliveryPercent`** on **GET/PATCH /api/admin/info** (same screen as email/phone/Cliq). If that is also unset, the legacy **global driver commission** setting (**GET/PATCH /api/admin/settings/driver-commission**) is used. The **Drivers** list links to a **driver profile** page (`/dashboard/drivers/profile/?id=`) with filters (status, **payment type**, date range), delivered-order profit totals, **cash collection ceiling** (block cash orders at limit; admin reset after deposit), and full customer **driver ratings** (stars + notes). Drivers only see their **average rating** in the driver app, not individual reviews.
+- **Store analytics:** Admin/SuperAdmin can sort the store list by order count, order value, response speed, or prep/delivery times; open a store profile for full stats, avg time per status, and recent orders. **Stats** tab (`/dashboard/stats`) charts driver metrics and exports Excel.
+- **Orders dashboard:** List/export include items subtotal, restaurant **Res % / Value** (from frozen snapshot), driver JOD, net delivery, prep & delivery minutes; store names link to store profiles.
 
 To create the **initial SuperAdmin** on first run, set in the backend `.env`:
 
@@ -206,6 +208,8 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
 - [Categories](#categories)
   - [Get All Categories](#get-all-categories)
   - [Get Products by Category](#get-products-by-category)
+- [Food Types](#food-types)
+  - [Get Food Types](#get-food-types)
 - [Search](#search)
   - [Search Stores & Products](#search-stores--products)
 - [Home](#home)
@@ -257,6 +261,8 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
   - [Admin Products](#admin-products)
   - [Admin Pending Products (Approval Queue)](#admin-pending-products-approval-queue)
   - [Admin Orders](#admin-orders)
+  - [Admin Stats & analytics](#admin-stats--analytics)
+  - [Historical data & snapshots](#historical-data--snapshots)
   - [Admin Dashboard Sales](#admin-dashboard-sales)
   - [Admin Arheb Box](#admin-arheb-box)
   - [Admin Categories](#admin-categories)
@@ -757,7 +763,7 @@ Retrieves all stores that are **listed for customer browse** (not blocked, not h
 }
 ```
 
-Each store includes **`status`**, **`isExclusive`** / **`isPremium`** (same meaning — exclusive/premium tier), **`closingTime`** (string or `null`), **`openingTime`** (string or `null`), **`storeCategories`** (array of `{ id, nameEn, nameAr, name }`), and **`paymentMethods`** (`cod` = cash on delivery; use with `paymentType` **`cash`** or **`cod`** at checkout).
+Each store includes **`status`**, **`isExclusive`** / **`isPremium`** (same meaning — exclusive/premium tier), **`closingTime`** (string or `null`), **`openingTime`** (string or `null`), **`storeCategories`** (array of `{ id, nameEn, nameAr, name }`), **`foodTypes`** (array of resolved `{ id, nameEn, nameAr, name, image, displayOrder }` — what the store sells; see [Food Types](#food-types)), and **`paymentMethods`** (`cod` = cash on delivery; use with `paymentType` **`cash`** or **`cod`** at checkout).
 
 ---
 
@@ -1261,6 +1267,40 @@ if (data.success) {
 
 ---
 
+## Food Types
+
+Food types are a cross-cutting taxonomy describing **what a store sells** (e.g. Shawarma, Burger, Arabic Cuisine), each with its own image. Admins manage the list (see [Admin API](#admin-api)); each store selects one or more food types, which are returned on the store object as resolved `{ id, nameEn, nameAr, name, image, displayOrder }`.
+
+### Get Food Types
+
+Returns the full list of food types, sorted by `displayOrder` then `id`.
+
+**Endpoint:** `GET /api/food-types`
+
+**Authentication:** Not required
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "message": "Food types retrieved successfully",
+  "data": {
+    "foodTypes": [
+      { "id": "1", "name": "shawarma", "nameEn": "Shawarma", "nameAr": "شاورما", "image": "", "displayOrder": 1 },
+      { "id": "2", "name": "burger", "nameEn": "Burger", "nameAr": "برجر", "image": "", "displayOrder": 2 },
+      { "id": "3", "name": "arabic_cuisine", "nameEn": "Arabic Cuisine", "nameAr": "مطبخ عربي", "image": "", "displayOrder": 3 }
+    ]
+  },
+  "timestamp": "2026-06-11T00:00:00.000Z"
+}
+```
+
+**Notes:**
+- Seeded with **Shawarma**, **Burger**, **Arabic Cuisine** on first run; admins can add/edit/delete and upload an image per type.
+- Public store responses (`GET /api/stores`, `/api/stores/top-rated`, `/api/stores/premium`, `/api/stores/exclusive`, `/api/stores/category/:categoryName`, `/api/stores/:id/products`) include a **`foodTypes`** array of resolved food type objects for that store. Ids no longer in the list are dropped automatically.
+
+---
+
 ## Search
 
 ### Search Stores & Products
@@ -1697,6 +1737,7 @@ Creates a new order with items, customer information, and delivery details.
 - **`paymentType`** must be allowed for the order’s store: **`cash`** / **`cod`** (COD), **`card`**, or **`cliq`**, matching **`paymentMethods`** on the store (see [Get Store Payment Methods](#get-store-payment-methods)). If disabled, the API returns **400** with a clear message.
 - If `promoCode` is provided and valid, the discount will be automatically applied from the promo code value. **Store-specific** promo codes (see [Admin promo codes](#admin-promo-codes)) only apply when the order’s store (from `storeId` or inferred from cart items) matches that promo’s store; otherwise the request fails with **`promo code not available for this store`**. If the promo has **`minOrderAmount`**, the client must send **`cartAmount`** ≥ that threshold (or the request fails).
 - If `promoCode` is invalid, order creation will fail with **`invalid promoCode`**
+- On insert, the server snapshots the store’s current **`arhebFee`** as **`storeArhebFeePercent`** on the order row (for admin reporting; unchanged if store commission is edited later — see [Historical data & snapshots](#historical-data--snapshots)). Initial status timestamp is recorded for analytics.
 
 **Success Response (201):**
 ```json
@@ -3189,11 +3230,12 @@ Single reference for every **`/api/admin/*`** route (mirrors `src/admin/routes.j
 
 | Method | Endpoint | Access | Notes |
 |--------|----------|--------|-------|
-| GET | `/api/admin/stores` | Auth | List; SA = one store; filters `isOpen`, `paused`. |
+| GET | `/api/admin/stores` | Auth | List; SA = one store; filters `isOpen`, `paused`. **A/S:** optional `sortBy`, `sortDir`, `withStats`, `dateFrom`, `dateTo` — see [Admin Stores](#admin-stores). |
 | GET | `/api/admin/stores/pause-history` | Auth | Pause sessions; optional `storeIds`, dates. |
 | POST | `/api/admin/stores` | A/S | Create store. |
 | GET | `/api/admin/stores/:id` | Auth | SA must own store. |
-| PATCH | `/api/admin/stores/:id` | Auth | Update store (including **`storeCategories`** — each item may include **`image`** URL for category tabs); SA blocked if store **blocked**. |
+| GET | `/api/admin/stores/:id/stats` | Auth | Store profile stats (orders, avg times per status, recent orders). |
+| PATCH | `/api/admin/stores/:id` | Auth | Update store (including **`preparingTimeMinutes`**, **`storeCategories`**, **`foodTypes`**, …); SA blocked if store **blocked**. |
 | DELETE | `/api/admin/stores/:id` | A/S | Delete store + products JSON. |
 | POST | `/api/admin/stores/:id/clone` | Auth | Clone store (SA own store). |
 | POST | `/api/admin/stores/bulk-checkout-policy` | A/S | Bulk checkout flags / fees. |
@@ -3225,8 +3267,8 @@ Single reference for every **`/api/admin/*`** route (mirrors `src/admin/routes.j
 | Method | Endpoint | Access | Notes |
 |--------|----------|--------|-------|
 | GET | `/api/admin/orders/counts` | Auth | Aggregates; optional `storeIds`. |
-| GET | `/api/admin/orders` | Auth | List + filters (`orderId`, dates, status, `orderType`, …). |
-| GET | `/api/admin/orders/export` | Auth | Excel export (same filters). |
+| GET | `/api/admin/orders` | Auth | List + filters (`orderId`, dates, status, `orderType`, `paymentType`, …). Enriched with metrics — see [Admin Orders](#admin-orders). |
+| GET | `/api/admin/orders/export` | Auth | Excel export (same filters). Columns include items JOD, Res %, Res Value, driver JOD, net del, prep/delivery minutes. |
 | GET | `/api/admin/orders/:orderId` | Auth | Detail; box: `?type=arheb_box`. |
 | PATCH | `/api/admin/orders/:orderId/status` | Auth | SA = step-forward / reject rules. |
 | POST | `/api/admin/orders/:orderId/reject` | Auth | Cancel when allowed. |
@@ -3249,6 +3291,8 @@ Single reference for every **`/api/admin/*`** route (mirrors `src/admin/routes.j
 | POST | `/api/admin/notifications/fcm-test` | Sup | Single-device test push. |
 | GET | `/api/admin/notifications` | A/S | Broadcast history list. |
 | GET | `/api/admin/dashboard/sales` | Auth | Sales aggregates (scoped for SA). |
+| GET | `/api/admin/stats/overview` | A/S | Store + driver analytics for dashboard **Stats** tab. |
+| GET | `/api/admin/stats/export` | A/S | Excel export of stats overview (Stores + Drivers sheets). |
 
 #### Arheb Box (admin)
 
@@ -3266,12 +3310,12 @@ Single reference for every **`/api/admin/*`** route (mirrors `src/admin/routes.j
 
 | Method | Endpoint | Access | Notes |
 |--------|----------|--------|-------|
-| GET | `/api/admin/drivers` | A/S | List drivers. |
-| GET | `/api/admin/drivers/export` | A/S | Excel export. |
-| GET | `/api/admin/drivers/:id/profile` | A/S | Profile + deliveries + ratings. |
+| GET | `/api/admin/drivers` | A/S | List drivers (includes **`cashCeilingJod`**, **`cashCollectedJod`**, **`cashRemainingJod`**). Excludes **`deleted`** rows. |
+| GET | `/api/admin/drivers/export` | A/S | Excel export (Drivers + Assignments sheets; optional date/payment/store/driver filters on Assignments). |
+| GET | `/api/admin/drivers/:id/profile` | A/S | Profile + deliveries + ratings; optional **`paymentType`** filter on orders. |
 | POST | `/api/admin/drivers` | A/S | Create driver. |
-| PATCH | `/api/admin/drivers/:id` | A/S | Update driver / block / commission. |
-| DELETE | `/api/admin/drivers/:id` | A/S | Remove driver. |
+| PATCH | `/api/admin/drivers/:id` | A/S | Update driver / block / commission / **`cashCeilingJod`** / **`resetCashCollected`**. |
+| DELETE | `/api/admin/drivers/:id` | A/S | **Archive** driver (`deleted=1`, `isBlocked=1`); historical orders and stats retained. |
 | GET | `/api/admin/drivers/active-map` | A/S | Socket presence + locations. |
 
 #### Settings & fees
@@ -3293,6 +3337,10 @@ Single reference for every **`/api/admin/*`** route (mirrors `src/admin/routes.j
 | POST | `/api/admin/categories` | A/S | Create. |
 | PATCH | `/api/admin/categories/:id` | A/S | Update. |
 | DELETE | `/api/admin/categories/:id` | A/S | Delete. |
+| GET | `/api/admin/food-types` | A/S | List food types. |
+| POST | `/api/admin/food-types` | A/S | Create food type (`nameEn`, `nameAr`, `image`, `displayOrder`). |
+| PATCH | `/api/admin/food-types/:id` | A/S | Update food type. |
+| DELETE | `/api/admin/food-types/:id` | A/S | Delete (also removed from any store's `foodTypes`). |
 | GET | `/api/admin/popup` | A/S | In-app popup JSON. |
 | PATCH | `/api/admin/popup` | A/S | Update popup fields. |
 | DELETE | `/api/admin/popup` | A/S | Reset popup (disabled, no image/CTA/destination). |
@@ -3491,10 +3539,11 @@ Store state is derived from **admin flags + Jordan opening hours**:
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/admin/stores` | List stores (Store Admin sees only their store). Admin/SuperAdmin query params: `isOpen=true` (only effectively open stores), `isOpen=false` (only effectively closed stores), `paused=true` (only paused stores). |
+| GET | `/api/admin/stores` | List stores (Store Admin sees only their store). Admin/SuperAdmin query params: `isOpen=true` (only effectively open stores), `isOpen=false` (only effectively closed stores), `paused=true` (only paused stores). **Analytics (A/S only):** `withStats=1` (or any `sortBy`) attaches per-store **`stats`**: `{ orderCount, ordersGrandTotalJod, avgPreparationTimeMinutes, avgDeliveryTimeMinutes, avgResponseTimeMinutes }`. Optional **`dateFrom`** / **`dateTo`** (`YYYY-MM-DD`) limit stats to that created-at range. **`sortBy`**: `orderCount` \| `orderValue` \| `avgResponse` \| `avgPrep` \| `avgDelivery` (aliases accepted). **`sortDir`**: `asc` \| `desc` (default `desc`). |
 | POST | `/api/admin/stores` | Create store (Admin and SuperAdmin only). Body: name, nameEn, nameAr, cover, logo, phone, address, addressEn, deliveryFee, minimumOrder, optional **`paymentMethods`**: `{ cod, card, cliq }` booleans (at least one must be `true`). |
 | GET | `/api/admin/stores/:id` | Get one store |
-| PATCH | `/api/admin/stores/:id` | Update store (…, optional **`paymentMethods`**: partial `{ cod, card, cliq }` merges with existing; send **`paymentMethods`: `null`** to clear and fall back to defaults all `true`). At least one method must remain enabled. Same other fields as before: checkout overrides, **`paused`**, **`blocked`**, **`hiddenFromCustomers`**, **`isExclusive`** / **`isPremium`**, etc. |
+| GET | `/api/admin/stores/:id/stats` | **Store profile statistics** (Admin/SuperAdmin, or Store Admin for own store). Query: optional **`dateFrom`**, **`dateTo`**. Response `data`: `{ store, stats, customPreparingTimeMinutes, systemAvgPreparationTimeMinutes }`. **`stats.summary`**: order counts, revenue sums, avg response/prep/delivery minutes. **`stats.statusAvgMinutes`**: avg minutes in **Waiting confirmation** → **Preparing** → **On the way**. **`stats.recentOrders`**: last 50 orders (id, status, amounts, payment, driver). |
+| PATCH | `/api/admin/stores/:id` | Update store (…, optional **`paymentMethods`**: partial `{ cod, card, cliq }` merges with existing; send **`paymentMethods`: `null`** to clear and fall back to defaults all `true`). At least one method must remain enabled. Same other fields as before: checkout overrides, **`preparingTimeMinutes`** (admin target prep time in minutes; `null` clears), **`paused`**, **`blocked`**, **`hiddenFromCustomers`**, **`isExclusive`** / **`isPremium`**, **`foodTypes`**, etc. |
 | DELETE | `/api/admin/stores/:id` | Delete store (Admin and SuperAdmin only). Removes store and its products. |
 
 ---
@@ -3560,13 +3609,57 @@ When Store Admin creates a product, it enters the `pending_products` table. Supe
 
 Order list and order detail responses include **`driverId`** and **`driverName`** when a driver has been assigned (set when driver accepts the order; status becomes "On the way").
 
+**Enriched metrics (list, detail, export):** Each store order includes computed fields (see [Historical data & snapshots](#historical-data--snapshots)):
+
+| Field | Description |
+|--------|-------------|
+| `itemsSubtotalJod` / `restaurantSalesBeforeFeeJod` | Items subtotal (DB `totalAmount` for store orders). |
+| `restaurantResPercent` | Arheb commission **%** — from **`storeArhebFeePercent`** snapshot on the order when present, else live store `arhebFee` (legacy rows only). |
+| `restaurantResValueJod` | Items × Res % (JOD). |
+| `grandTotalJod` | Items + delivery + service + fees tax. |
+| `driverEarningsJod` | Driver share snapshot on the order. |
+| `deliveryNetAfterDriverJod` | Delivery fee minus driver earnings. |
+| `preparationTimeMinutes` | Minutes from **`preparingAt`** → **`onTheWayAt`** (when timestamps exist). |
+| `deliveryTimeMinutes` | Minutes from **`onTheWayAt`** → **`deliveredAt`**. |
+| `responseTimeMinutes` | Minutes from **`createdAt`** → first preparing/waiting timestamp. |
+
+**Order status timestamps** (SQLite columns on `orders`, set on first transition): `waitingConfirmationAt`, `preparingAt`, `onTheWayAt`, `deliveredAt`. Recorded when status is patched (admin/store) or at checkout create for the initial status.
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/admin/orders/counts` | Returns `{ active, complete }`: active = orders not Delivered/Cancelled; complete = Delivered or Cancelled. Store Admin: only their store. |
-| GET | `/api/admin/orders` | List orders (Store Admin: only their store). Each order includes driverId, driverName when assigned. Query: `dateFrom`, `dateTo`, **`orderId`** (exact numeric id — **skips date range** when set), `status`, `orderType` (`store` \| `arheb_box`), `statusFilter` (`active` \| `complete`), `storeId`, `storeIds`, `storeName`, `name` (customer name/phone), `paymentType`, `driverId`, `unassigned`. Sorted by `createdAt DESC, id DESC`. |
-| GET | `/api/admin/orders/:orderId` | Get one order with full details (items, address, notes, paymentType, storeName, driverId, driverName, etc.). Store Admin: only their store. |
-| PATCH | `/api/admin/orders/:orderId/status` | Update order status. Body: `{ "status": "Preparing" }` (exact status strings as in app). **Store Admin:** only **one step forward** in the flow, or **Cancelled** only while still awaiting payment/confirmation (see Order status section). |
+| GET | `/api/admin/orders` | List orders (Store Admin: only their store). Each order includes driverId, driverName when assigned, and enriched metrics above. Query: `dateFrom`, `dateTo`, **`orderId`** (exact numeric id — **skips date range** when set), `status`, `orderType` (`store` \| `arheb_box`), `statusFilter` (`active` \| `complete`), `storeId`, `storeIds`, `storeName`, `name` (customer name/phone), **`paymentType`**, `driverId`, `unassigned`. Sorted by `createdAt DESC, id DESC`. |
+| GET | `/api/admin/orders/export` | Excel (`.xlsx`) with same query filters. Columns include: `itemsJod`, `restaurantSalesBeforeFeeJod`, `restaurantResPercent`, `restaurantResValueJod`, `grandTotalJod`, `driverJod`, `netDel`, `prepTimeMinutes`, `deliveryTimeMinutes`, plus standard order fields. |
+| GET | `/api/admin/orders/:orderId` | Get one order with full details (items, address, notes, paymentType, storeName, driverId, driverName, enriched metrics, etc.). Store Admin: only their store. |
+| PATCH | `/api/admin/orders/:orderId/status` | Update order status. Body: `{ "status": "Preparing" }` (exact status strings as in app). Records status timestamps. On **Delivered** + **cash** payment, adds order grand total to driver **`cashCollectedJod`**. **Store Admin:** only **one step forward** in the flow, or **Cancelled** only while still awaiting payment/confirmation (see Order status section). |
 | DELETE | `/api/admin/orders/:orderId` | Delete order (Admin and SuperAdmin only). Removes order and its items. |
+
+**Cash ceiling:** When assigning or reassigning a driver to a **cash** order, the server checks the driver’s **`cashCeilingJod`**. If **`cashCollectedJod` + order total** would exceed the ceiling, assignment returns **400** with a clear message; card/Cliq orders are unaffected.
+
+---
+
+### Admin Stats & analytics
+
+**Access:** Admin and SuperAdmin only. Powers the dashboard **Stats** tab (`/dashboard/stats`).
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/admin/stats/overview` | Aggregated store and driver metrics. Query: optional **`dateFrom`**, **`dateTo`** (`YYYY-MM-DD`, filter orders by `date(createdAt)`). Response: `{ dateFrom, dateTo, stores[], drivers[] }`. Each **store** row: id, name, `orderCount`, `ordersGrandTotalJod`, avg response/prep/delivery minutes, `preparingTimeMinutes` (admin setting). Each **driver** row: id, name, mobile, rating, `orderCount`, `deliveredCount`, `avgDeliveryTimeMinutes`, `avgOrdersPerDay`, `archived` (was soft-deleted), `isBlocked`. **Archived drivers remain in stats** for historical reporting. |
+| GET | `/api/admin/stats/export` | Excel (`.xlsx`) with **Stores** and **Drivers** sheets (same date filters as overview). |
+
+---
+
+### Historical data & snapshots
+
+Reporting and exports use **frozen values on the order row** where possible so later config changes do not rewrite history:
+
+| Snapshot | When set | Used for |
+|----------|----------|----------|
+| **`storeArhebFeePercent`** | **POST /api/checkout** (and payment-initiate flows that create orders) | Restaurant **Res %** and **Res Value** in admin list/export; legacy orders without snapshot fall back to current store `arhebFee` only for display. |
+| **`driverCommissionType`**, **`driverCommissionValue`**, **`driverEarnings`** | Driver **accept** / admin **assign** | Driver JOD and net delivery on past orders. |
+| **Status timestamps** (`preparingAt`, `onTheWayAt`, `deliveredAt`, …) | First transition into each phase | Prep/delivery/response minutes; store avg times. |
+
+**Drivers:** **DELETE /api/admin/drivers/:id** sets **`deleted=1`** and **`isBlocked=1`** (soft archive). The driver row stays in the database; assigned orders keep **`driverId`** / **`driverName`**. List endpoint hides archived drivers; **stats overview** still includes them with **`archived: true`**.
 
 ---
 
@@ -3629,6 +3722,10 @@ Order list and order detail responses include **`driverId`** and **`driverName`*
 | POST | `/api/admin/categories` | Create category (name, nameAr, nameEn, image, isComingSoon, order, subCategories) |
 | PATCH | `/api/admin/categories/:id` | Update category |
 | DELETE | `/api/admin/categories/:id` | Delete category |
+| GET | `/api/admin/food-types` | List all food types |
+| POST | `/api/admin/food-types` | Create food type (nameEn, nameAr, image, displayOrder) |
+| PATCH | `/api/admin/food-types/:id` | Update food type |
+| DELETE | `/api/admin/food-types/:id` | Delete food type (and remove from stores) |
 
 ---
 
@@ -3638,11 +3735,11 @@ Order list and order detail responses include **`driverId`** and **`driverName`*
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/admin/drivers` | List all drivers (`id`, `name`, `mobile`, `email`, `vehicleType`, `vehicleNumber`, `licenseNumber`, `photo`, `latitude`, `longitude`, **`rating`**, **`ratingCount`**, **`commissionPercent`** (effective % after defaults), `isVerified`, `isBlocked`, `createdAt`). |
-| GET | `/api/admin/drivers/export` | Download Excel (`.xlsx`) of all drivers including **`commissionPercent`**, ratings, **`createdAtJordan`**, etc. (Admin/SuperAdmin). |
-| POST | `/api/admin/drivers` | Add driver. Body: `name`, `mobile` (required); `email`, `vehicleType`, `vehicleNumber`, `licenseNumber`, **`commissionPercent`** (optional, per-driver override) — No OTP. |
-| PATCH | `/api/admin/drivers/:id` | Update driver and/or block. Body: any of `name`, `mobile`, `email`, `vehicleType`, `vehicleNumber`, `licenseNumber`, **`commissionPercent`**, `isBlocked` (boolean). |
-| DELETE | `/api/admin/drivers/:id` | Remove driver (unassigns from orders then deletes). |
+| GET | `/api/admin/drivers` | List active drivers (`deleted=0`). Includes **`cashCeilingJod`**, **`cashCollectedJod`**, **`cashRemainingJod`**, commission fields, ratings, etc. |
+| GET | `/api/admin/drivers/export` | Download Excel (`.xlsx`): **Drivers** sheet (all drivers) + **Assignments** sheet (filtered order rows). Query on Assignments: **`dateFrom`**, **`dateTo`**, **`paymentType`**, **`storeId`**, **`driverId`**. |
+| POST | `/api/admin/drivers` | Add driver. Body: `name`, `mobile` (required); `email`, `vehicleType`, `vehicleNumber`, `licenseNumber`, **`commissionPercent`** / commission rule fields (optional) — No OTP. |
+| PATCH | `/api/admin/drivers/:id` | Update driver and/or block. Body: any of `name`, `mobile`, `email`, `vehicleType`, `vehicleNumber`, `licenseNumber`, commission fields, **`cashCeilingJod`** (number or `null` to clear), **`resetCashCollected`** (`true` — sets **`cashCollectedJod`** to 0 after driver deposits cash with the company), `isBlocked` (boolean). |
+| DELETE | `/api/admin/drivers/:id` | **Archive** driver (soft delete: `deleted=1`, `isBlocked=1`). Historical orders and stats are **retained**; driver no longer appears in active list or assignment pools. **Admin/SuperAdmin only.** |
 
 ---
 
@@ -3721,13 +3818,14 @@ These fields are **returned** on **`GET /api/home`** inside each item in **`data
 | Param | Description |
 |--------|-------------|
 | `status` | Filter orders by exact DB status (e.g. `Delivered`, `On the way`). Omit or use `all` for no status filter. |
+| `paymentType` | Filter orders by payment method (`cash`, `card`, `cliq` — case-insensitive). |
 | `dateFrom` | `YYYY-MM-DD` — filter orders by `date(createdAt) >= dateFrom` |
 | `dateTo` | `YYYY-MM-DD` — filter orders by `date(createdAt) <= dateTo` |
 | `page`, `perPage` | Pagination for the **orders** list (default `perPage` 25) |
 
 **Response `data` highlights:**
 
-- **`driver`**: profile fields plus **`rating`** and **`ratingCount`** (customer driver ratings).
+- **`driver`**: profile fields plus **`rating`**, **`ratingCount`**, **`cashCeilingJod`**, **`cashCollectedJod`**, **`cashRemainingJod`**, commission fields.
 - **`globalCommission`**: legacy global fallback settings (same as GET `/api/admin/settings/driver-commission`); effective per-order rates use per-driver and App info as described above.
 - **`stats`**: delivered / active / cancelled counts (all time, not filtered).
 - **`filters`**: echo of filter + pagination metadata (`totalOrders`, etc.).
@@ -4472,7 +4570,15 @@ For issues or questions, please contact: `contact@arheb.app`
 
 ## API Changelog
 
-**Last updated: 2026-04-23**
+**Last updated: 2026-06-11**
+
+### 2026-06 — Dashboard analytics, order snapshots, driver cash ceiling
+
+- **Store analytics:** **`GET /api/admin/stores`** supports **`sortBy`**, **`withStats`**, date range; **`GET /api/admin/stores/:id/stats`** for profile stats and avg time per status; **`preparingTimeMinutes`** on **`PATCH /api/admin/stores/:id`** (admin target; system computes avg from **`preparingAt`** → **`onTheWayAt`**).
+- **Orders:** List/detail/export enriched with items JOD, **Res % / Value**, driver JOD, net delivery, prep & delivery minutes. **`storeArhebFeePercent`** snapshot at checkout; status timestamp columns on orders.
+- **Drivers:** **`cashCeilingJod`** / **`cashCollectedJod`** — block cash assignments at ceiling; **`resetCashCollected`** on PATCH after deposit. **`DELETE /api/admin/drivers/:id`** archives driver (keeps history). Profile supports **`paymentType`** filter.
+- **Stats tab:** **`GET /api/admin/stats/overview`**, **`GET /api/admin/stats/export`** — store + driver metrics for dashboard charts and Excel.
+- **Dashboard:** Stats page, store sort/classification, clickable store names on orders, store profile stats panel, driver cash ceiling UI.
 
 ### 2026-04 — Store browse, exclusive route, delivery fees, driver %, Jordan time
 
@@ -4493,6 +4599,9 @@ For issues or questions, please contact: `contact@arheb.app`
 | GET | `/api/admin/settings/checkout-fees` | Admin / SuperAdmin | Platform checkout tiers, flat delivery, cart-threshold delivery fields, default service fee. |
 | PATCH | `/api/admin/settings/checkout-fees` | **SuperAdmin** | Update platform checkout fees (see [Admin platform checkout fees](#admin-platform-checkout-fees)). |
 | GET | `/api/stores/exclusive` | None | Same as `/api/stores/premium` — exclusive/premium stores; optional `limit`. |
+| GET | `/api/admin/stats/overview` | Admin / SuperAdmin | Store + driver analytics; optional `dateFrom`, `dateTo`. |
+| GET | `/api/admin/stats/export` | Admin / SuperAdmin | Excel export of stats overview. |
+| GET | `/api/admin/stores/:id/stats` | Admin / Store Admin (own store) | Store profile statistics and avg minutes per status. |
 | GET | `/api/admin/drivers/active-map` | Admin / SuperAdmin | Returns drivers on **`/driver-presence`** (non-stale): `{ city, center, activeDriversCount, driversWithLocationCount, drivers[] }`. Each driver includes `hasLocation`, `latitude`, `longitude` (null until the app emits `location`), `lastSeen`, **`currentStoreOrderId`** (latest), **`currentStoreOrderIds`** (up to 25 active store orders), **`currentArhebBoxRequestId`**. |
 | GET | `/api/admin/drivers/export` | Admin / SuperAdmin | Excel export of drivers (includes **`commissionPercent`**, **`createdAtJordan`**, etc.). |
 | GET | `/api/admin/arheb-box/:id` | Admin | Single Arheb Box request (`data.request`), enriched like list. |
