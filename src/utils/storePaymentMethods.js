@@ -1,7 +1,11 @@
 /**
  * Per-store checkout payment options (stored on each store JSON row as `paymentMethods`).
  * Default when missing: all methods enabled (cod, card, cliq).
+ *
+ * Special / remote delivery pins (Wadi Rum, etc.) restrict checkout to Card + Cliq only (no COD).
  */
+
+const { dropoffRequiresCardOrCliqOnly } = require('./deliveryFees');
 
 function coercePaymentFlag(v, defaultTrue = true) {
   if (v === undefined || v === null) return defaultTrue;
@@ -20,6 +24,31 @@ function getStorePaymentMethods(store) {
     card: coercePaymentFlag(pm.card, true),
     cliq: coercePaymentFlag(pm.cliq, true),
   };
+}
+
+/**
+ * Effective methods for a dropoff coordinate (store flags + location rules).
+ * @param {object | null | undefined} store
+ * @param {unknown} lat
+ * @param {unknown} lng
+ */
+function getEffectivePaymentMethodsForDropoff(store, lat, lng) {
+  const base = getStorePaymentMethods(store);
+  const la = typeof lat === 'number' ? lat : Number(lat);
+  const ln = typeof lng === 'number' ? lng : Number(lng);
+  if (!Number.isFinite(la) || !Number.isFinite(ln) || !dropoffRequiresCardOrCliqOnly(la, ln)) {
+    return base;
+  }
+  return {
+    cod: false,
+    card: true,
+    cliq: true,
+  };
+}
+
+function isEffectivePaymentMethodEnabled(store, paymentTypeLower, lat, lng, methodKey) {
+  const effective = getEffectivePaymentMethodsForDropoff(store, lat, lng);
+  return effective[methodKey] === true;
 }
 
 /**
@@ -54,17 +83,29 @@ function paymentTypeToMethodKey(paymentTypeLower) {
 /**
  * @param {object | null | undefined} store - raw store from JSON
  * @param {string} paymentTypeLower - lowercased paymentType from checkout
+ * @param {unknown} [lat] - delivery latitude (optional; enables location rules)
+ * @param {unknown} [lng] - delivery longitude
  */
-function isPaymentTypeAllowedForStore(store, paymentTypeLower) {
+function isPaymentTypeAllowedForStore(store, paymentTypeLower, lat, lng) {
   const key = paymentTypeToMethodKey(paymentTypeLower);
   if (!key) return true;
+  const la = typeof lat === 'number' ? lat : Number(lat);
+  const ln = typeof lng === 'number' ? lng : Number(lng);
+  if (Number.isFinite(la) && Number.isFinite(ln)) {
+    return isEffectivePaymentMethodEnabled(store, paymentTypeLower, la, ln, key);
+  }
   const pm = getStorePaymentMethods(store);
   return pm[key] === true;
 }
 
 /** @param {string} paymentTypeLower */
-function paymentMethodRejectedUserMessage(paymentTypeLower) {
+function paymentMethodRejectedUserMessage(paymentTypeLower, lat, lng) {
   const key = paymentTypeToMethodKey(paymentTypeLower);
+  const la = typeof lat === 'number' ? lat : Number(lat);
+  const ln = typeof lng === 'number' ? lng : Number(lng);
+  if (key === 'cod' && Number.isFinite(la) && Number.isFinite(ln) && dropoffRequiresCardOrCliqOnly(la, ln)) {
+    return 'Cash on delivery is not available for this delivery area. Please use Card or Cliq.';
+  }
   const labels = { cod: 'Cash on delivery', card: 'Card payment', cliq: 'Cliq' };
   const label = key ? labels[key] || 'This payment method' : 'This payment method';
   return `${label} is not available for this store`;
@@ -72,6 +113,7 @@ function paymentMethodRejectedUserMessage(paymentTypeLower) {
 
 module.exports = {
   getStorePaymentMethods,
+  getEffectivePaymentMethodsForDropoff,
   mergeStorePaymentMethodsPatch,
   validatePaymentMethodsEnabled,
   isPaymentTypeAllowedForStore,

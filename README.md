@@ -167,6 +167,8 @@ To avoid losing categories, stores, and products on every redeploy, use a **pers
 
 If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (current behaviour); data there is replaced on each deploy.
 
+**JSON files used by the API** (under `ARHEB_JSON_DIR` or `Arheb API JSON/`): `stores_listing_response.json`, `products_listing_response.json`, `categories_response.json`, **`food_types_response.json`**, `home_response.json`, `popup.json`, etc.
+
 ---
 
 ## Push notifications (FCM) and driver presence
@@ -210,6 +212,8 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
   - [Get Products by Category](#get-products-by-category)
 - [Food Types](#food-types)
   - [Get Food Types](#get-food-types)
+  - [Food types on store objects](#food-types-on-store-objects)
+  - [Admin Food Types](#admin-food-types)
 - [Search](#search)
   - [Search Stores & Products](#search-stores--products)
 - [Home](#home)
@@ -219,8 +223,15 @@ If `ARHEB_JSON_DIR` is not set, the app uses the repo folder `Arheb API JSON` (c
   - [Add Address](#add-address)
   - [Update Address](#update-address)
   - [Delete Address](#delete-address)
+- [Wallet](#wallet)
+  - [Get Wallet Balance & Transactions](#get-wallet-balance--transactions)
+  - [Top up wallet (card — Madfoat)](#top-up-wallet-card--madfoat)
+  - [Top up wallet (Cliq)](#top-up-wallet-cliq)
+  - [Checkout split payment (wallet + Card/Cliq)](#checkout-split-payment-wallet--cardcliq)
+  - [Admin wallet & top-ups](#admin-wallet--top-ups)
 - [Checkout & Orders](#checkout--orders)
   - [Quote Checkout Fees](#quote-checkout-fees)
+  - [Special delivery zones (payment)](#special-delivery-zones-payment)
   - [Create Order](#create-order)
   - [Get All Orders](#get-all-orders)
   - [Get Order by ID](#get-order-by-id)
@@ -536,6 +547,8 @@ Deletes a user account from both Firebase Auth and the local database.
 }
 ```
 
+**Re-registration:** After self-delete or admin delete, the same phone number can register again. The backend soft-deletes the profile and clears auth flags so **`POST /api/auth/.../send-code`** and verify flows no longer return **“user already exist”** for that number.
+
 **Example:**
 ```javascript
 const response = await fetch('https://arheb-backend.onrender.com/api/auth/user', {
@@ -717,7 +730,7 @@ Retrieves all products that currently have a discount applied. This is useful fo
 
 Stores can be **paused**, **blocked**, or **hidden from browse** (`hiddenFromCustomers`, Admin/SuperAdmin): **blocked** stores never appear in public APIs; **hidden** stores are omitted from customer browse lists but are not the same as paused. **Paused** stores can still appear in `GET /api/stores` with `status: "paused"` (sorted after open stores). **Exclusive** / **premium** flags (`isExclusive` / `isPremium` — set together by admin) mark featured stores; use **`GET /api/stores/exclusive`** (or legacy **`/api/stores/premium`**) for that curated list.
 
-Public listings use **`GET /api/stores`**, **`/api/stores/top-rated`**, **`/api/stores/premium`**, **`/api/stores/exclusive`**, **`/api/stores/category/:name`**, and **store products** — all exclude **blocked** and **hidden** stores. Each store includes **`paymentMethods`**: `{ "cod": true, "card": true, "cliq": true }` (cash on delivery, card, Cliq). If the field is omitted in storage, all three default to **`true`**. **`POST /api/checkout`** and **`POST /api/payment/initiate`** reject a **`paymentType`** the store has disabled. Admin APIs return full store records; **`PATCH /api/admin/stores/:id`** accepts **`paymentMethods`** (partial updates merge) and supports `paused`, `blocked`, `hiddenFromCustomers`, and **`isExclusive`** (SuperAdmin/Admin only).
+Public listings use **`GET /api/stores`**, **`/api/stores/top-rated`**, **`/api/stores/premium`**, **`/api/stores/exclusive`**, **`/api/stores/category/:name`**, and **store products** — all exclude **blocked** and **hidden** stores. Each store includes **`paymentMethods`**: `{ "cod": true, "card": true, "cliq": true }` (cash on delivery, card, Cliq). If the field is omitted in storage, all three default to **`true`**. **`POST /api/checkout`** and **`POST /api/payment/initiate`** reject a **`paymentType`** the store has disabled. **Special / remote delivery zones** (Wadi Rum, etc.) further restrict checkout to **Card + Cliq only** — see [Special delivery zones (payment)](#special-delivery-zones-payment). Admin APIs return full store records; **`PATCH /api/admin/stores/:id`** accepts **`paymentMethods`** (partial updates merge) and supports `paused`, `blocked`, `hiddenFromCustomers`, and **`isExclusive`** (SuperAdmin/Admin only).
 
 ### Get All Stores
 
@@ -752,6 +765,10 @@ Retrieves all stores that are **listed for customer browse** (not blocked, not h
         "storeCategories": [
           { "id": "1", "nameEn": "Meals", "nameAr": "وجبات", "name": "Meals" }
         ],
+        "foodTypes": [
+          { "id": "1", "name": "shawarma", "nameEn": "Shawarma", "nameAr": "شاورما", "image": "", "displayOrder": 1 },
+          { "id": "2", "name": "burger", "nameEn": "Burger", "nameAr": "برجر", "image": "", "displayOrder": 2 }
+        ],
         "paymentMethods": {
           "cod": true,
           "card": true,
@@ -771,11 +788,46 @@ Each store includes **`status`**, **`isExclusive`** / **`isPremium`** (same mean
 
 Returns which payment options are enabled for a single store (same flags as **`paymentMethods`** on **`GET /api/stores`**). **Blocked** or **hidden** stores return **404**.
 
+When the customer’s **delivery coordinates** are known, pass them as query params so the response reflects [special delivery zone](#special-delivery-zones-payment) rules (COD disabled in far/remote zones).
+
 **Endpoint:** `GET /api/stores/:id/payment-methods`
+
+**Query parameters (optional):**
+
+| Param | Alias | Type | Description |
+|--------|--------|------|-------------|
+| `latitude` | `lat` | number | Customer drop-off latitude |
+| `longitude` | `lng`, `long` | number | Customer drop-off longitude |
+
+If both coordinates are valid numbers, **`paymentMethods.cod`** may be **`false`** even when the store normally allows COD. When COD is disabled for the location, the response may include **`paymentMethodsNote`**.
 
 **Authentication:** Not required
 
-**Success Response (200):**
+**Example — location-aware:**
+
+```
+GET /api/stores/1/payment-methods?latitude=29.5743&longitude=35.421
+```
+
+**Success Response (200) — special zone (COD off):**
+```json
+{
+  "success": true,
+  "message": "Store payment methods",
+  "data": {
+    "storeId": "1",
+    "paymentMethods": {
+      "cod": false,
+      "card": true,
+      "cliq": true
+    },
+    "paymentMethodsNote": "Cash on delivery is not available for this delivery area. Use Card or Cliq."
+  },
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+**Success Response (200) — normal area:**
 ```json
 {
   "success": true,
@@ -1269,7 +1321,9 @@ if (data.success) {
 
 ## Food Types
 
-Food types are a cross-cutting taxonomy describing **what a store sells** (e.g. Shawarma, Burger, Arabic Cuisine), each with its own image. Admins manage the list (see [Admin API](#admin-api)); each store selects one or more food types, which are returned on the store object as resolved `{ id, nameEn, nameAr, name, image, displayOrder }`.
+Food types are a cross-cutting taxonomy describing **what a store sells** (e.g. Shawarma, Burger, Arabic Cuisine), each with its own image. Admins manage the master list (see [Admin Food Types](#admin-food-types)); each store selects one or more food type ids, which are returned on the store object as resolved `{ id, name, nameEn, nameAr, image, displayOrder }`.
+
+**Persistence:** The master list is stored in **`Arheb API JSON/food_types_response.json`** (or the directory set by **`ARHEB_JSON_DIR`**). On first run the server seeds **Shawarma**, **Burger**, and **Arabic Cuisine** if the file is missing.
 
 ### Get Food Types
 
@@ -1279,25 +1333,124 @@ Returns the full list of food types, sorted by `displayOrder` then `id`.
 
 **Authentication:** Not required
 
-**Success Response (200):**
+**Success Response (200):** Matches the seeded file shape (`Arheb API JSON/food_types_response.json`):
+
 ```json
 {
   "success": true,
   "message": "Food types retrieved successfully",
   "data": {
     "foodTypes": [
-      { "id": "1", "name": "shawarma", "nameEn": "Shawarma", "nameAr": "شاورما", "image": "", "displayOrder": 1 },
-      { "id": "2", "name": "burger", "nameEn": "Burger", "nameAr": "برجر", "image": "", "displayOrder": 2 },
-      { "id": "3", "name": "arabic_cuisine", "nameEn": "Arabic Cuisine", "nameAr": "مطبخ عربي", "image": "", "displayOrder": 3 }
+      {
+        "id": "1",
+        "name": "shawarma",
+        "nameEn": "Shawarma",
+        "nameAr": "شاورما",
+        "image": "",
+        "displayOrder": 1
+      },
+      {
+        "id": "2",
+        "name": "burger",
+        "nameEn": "Burger",
+        "nameAr": "برجر",
+        "image": "",
+        "displayOrder": 2
+      },
+      {
+        "id": "3",
+        "name": "arabic_cuisine",
+        "nameEn": "Arabic Cuisine",
+        "nameAr": "مطبخ عربي",
+        "image": "",
+        "displayOrder": 3
+      }
     ]
   },
   "timestamp": "2026-06-11T00:00:00.000Z"
 }
 ```
 
+**Field reference (each item in `data.foodTypes`):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Stable id (used when assigning types to a store). |
+| `name` | string | Slug / legacy key (e.g. `shawarma`, `arabic_cuisine`). |
+| `nameEn` | string | English display name. |
+| `nameAr` | string | Arabic display name. |
+| `image` | string | Image URL (empty string if none). |
+| `displayOrder` | number | Sort order in lists (lower first). |
+
+**Example:**
+```javascript
+const response = await fetch('https://arheb-backend.onrender.com/api/food-types');
+const data = await response.json();
+console.log(data.data.foodTypes); // [{ id: "1", nameEn: "Shawarma", ... }, ...]
+```
+
+---
+
+### Food types on store objects
+
+When a store has selected food types (admin sets **`foodTypes`** on create/patch — array of ids such as `["1","2"]`), public store APIs resolve them to full objects:
+
+```json
+"foodTypes": [
+  { "id": "1", "name": "shawarma", "nameEn": "Shawarma", "nameAr": "شاورما", "image": "https://...", "displayOrder": 1 },
+  { "id": "2", "name": "burger", "nameEn": "Burger", "nameAr": "برجر", "image": "", "displayOrder": 2 }
+]
+```
+
 **Notes:**
-- Seeded with **Shawarma**, **Burger**, **Arabic Cuisine** on first run; admins can add/edit/delete and upload an image per type.
-- Public store responses (`GET /api/stores`, `/api/stores/top-rated`, `/api/stores/premium`, `/api/stores/exclusive`, `/api/stores/category/:categoryName`, `/api/stores/:id/products`) include a **`foodTypes`** array of resolved food type objects for that store. Ids no longer in the list are dropped automatically.
+- Public store responses (`GET /api/stores`, `/api/stores/top-rated`, `/api/stores/premium`, `/api/stores/exclusive`, `/api/stores/category/:categoryName`, `/api/stores/:id/products`) include **`foodTypes`** when configured. Ids that no longer exist in the master list are dropped automatically.
+- **`GET /api/admin/stores`** and **`GET /api/admin/stores/:id`** return the store’s stored **`foodTypes`** ids (array of strings) for editing; use **`GET /api/admin/food-types`** or **`GET /api/food-types`** to resolve labels in the dashboard.
+
+---
+
+### Admin Food Types
+
+**Access:** SuperAdmin and Admin only.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/admin/food-types` | List all food types (same shape as public GET). |
+| POST | `/api/admin/food-types` | Create food type. |
+| PATCH | `/api/admin/food-types/:id` | Update food type. |
+| DELETE | `/api/admin/food-types/:id` | Delete food type (also removed from any store’s `foodTypes`). |
+
+**GET `/api/admin/food-types` — Success (200):**
+```json
+{
+  "success": true,
+  "data": {
+    "foodTypes": [
+      { "id": "1", "name": "shawarma", "nameEn": "Shawarma", "nameAr": "شاورما", "image": "", "displayOrder": 1 }
+    ]
+  }
+}
+```
+
+**POST `/api/admin/food-types` — Body:** `{ "nameEn": "Pizza", "nameAr": "بيتزا", "image": "https://...", "displayOrder": 4 }` (`nameEn` or `nameAr` required; optional `name` slug).
+
+**Success (201):**
+```json
+{
+  "success": true,
+  "data": {
+    "foodType": {
+      "id": "4",
+      "name": "pizza",
+      "nameEn": "Pizza",
+      "nameAr": "بيتزا",
+      "image": "https://...",
+      "displayOrder": 4
+    }
+  }
+}
+```
+
+**PATCH `/api/admin/stores/:id` — assign types to a store:** `{ "foodTypes": ["1", "2", "3"] }` (array of food type ids; send `[]` to clear).
 
 ---
 
@@ -1610,6 +1763,191 @@ Deletes the address at the given index (0-based). After deletion, the first rema
 
 ---
 
+## Wallet
+
+Customer wallet balance in **JOD**. Users can **top up** via card (Madfoat/PayTabs — same env as [Payment](#payment-card--online)) or **Cliq** (screenshot + admin approval). Admins can also **credit** wallets manually. At checkout, users may pay **fully from wallet** or **split**: wallet + Card/Cliq for the remainder (**cash/COD is not allowed** when wallet is used).
+
+### Get Wallet Balance & Transactions
+
+**Endpoint:** `GET /api/wallet`
+
+**Authentication:** Required (Bearer user JWT)
+
+**Query parameters:** `page`, `perPage` (max 50)
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "message": "Wallet retrieved successfully",
+  "data": {
+    "wallet": {
+      "balanceJod": 12.5,
+      "currency": "JOD",
+      "transactions": [
+        {
+          "id": 3,
+          "type": "top_up_card",
+          "amountJod": 10,
+          "balanceAfterJod": 12.5,
+          "orderId": null,
+          "paymentTranRef": "TST123456",
+          "note": "Wallet top-up #5",
+          "createdAt": "2026-06-11T10:00:00.000Z"
+        }
+      ],
+      "page": 1,
+      "perPage": 20,
+      "total": 1
+    }
+  },
+  "timestamp": "2026-06-11T10:00:00.000Z"
+}
+```
+
+**Transaction `type` values:** `admin_credit`, `top_up_card`, `top_up_cliq`, `order_debit`, `refund` (reserved).
+
+---
+
+### Top up wallet (card — Madfoat)
+
+Same gateway config as order payment: **`PAYTABS_SERVER_KEY`**, **`PAYTABS_CLIENT_KEY`**, **`PAYTABS_CURRENCY`**, **`BASE_URL`**.
+
+Creates a row in the **`topups`** table, a linked **`payment_transactions`** row, and on successful payment **credits the wallet** automatically.
+
+**Endpoint:** `POST /api/wallet/top-up/initiate`
+
+**Authentication:** Required (Bearer user JWT)
+
+**Request body:**
+```json
+{
+  "amountJod": 25,
+  "paymentMethod": "card",
+  "description": "Wallet top-up",
+  "customerName": "John",
+  "customerEmail": "user@example.com",
+  "customerPhone": "+962791234567"
+}
+```
+
+**Success (201) — redirect to hosted page:**
+```json
+{
+  "success": true,
+  "message": "Top-up payment initiated; complete payment on the hosted page",
+  "data": {
+    "topup": {
+      "id": 5,
+      "phoneNumber": "+962791234567",
+      "amountJod": 25,
+      "paymentMethod": "card",
+      "status": "pending_redirect",
+      "cartId": "WALLET-TOPUP-1718096400000",
+      "tranRef": "TSTxxxx"
+    },
+    "payment": {
+      "tranRef": "TSTxxxx",
+      "cartId": "WALLET-TOPUP-1718096400000",
+      "cartAmount": 25,
+      "cartCurrency": "JOD",
+      "topupId": 5,
+      "status": "pending_redirect",
+      "redirectUrl": "https://madfoat-secure.paytabs.com/...",
+      "redirectMethod": "GET"
+    }
+  }
+}
+```
+
+Callback/return URLs are the same as order payment: **`POST /api/payment/callback`**, **`GET /api/payment/return`**.
+
+---
+
+### Top up wallet (Cliq)
+
+**Endpoint:** `POST /api/wallet/top-up/cliq`
+
+**Authentication:** Required (Bearer user JWT)
+
+**Request body:**
+```json
+{
+  "amountJod": 20,
+  "paymentVerificationImage": "https://storage.example/cliq-proof.jpg",
+  "note": "Optional note"
+}
+```
+
+**Success (201):** Top-up status **`waiting_cliq_confirmation`**. Admin approves via **`PATCH /api/admin/topups/:id/approve`** (credits wallet) or rejects via **`PATCH /api/admin/topups/:id/reject`**.
+
+---
+
+### Checkout split payment (wallet + Card/Cliq)
+
+**Grand total** = items subtotal (`totalAmount`) + `deliveryFee` + `serviceFee` + `feesTax`.
+
+| Scenario | Flow |
+|----------|------|
+| **Full wallet** | `POST /api/checkout` with `paymentType: "Wallet"` and `walletAmountJod` = grand total (or omit — server uses full balance up to total). Wallet debited on order create. |
+| **Wallet + Cliq** | `POST /api/checkout` with `paymentType: "Wallet+Cliq"` (or `"Cliq"`) + `walletAmountJod` + `paymentVerificationImage`. Wallet portion debited immediately; Cliq remainder follows normal Cliq review. |
+| **Wallet + Card** | `POST /api/payment/initiate` with same **`checkout`** body + **`walletAmountJod`**. Madfoat charges **remainder only**; after payment success the order is created and the wallet portion is debited. |
+
+**Rules:**
+- `walletAmountJod` ≤ current balance and ≤ grand total.
+- If `walletAmountJod` > 0, **cash/COD is rejected**.
+- Remainder must use **Card** or **Cliq** enabled on the store (`paymentMethods`), and must be allowed for the **delivery coordinates** (COD is never allowed in [special delivery zones](#special-delivery-zones-payment), even as a wallet remainder).
+- Order row stores **`walletAmountJod`**; **`paymentType`** is stored as `Wallet`, `Wallet+Card`, or `Wallet+Cliq`.
+
+**Example — full wallet checkout:**
+```json
+{
+  "items": [{ "id": "1", "name": "Meal", "price": 8, "quantity": 1 }],
+  "phoneNumber": "+962791234567",
+  "totalAmount": 8,
+  "storeId": "1",
+  "addressLat": 29.53,
+  "addressLong": 35.0,
+  "paymentType": "Wallet",
+  "walletAmountJod": 10.65
+}
+```
+
+**Example — wallet + card (use payment/initiate):**
+```json
+{
+  "checkout": {
+    "items": [{ "id": "1", "name": "Meal", "price": 8, "quantity": 1 }],
+    "phoneNumber": "+962791234567",
+    "totalAmount": 8,
+    "storeId": "1",
+    "addressLat": 29.53,
+    "addressLong": 35.0,
+    "walletAmountJod": 5
+  }
+}
+```
+(Card is charged for grand total − 5 JOD.)
+
+---
+
+### Admin wallet & top-ups
+
+| Method | Endpoint | Access | Description |
+|--------|----------|--------|-------------|
+| GET | `/api/admin/users/:phone/wallet` | Admin / SuperAdmin | Balance + transaction history. |
+| POST | `/api/admin/users/:phone/wallet/credit` | Admin / SuperAdmin | Manual credit. Body `{ "amountJod", "note?" }`. |
+| GET | `/api/admin/topups` | Admin / SuperAdmin | List **`topups`** table. Query: `phoneNumber`, `status`, `paymentMethod`, `dateFrom`, `dateTo`, `page`, `perPage`. |
+| GET | `/api/admin/topups/:id` | Admin / SuperAdmin | Top-up detail + user wallet balance. |
+| PATCH | `/api/admin/topups/:id/approve` | Admin / SuperAdmin | Approve Cliq top-up → credit wallet. |
+| PATCH | `/api/admin/topups/:id/reject` | Admin / SuperAdmin | Reject Cliq top-up. Body optional `{ "note" }`. |
+
+Dashboard: **Wallet top-ups** sidebar page (`/dashboard/topups`) lists top-ups and approve/reject Cliq requests.
+
+**`topups` table fields (API):** `id`, `phoneNumber`, `userId`, `userName`, `amountJod`, `currency`, `paymentMethod`, `status`, `tranRef`, `cartId`, `redirectUrl`, `paymentVerificationImage`, `walletTransactionId`, `createdAt`, `completedAt`.
+
+---
+
 ## Checkout & Orders
 
 ### Quote Checkout Fees
@@ -1660,6 +1998,12 @@ Call **before** `POST /api/checkout` to preview **delivery fee**, **service fee*
     "feesTax": 0,
     "feesTaxNote": "No tax on delivery fee plus service fee.",
     "invoiceTotal": 1.67,
+    "paymentMethods": {
+      "cod": true,
+      "card": true,
+      "cliq": true
+    },
+    "paymentMethodsNote": null,
     "pricingNote": "…"
   },
   "timestamp": "2024-01-15T10:30:00Z"
@@ -1667,6 +2011,8 @@ Call **before** `POST /api/checkout` to preview **delivery fee**, **service fee*
 ```
 
 - **`deliveryFee`**: Resolved from distance tiers, optional platform **`flatDeliveryFeeJod`**, optional **cart ≥ threshold** delivery (store or platform), per-store **fixed** / **free** checkout delivery, then special-far / uncapped / remote rules. See **`pricingNote`** in the live response for the active rule text.
+- **`paymentMethods`**: Effective checkout options for this **`deliveryLocation`** (store flags + [special zone rules](#special-delivery-zones-payment)). Use this to hide COD in the UI before submit.
+- **`paymentMethodsNote`**: Human-readable hint when COD is disabled for the drop-off (otherwise `null`).
 - **`deliveryFeeMaxJod`**: Platform cap from [Admin platform checkout fees](#admin-platform-checkout-fees) (informational; some zones ignore the cap).
 - **`serviceFee`**: Platform default or per-store override.
 - **`feesTax`**: **`feesTaxRate × (deliveryFee + serviceFee)`**; rate is **0** in current builds.
@@ -1675,6 +2021,37 @@ Call **before** `POST /api/checkout` to preview **delivery fee**, **service fee*
 - Store location is resolved server-side from the store record (`storeId`) using store lat/long if present, otherwise parsed from `mapsUrl`.
 
 **Error responses:** `400` (missing/invalid body), `404` (unknown `storeId`), `500` (server error).
+
+---
+
+### Special delivery zones (payment)
+
+Some delivery areas use the same geographic pins as **special-far** and **remote** delivery fee zones (e.g. **Wadi Rum** `29.5743, 35.421`, Al Quwayrah, Al Shakriyah, Ar-Rashidiyah, At-Tuweisa, Ad Disah, and remote south pins). For those drop-offs:
+
+| Rule | Behavior |
+|------|----------|
+| **COD / cash** | **Not allowed** — server returns **400** if `paymentType` is `cash` or `cod` |
+| **Card** | Allowed |
+| **Cliq** | Allowed |
+| **Wallet** | Allowed (full wallet, or wallet + card/cliq remainder) |
+
+**Frontend integration (recommended):**
+
+1. Call **`POST /api/checkout/quote-fees`** with `deliveryLocation` — read **`data.paymentMethods`** and **`data.paymentMethodsNote`**.
+2. Or call **`GET /api/stores/:id/payment-methods?latitude=…&longitude=…`** when the user picks an address.
+3. Hide or disable the COD option when **`paymentMethods.cod === false`**.
+4. Always send **`addressLat`** / **`addressLong`** on **`POST /api/checkout`** and **`POST /api/payment/initiate`** so the server can enforce the rule even if the UI is outdated.
+
+**Error (400) when COD is used in a restricted zone:**
+
+```json
+{
+  "success": false,
+  "message": "Cash on delivery is not available for this delivery area. Please use Card or Cliq."
+}
+```
+
+Store-level **`paymentMethods`** on **`GET /api/stores`** are unchanged (no coordinates). Location rules apply only when lat/long are provided at quote, payment-methods, or checkout time.
 
 ---
 
@@ -1734,7 +2111,8 @@ Creates a new order with items, customer information, and delivery details.
 
 **Note:** 
 - Status is automatically set to "Waiting confirmation"
-- **`paymentType`** must be allowed for the order’s store: **`cash`** / **`cod`** (COD), **`card`**, or **`cliq`**, matching **`paymentMethods`** on the store (see [Get Store Payment Methods](#get-store-payment-methods)). If disabled, the API returns **400** with a clear message.
+- **`paymentType`** must be allowed for the order’s store **and delivery location**: **`cash`** / **`cod`** (COD), **`card`**, **`cliq`**, or wallet variants — matching **`paymentMethods`** (see [Get Store Payment Methods](#get-store-payment-methods) and [Special delivery zones (payment)](#special-delivery-zones-payment)). Send **`addressLat`** / **`addressLong`** so location rules apply. If disabled, the API returns **400** with a clear message.
+- Optional **`walletAmountJod`** (number): pay part or all of the grand total from the customer wallet — see [Checkout split payment](#checkout-split-payment-wallet--cardcliq). Stored on the order as **`walletAmountJod`**.
 - If `promoCode` is provided and valid, the discount will be automatically applied from the promo code value. **Store-specific** promo codes (see [Admin promo codes](#admin-promo-codes)) only apply when the order’s store (from `storeId` or inferred from cart items) matches that promo’s store; otherwise the request fails with **`promo code not available for this store`**. If the promo has **`minOrderAmount`**, the client must send **`cartAmount`** ≥ that threshold (or the request fails).
 - If `promoCode` is invalid, order creation will fail with **`invalid promoCode`**
 - On insert, the server snapshots the store’s current **`arhebFee`** as **`storeArhebFeePercent`** on the order row (for admin reporting; unchanged if store commission is edited later — see [Historical data & snapshots](#historical-data--snapshots)). Initial status timestamp is recorded for analytics.
@@ -3223,6 +3601,12 @@ Single reference for every **`/api/admin/*`** route (mirrors `src/admin/routes.j
 | GET | `/api/admin/users` | A/S | List/search users — optional order aggregates (see [GET /api/admin/users (order statistics)](#get-apiproadminusers-order-statistics)); query `q` / `search`, `sortBy`, `sortDir`. |
 | PATCH | `/api/admin/users/:phone/block` | A/S | Block/unblock user. |
 | DELETE | `/api/admin/users/:phone` | A/S | Soft-delete user (and alias phone rows for same Jordan number). |
+| GET | `/api/admin/users/:phone/wallet` | A/S | Wallet balance + paginated transactions. |
+| POST | `/api/admin/users/:phone/wallet/credit` | A/S | Add wallet credit. Body `{ amountJod, note? }`. |
+| GET | `/api/admin/topups` | A/S | List wallet top-ups (`topups` table). |
+| GET | `/api/admin/topups/:id` | A/S | Top-up detail. |
+| PATCH | `/api/admin/topups/:id/approve` | A/S | Approve Cliq top-up → credit wallet. |
+| PATCH | `/api/admin/topups/:id/reject` | A/S | Reject Cliq top-up. |
 | GET | `/api/admin/users/:phone/orders` | A/S | Orders for phone. |
 | GET | `/api/admin/customers/:phone/profile` | A/S | Profile + orders shortcut. |
 
@@ -4572,8 +4956,10 @@ For issues or questions, please contact: `contact@arheb.app`
 
 **Last updated: 2026-06-11**
 
-### 2026-06 — Dashboard analytics, order snapshots, driver cash ceiling
+### 2026-06 — Food types, customer wallet, dashboard analytics
 
+- **Food types:** Public **`GET /api/food-types`**; admin CRUD **`/api/admin/food-types`**; stores select **`foodTypes`** ids on create/patch — resolved on public store listings. Master list persisted in **`food_types_response.json`**.
+- **Customer wallet:** **`GET /api/wallet`**, **`POST /api/wallet/top-up/initiate`** (card/Madfoat), **`POST /api/wallet/top-up/cliq`**, checkout **`walletAmountJod`** split payment; admin **`/api/admin/topups`** + manual credit. Records in **`topups`** + **`wallet_transactions`** tables.
 - **Store analytics:** **`GET /api/admin/stores`** supports **`sortBy`**, **`withStats`**, date range; **`GET /api/admin/stores/:id/stats`** for profile stats and avg time per status; **`preparingTimeMinutes`** on **`PATCH /api/admin/stores/:id`** (admin target; system computes avg from **`preparingAt`** → **`onTheWayAt`**).
 - **Orders:** List/detail/export enriched with items JOD, **Res % / Value**, driver JOD, net delivery, prep & delivery minutes. **`storeArhebFeePercent`** snapshot at checkout; status timestamp columns on orders.
 - **Drivers:** **`cashCeilingJod`** / **`cashCollectedJod`** — block cash assignments at ceiling; **`resetCashCollected`** on PATCH after deposit. **`DELETE /api/admin/drivers/:id`** archives driver (keeps history). Profile supports **`paymentType`** filter.
@@ -4599,6 +4985,20 @@ For issues or questions, please contact: `contact@arheb.app`
 | GET | `/api/admin/settings/checkout-fees` | Admin / SuperAdmin | Platform checkout tiers, flat delivery, cart-threshold delivery fields, default service fee. |
 | PATCH | `/api/admin/settings/checkout-fees` | **SuperAdmin** | Update platform checkout fees (see [Admin platform checkout fees](#admin-platform-checkout-fees)). |
 | GET | `/api/stores/exclusive` | None | Same as `/api/stores/premium` — exclusive/premium stores; optional `limit`. |
+| GET | `/api/food-types` | None | Master list of food types (`data.foodTypes[]` — see [Food Types](#food-types)). |
+| GET | `/api/wallet` | User (Bearer) | Wallet balance + paginated transaction history (`page`, `perPage`). |
+| POST | `/api/wallet/top-up/initiate` | User (Bearer) | Card top-up via Madfoat (same config as payment). Body `{ amountJod, paymentMethod: "card" }`. |
+| POST | `/api/wallet/top-up/cliq` | User (Bearer) | Cliq top-up with `paymentVerificationImage`; admin approves. |
+| GET | `/api/admin/topups` | Admin / SuperAdmin | List wallet top-ups (`topups` table). |
+| GET | `/api/admin/topups/:id` | Admin / SuperAdmin | Top-up detail. |
+| PATCH | `/api/admin/topups/:id/approve` | Admin / SuperAdmin | Approve Cliq top-up → credit wallet. |
+| PATCH | `/api/admin/topups/:id/reject` | Admin / SuperAdmin | Reject Cliq top-up. |
+| GET | `/api/admin/users/:phone/wallet` | Admin / SuperAdmin | View a customer’s wallet and transactions. |
+| POST | `/api/admin/users/:phone/wallet/credit` | Admin / SuperAdmin | Credit customer wallet. Body `{ amountJod, note? }`. |
+| GET | `/api/admin/food-types` | Admin / SuperAdmin | List food types (same objects as public GET). |
+| POST | `/api/admin/food-types` | Admin / SuperAdmin | Create food type (`nameEn`, `nameAr`, `image`, `displayOrder`). |
+| PATCH | `/api/admin/food-types/:id` | Admin / SuperAdmin | Update food type. |
+| DELETE | `/api/admin/food-types/:id` | Admin / SuperAdmin | Delete food type (pruned from stores). |
 | GET | `/api/admin/stats/overview` | Admin / SuperAdmin | Store + driver analytics; optional `dateFrom`, `dateTo`. |
 | GET | `/api/admin/stats/export` | Admin / SuperAdmin | Excel export of stats overview. |
 | GET | `/api/admin/stores/:id/stats` | Admin / Store Admin (own store) | Store profile statistics and avg minutes per status. |
@@ -4706,11 +5106,11 @@ For issues or questions, please contact: `contact@arheb.app`
   - **PATCH** `/api/admin/orders/:orderId/status`:  
     - Admins can move Cliq orders from `'Waiting cliq confirmation'` → `'Waiting confirmation'` (approved) or to `'Payment rejected'` (rejected), which then flows through existing order processing as usual.
 
-- **Stores (public + admin) – Store categories**  
-  - All public store responses (`GET /api/stores`, `/api/stores/top-rated`, `/api/stores/premium`, `/api/stores/exclusive`, `/api/stores/category/:categoryName`) now include **`storeCategories`** (array) as part of each store.  
-  - **GET** `/api/stores/:id/products` and **GET** `/api/stores/:id/products/category/:categoryName` include `store.storeCategories` so clients can know which categories belong to that store.  
+- **Stores (public + admin) – Store categories & food types**  
+  - All public store responses (`GET /api/stores`, `/api/stores/top-rated`, `/api/stores/premium`, `/api/stores/exclusive`, `/api/stores/category/:categoryName`) now include **`storeCategories`** (array) and resolved **`foodTypes`** (array of `{ id, nameEn, nameAr, name, image, displayOrder }`) when configured.  
+  - **GET** `/api/stores/:id/products` and **GET** `/api/stores/:id/products/category/:categoryName` include `store.storeCategories` and `store.foodTypes`.  
   - **GET** `/api/stores/:id/products/paged?page=1` uses **per-store-category paging** (up to **10** products per **active** category per page, all categories + `other` in `data.categories`; see [Get Store Products (paginated)](#get-store-products-paginated)) for large catalogs; use instead of loading all products at once.  
-  - **Admin** store APIs allow managing `storeCategories` per store; dashboard product forms now pick categories from the store’s own `storeCategories` instead of global categories.
+  - **Admin** store APIs allow managing `storeCategories` and **`foodTypes`** (array of ids) per store; dashboard product forms pick categories from the store’s own `storeCategories`. Master food types: **`GET /api/food-types`**, admin CRUD **`/api/admin/food-types`**.
 
 ### FCM, driver presence, store pause/block, customer orders & tracking, Arheb Box
 

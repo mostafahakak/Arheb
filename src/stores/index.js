@@ -9,7 +9,7 @@ const {
   sortStoresOpenFirst,
 } = require('../utils/storeVisibility');
 const { applyCatalogListPriceAndOriginal } = require('../utils/productCatalogPrice');
-const { getStorePaymentMethods } = require('../utils/storePaymentMethods');
+const { getStorePaymentMethods, getEffectivePaymentMethodsForDropoff } = require('../utils/storePaymentMethods');
 const { enrichOpeningHoursObject } = require('../utils/openingHoursJordan');
 const { upsertStoreFcmToken } = require('../storeFcm');
 const { getPlatformCheckoutFeeTiers } = require('../utils/platformCheckoutFees');
@@ -418,12 +418,26 @@ module.exports = function attachStoresRoutes(app, db) {
     if (!isStoreListedForCustomerBrowse(store)) {
       return res.status(404).json({ success: false, message: 'Store not found' });
     }
+    const latRaw = req.query.latitude ?? req.query.lat;
+    const lngRaw = req.query.longitude ?? req.query.lng ?? req.query.long;
+    const lat = latRaw != null && latRaw !== '' ? Number(latRaw) : null;
+    const lng = lngRaw != null && lngRaw !== '' ? Number(lngRaw) : null;
+    const paymentMethods =
+      Number.isFinite(lat) && Number.isFinite(lng)
+        ? getEffectivePaymentMethodsForDropoff(store, lat, lng)
+        : getStorePaymentMethods(store);
     return res.status(200).json({
       success: true,
       message: 'Store payment methods',
       data: {
         storeId: String(store.id),
-        paymentMethods: getStorePaymentMethods(store),
+        paymentMethods,
+        ...(!paymentMethods.cod && Number.isFinite(lat) && Number.isFinite(lng)
+          ? {
+              paymentMethodsNote:
+                'Cash on delivery is not available for this delivery area. Use Card or Cliq.',
+            }
+          : {}),
       },
       timestamp: new Date().toISOString(),
     });

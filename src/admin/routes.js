@@ -49,6 +49,20 @@ const {
   parseFlexibleTimeTo24h,
 } = require('../utils/openingHoursJordan');
 const { jordanMobileLookupKeys } = require('../utils/jordanMobile');
+const { isUserDeleted } = require('../utils/appUserLifecycle');
+const {
+  ensureWalletTables,
+  getWalletBalance,
+  listWalletTransactions,
+  creditWallet,
+} = require('../wallet');
+const {
+  listTopups,
+  approveCliqTopup,
+  rejectCliqTopup,
+  findTopupById,
+  mapTopupRow,
+} = require('../wallet/topups');
 const {
   getDriverCommissionSettings,
   setDriverCommissionSettings,
@@ -297,6 +311,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   ensurePlatformCheckoutFeesTable(db);
   ensureOrderStatusTimestampColumns(db);
   ensureDriverCashCeilingColumns(db);
+  ensureWalletTables(db);
 
   /** Default: Jordan today→today. Pass allDates=true for no date filter (all time). */
   function resolveOrdersListDateRange(query) {
@@ -418,7 +433,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   function pickCanonicalAppUserRow(matches) {
     if (!matches.length) return null;
     if (matches.length === 1) return matches[0];
-    const active = matches.filter((u) => !u.deleted);
+    const active = matches.filter((u) => !isUserDeleted(u));
     const pool = active.length ? active : matches;
     pool.sort((a, b) => {
       const score = (u) => {
@@ -503,14 +518,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
 
   function softDeleteAppUserAndAliases(phone) {
     const primary = findAppUserByPhoneFlexible(phone);
-    if (!primary || primary.deleted) return null;
+    if (!primary || isUserDeleted(primary)) return null;
     const keys = [
       ...new Set([...jordanMobileLookupKeys(primary.phoneNumber), primary.phoneNumber].filter(Boolean)),
     ];
     const deletedPhones = [];
     for (const k of keys) {
       const u = findUserByPhone.get(k);
-      if (u && !u.deleted) {
+      if (u && !isUserDeleted(u)) {
         softDeleteUserByPhone.run(u.phoneNumber);
         deletedPhones.push(u.phoneNumber);
       }
@@ -837,6 +852,194 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     } catch (e) {
       console.error('Admin user delete error:', e);
       return res.status(500).json({ success: false, message: 'Failed to delete user' });
+    }
+  });
+
+  app.get('/api/admin/users/:phone/wallet', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      const phone = decodeURIComponent(String(req.params.phone || '').trim());
+      if (!phone) return res.status(400).json({ success: false, message: 'Invalid phone' });
+      const user = findAppUserByPhoneFlexible(phone);
+      if (!user || isUserDeleted(user)) {
+        return res.status(404).json({ success: false, message: 'User not found' });
+      }
+      const page = req.query.page;
+      const perPage = req.query.perPage;
+      const balanceJod = getWalletBalance(db, user.phoneNumber);
+      const { transactions, page: p, perPage: pp, total } = listWalletTransactions(db, user.phoneNumber, {
+        page,
+        perPage,
+      });
+      return res.status(200).json({
+        success: true,
+        data: {
+          user: {
+            phoneNumber: user.phoneNumber,
+            userId: user.userId || user.phoneNumber,
+            name: user.name || '',
+          },
+          wallet: {
+            balanceJod,
+            currency: 'JOD',
+            transactions,
+            page: p,
+            perPage: pp,
+            total,
+          },
+        },
+      });
+    } catch (e) {
+      console.error('Admin user wallet error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to load wallet' });
+    }
+  });
+
+  app.post('/api/admin/users/:phone/wallet/credit', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      const phone = decodeURIComponent(String(req.params.phone || '').trim());
+      if (!phone) return res.status(400).json({ success: false, message: 'Invalid phone' });
+      const user = findAppUserByPhoneFlexible(phone);
+      if (!user || isUserDeleted(user)) {
+        return res.status(404).json({ success: false, message: 'User not found' });
+      }
+      const body = req.body || {};
+      const amountJod = body.amountJod ?? body.amount;
+      const note = body.note != null ? String(body.note).trim() : '';
+      const result = creditWallet(db, {
+        phoneNumber: user.phoneNumber,
+        userId: user.userId,
+        amountJod,
+        type: 'admin_credit',
+        note: note || 'Admin credit',
+        createdByAdminId: req.admin?.id ?? null,
+      });
+      logActivity(db, req, {
+        action: 'edit',
+        resourceType: 'user_wallet',
+        resourceId: user.phoneNumber,
+        storeScopeId: null,
+        summary: `Credited wallet ${user.phoneNumber} +${amountJod} JOD`,
+      });
+      return res.status(200).json({
+        success: true,
+        message: 'Wallet credited successfully',
+        data: {
+          wallet: {
+            balanceJod: result.balanceJod,
+            currency: 'JOD',
+            lastTransactionId: result.transactionId,
+          },
+        },
+      });
+    } catch (e) {
+      if (e.code === 'VALIDATION') {
+        return res.status(400).json({ success: false, message: e.message });
+      }
+      if (e.code === 'NOT_FOUND') {
+        return res.status(404).json({ success: false, message: e.message });
+      }
+      console.error('Admin wallet credit error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to credit wallet' });
+    }
+  });
+
+  app.get('/api/admin/topups', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      const { phone, phoneNumber, status, paymentMethod, dateFrom, dateTo, page, perPage } = req.query || {};
+      const result = listTopups(db, {
+        phoneNumber: phoneNumber || phone,
+        status,
+        paymentMethod,
+        dateFrom,
+        dateTo,
+        page,
+        perPage,
+      });
+      return res.status(200).json({ success: true, data: result });
+    } catch (e) {
+      console.error('Admin list topups error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to list top-ups' });
+    }
+  });
+
+  app.get('/api/admin/topups/:id', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) {
+        return res.status(400).json({ success: false, message: 'Invalid top-up id' });
+      }
+      const row = findTopupById(db, id);
+      if (!row) return res.status(404).json({ success: false, message: 'Top-up not found' });
+      const user = findUserByPhone.get(row.phoneNumber);
+      return res.status(200).json({
+        success: true,
+        data: {
+          topup: mapTopupRow(row, user?.name || ''),
+          user: user
+            ? {
+                phoneNumber: user.phoneNumber,
+                name: user.name || '',
+                walletBalanceJod: getWalletBalance(db, user.phoneNumber),
+              }
+            : null,
+        },
+      });
+    } catch (e) {
+      console.error('Admin topup detail error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to load top-up' });
+    }
+  });
+
+  app.patch('/api/admin/topups/:id/approve', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) {
+        return res.status(400).json({ success: false, message: 'Invalid top-up id' });
+      }
+      const result = approveCliqTopup(db, id, req.admin?.id);
+      if (!result.ok) {
+        return res.status(result.statusCode || 400).json({ success: false, message: result.message });
+      }
+      logActivity(db, req, {
+        action: 'edit',
+        resourceType: 'wallet_topup',
+        resourceId: String(id),
+        storeScopeId: null,
+        summary: `Approved Cliq wallet top-up #${id}`,
+      });
+      return res.status(200).json({
+        success: true,
+        message: 'Top-up approved and wallet credited',
+        data: result.data,
+      });
+    } catch (e) {
+      console.error('Admin approve topup error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to approve top-up' });
+    }
+  });
+
+  app.patch('/api/admin/topups/:id/reject', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) {
+        return res.status(400).json({ success: false, message: 'Invalid top-up id' });
+      }
+      const note = req.body?.note;
+      const result = rejectCliqTopup(db, id, note);
+      if (!result.ok) {
+        return res.status(result.statusCode || 400).json({ success: false, message: result.message });
+      }
+      logActivity(db, req, {
+        action: 'edit',
+        resourceType: 'wallet_topup',
+        resourceId: String(id),
+        storeScopeId: null,
+        summary: `Rejected Cliq wallet top-up #${id}`,
+      });
+      return res.status(200).json({ success: true, message: 'Top-up rejected', data: { topup: result.topup } });
+    } catch (e) {
+      console.error('Admin reject topup error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to reject top-up' });
     }
   });
 
@@ -4940,9 +5143,63 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           throw err;
         }
       }
-      const existing = db.prepare('SELECT id FROM drivers WHERE mobile = ?').get(normalizedMobile);
-      if (existing) {
+      const existing = db
+        .prepare('SELECT id, deleted FROM drivers WHERE mobile = ?')
+        .get(normalizedMobile);
+      if (existing && !isUserDeleted(existing)) {
         return res.status(400).json({ success: false, message: 'Driver with this mobile already exists' });
+      }
+      if (existing && isUserDeleted(existing)) {
+        db.prepare(`
+          UPDATE drivers SET
+            name = ?, email = ?, vehicleType = ?, vehicleNumber = ?, licenseNumber = ?,
+            deleted = 0, deletedAt = NULL, isBlocked = 0, isVerified = 0,
+            latitude = NULL, longitude = NULL, rating = 5, ratingCount = 0, fcmToken = NULL,
+            commissionPercent = ?, commissionType = ?, commissionValue = ?
+          WHERE id = ?
+        `).run(
+          String(name).trim(),
+          email ? String(email).trim() : null,
+          vehicleType ? String(vehicleType).trim() : null,
+          vehicleNumber ? String(vehicleNumber).trim() : null,
+          licenseNumber ? String(licenseNumber).trim() : null,
+          pctToStore,
+          typeToStore,
+          valueToStore,
+          existing.id,
+        );
+        const driver = db
+          .prepare('SELECT id, name, mobile, email, vehicleType, vehicleNumber, licenseNumber, isBlocked, createdAt, commissionPercent, commissionType, commissionValue FROM drivers WHERE id = ?')
+          .get(existing.id);
+        logActivity(db, req, {
+          action: 'add',
+          resourceType: 'driver',
+          resourceId: String(driver.id),
+          storeScopeId: null,
+          summary: `Reactivated driver ${driver.name} (${driver.mobile})`,
+        });
+        const effectiveRule = resolveDriverCommissionRule(db, driver.id);
+        return res.status(201).json({
+          success: true,
+          message: 'Driver reactivated successfully',
+          data: {
+            driver: {
+              id: driver.id,
+              name: driver.name,
+              mobile: driver.mobile,
+              email: driver.email,
+              vehicleType: driver.vehicleType,
+              vehicleNumber: driver.vehicleNumber,
+              licenseNumber: driver.licenseNumber,
+              isBlocked: Boolean(driver.isBlocked),
+              createdAt: driver.createdAt,
+              useAppDefaultCommission: !driverRowHasCustomCommission(driver),
+              effectiveCommissionType: effectiveRule.type,
+              effectiveCommissionValue: effectiveRule.value,
+              commissionPercent: effectiveRule.type === 'percent' ? effectiveRule.value : null,
+            },
+          },
+        });
       }
       db.prepare(`
         INSERT INTO drivers (name, mobile, email, vehicleType, vehicleNumber, licenseNumber, photo, latitude, longitude, rating, isVerified, isBlocked, commissionPercent, commissionType, commissionValue)

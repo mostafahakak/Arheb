@@ -20,7 +20,14 @@ const { canonicalStoreId } = require('../storeFcm');
 const {
   isPaymentTypeAllowedForStore,
   paymentMethodRejectedUserMessage,
+  getEffectivePaymentMethodsForDropoff,
 } = require('../utils/storePaymentMethods');
+const {
+  computeCheckoutGrandTotalJod,
+  resolveWalletCheckoutPlan,
+  applyWalletDebitForOrder,
+  getWalletBalance,
+} = require('../wallet/checkoutWallet');
 const { resolveStorePickupLocation } = require('../utils/mapsUrlResolve');
 const { ensureOrderStatusTimestampColumns, recordOrderStatusTimestamp } = require('../utils/orderStatusTimestamps');
 
@@ -226,7 +233,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   } catch (e) {
     /* exists */
   }
-  try { db.exec(`ALTER TABLE orders ADD COLUMN paymentTranRef TEXT`); } catch (e) { /* exists */ }
+  try { db.exec(`ALTER TABLE orders ADD COLUMN walletAmountJod REAL DEFAULT 0`); } catch (e) { /* exists */ }
   try { db.exec(`ALTER TABLE orders ADD COLUMN paymentCartId TEXT`); } catch (e) { /* exists */ }
   try { db.exec(`ALTER TABLE orders ADD COLUMN einvoiceStatus TEXT`); } catch (e) { /* exists */ }
   try { db.exec(`ALTER TABLE orders ADD COLUMN einvoiceQR TEXT`); } catch (e) { /* exists */ }
@@ -283,6 +290,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
             paymentVerificationImage,
             paymentTranRef,
             paymentCartId,
+            walletAmountJod,
             createdAt
           ) VALUES (
             @userId,
@@ -307,6 +315,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
             @paymentVerificationImage,
             @paymentTranRef,
             @paymentCartId,
+            @walletAmountJod,
             @createdAt
           )
         `);
@@ -334,6 +343,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       paymentVerificationImage: orderData.paymentVerificationImage || null,
       paymentTranRef: orderData.paymentTranRef ?? null,
       paymentCartId: orderData.paymentCartId ?? null,
+      walletAmountJod: orderData.walletAmountJod != null ? orderData.walletAmountJod : 0,
       createdAt: nowOrderCreatedAtForDb(),
     });
 
@@ -417,6 +427,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       fcmToken,
       weightKg,
       cartAmount,
+      walletAmountJod,
     } = body || {};
 
     if (!items || !Array.isArray(items) || items.length === 0) {
@@ -542,11 +553,11 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         if (storeCheck.isOpen === false) {
           return { ok: false, statusCode: 400, message: 'This store is currently closed' };
         }
-        if (!isPaymentTypeAllowedForStore(storeCheck, lowerPaymentType)) {
+        if (!isPaymentTypeAllowedForStore(storeCheck, lowerPaymentType, addressLat, addressLong)) {
           return {
             ok: false,
             statusCode: 400,
-            message: paymentMethodRejectedUserMessage(lowerPaymentType),
+            message: paymentMethodRejectedUserMessage(lowerPaymentType, addressLat, addressLong),
           };
         }
       }
@@ -619,6 +630,60 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
     );
     const computedServiceFee = resolveStoreOrderServiceFeeJod(storeJsonForFees, platformTiers.defaultServiceFeeJod);
     const computedFeesTax = calcFeesTaxJod(computedDeliveryFee, computedServiceFee);
+    const grandTotalJod = computeCheckoutGrandTotalJod(
+      totalAmount,
+      computedDeliveryFee,
+      computedServiceFee,
+      computedFeesTax,
+    );
+    const walletBalanceJod = getWalletBalance(db, phoneNumber);
+    const walletPlan = resolveWalletCheckoutPlan({
+      paymentType: options.storedPaymentType || normalizedPaymentType,
+      walletAmountJod,
+      grandTotalJod,
+      walletBalanceJod,
+      storeJson: storeJsonForFees,
+      addressLat,
+      addressLong,
+    });
+    if (!walletPlan.ok) {
+      return { ok: false, statusCode: walletPlan.statusCode || 400, message: walletPlan.message };
+    }
+    const finalWalletAmountJod = walletPlan.walletAmountJod || 0;
+    const finalPaymentType =
+      options.storedPaymentType ||
+      walletPlan.paymentType ||
+      normalizedPaymentType;
+    const paymentTypeForStorage = (() => {
+      const t = String(finalPaymentType || '').toLowerCase();
+      if (t === 'wallet+card') return 'Wallet+Card';
+      if (t === 'wallet+cliq') return 'Wallet+Cliq';
+      if (t === 'wallet') return 'Wallet';
+      if (t === 'card') return 'Card';
+      if (t === 'cliq') return 'Cliq';
+      if (t === 'cash' || t === 'cod') return 'Cash';
+      return String(finalPaymentType).charAt(0).toUpperCase() + String(finalPaymentType).slice(1);
+    })();
+
+    if (!options.initialStatusOverride) {
+      const pt = String(finalPaymentType).toLowerCase();
+      if (pt === 'wallet+cliq') initialStatus = 'Waiting cliq confirmation';
+      else if (pt === 'wallet') initialStatus = 'Waiting confirmation';
+    }
+
+    if (
+      finalWalletAmountJod > 0 &&
+      walletPlan.remainderJod > 0 &&
+      String(finalPaymentType).includes('card') &&
+      options.forcePaymentType &&
+      options.dryRun !== true
+    ) {
+      return {
+        ok: false,
+        statusCode: 400,
+        message: 'Wallet + Card orders must be created via POST /api/payment/initiate (card is charged for the remainder only).',
+      };
+    }
 
     if (options.dryRun === true) {
       return {
@@ -632,9 +697,13 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
           deliveryFee: computedDeliveryFee,
           serviceFee: computedServiceFee,
           feesTax: computedFeesTax,
+          grandTotalJod,
+          walletAmountJod: finalWalletAmountJod,
+          remainderJod: walletPlan.remainderJod || 0,
+          walletBalanceJod,
           weightKg: round3(weightKgNum),
           status: initialStatus,
-          paymentType: normalizedPaymentType,
+          paymentType: paymentTypeForStorage,
           storeId: finalStoreId,
           promoCode: finalPromoCode,
           discount: finalDiscount,
@@ -648,30 +717,51 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         storeJsonForFees?.arhebFee != null && Number.isFinite(Number(storeJsonForFees.arhebFee))
           ? Number(storeJsonForFees.arhebFee)
           : null;
-      orderId = createOrder({
-        userId,
-        phoneNumber,
-        name: name || null,
-        addressName: addressName || null,
-        addressLong: addressLong || null,
-        addressLat: addressLat || null,
-        discount: finalDiscount,
-        deliveryFee: computedDeliveryFee,
-        serviceFee: computedServiceFee,
-        feesTax: computedFeesTax,
-        weightKg: round3(weightKgNum),
-        totalAmount,
-        status: initialStatus,
-        paymentType: normalizedPaymentType,
-        promoCode: finalPromoCode,
-        storeId: finalStoreId,
-        nearby: nearby || null,
-        notes: notes || null,
-        paymentVerificationImage: paymentVerificationImage || null,
-        items: itemsCopy,
-        storeArhebFeePercent: feeSnap,
+      const createAndMaybeDebit = db.transaction(() => {
+        const oid = createOrder({
+          userId,
+          phoneNumber,
+          name: name || null,
+          addressName: addressName || null,
+          addressLong: addressLong || null,
+          addressLat: addressLat || null,
+          discount: finalDiscount,
+          deliveryFee: computedDeliveryFee,
+          serviceFee: computedServiceFee,
+          feesTax: computedFeesTax,
+          weightKg: round3(weightKgNum),
+          totalAmount,
+          status: initialStatus,
+          paymentType: paymentTypeForStorage,
+          promoCode: finalPromoCode,
+          storeId: finalStoreId,
+          nearby: nearby || null,
+          notes: notes || null,
+          paymentVerificationImage: paymentVerificationImage || null,
+          items: itemsCopy,
+          storeArhebFeePercent: feeSnap,
+          walletAmountJod: finalWalletAmountJod,
+        });
+        if (finalWalletAmountJod > 0 && options.skipWalletDebit !== true) {
+          const debit = applyWalletDebitForOrder(db, {
+            phoneNumber,
+            userId,
+            walletAmountJod: finalWalletAmountJod,
+            orderId: oid,
+          });
+          if (!debit.ok) {
+            const err = new Error(debit.message || 'Wallet debit failed');
+            err.code = 'WALLET_DEBIT';
+            throw err;
+          }
+        }
+        return oid;
       });
+      orderId = createAndMaybeDebit();
     } catch (e) {
+      if (e.code === 'WALLET_DEBIT') {
+        return { ok: false, statusCode: e.statusCode || 400, message: e.message };
+      }
       console.error('createOrderFromCheckoutBody error:', e);
       return { ok: false, statusCode: 500, message: 'Internal server error' };
     }
@@ -805,6 +895,11 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       const deliveryFee = resolved.fee;
       const serviceFee = resolveStoreOrderServiceFeeJod(store, platformTiers.defaultServiceFeeJod);
       const invoice = buildInvoice(deliveryFee, serviceFee);
+      const paymentMethods = getEffectivePaymentMethodsForDropoff(
+        store,
+        deliveryLocation.latitude,
+        deliveryLocation.longitude,
+      );
       return res.status(200).json({
         success: true,
         data: {
@@ -824,6 +919,10 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
             ? `${Math.round(FEES_TAX_RATE * 100)}% tax on delivery fee plus service fee (not on order subtotal).`
             : 'Tax on delivery/service fees is currently disabled.',
           invoiceTotal: invoice.total,
+          paymentMethods,
+          paymentMethodsNote: !paymentMethods.cod
+            ? 'Cash on delivery is not available for this delivery area. Use Card or Cliq.'
+            : null,
           pricingNote: (() => {
             const parts = [];
             const flat = platformTiers.flatDeliveryFeeJod;

@@ -14,6 +14,7 @@ const attachProductsRoutes = require('./products');
 const attachHomeRoutes = require('./home');
 const attachStoresRoutes = require('./stores');
 const attachProfileRoutes = require('./profile');
+const attachWalletRoutes = require('./wallet');
 const attachCheckoutRoutes = require('./checkout');
 const attachContactRoutes = require('./contact');
 const attachOrderTrackingRoutes = require('./order');
@@ -237,8 +238,14 @@ const findDriverByMobile = db.prepare('SELECT * FROM drivers WHERE mobile = ?');
 const {
   jordanMobileLookupKeys,
   normalizeJordanMobileKey,
-  jordanMobileToE164,
 } = require('./utils/jordanMobile');
+const {
+  isUserDeleted,
+  isUserActive,
+  findUserByPhoneFlexible: findUserByPhoneFlexibleShared,
+  resolveAuthPhoneIdentity: resolveAuthPhoneIdentityShared,
+  softDeleteUserRowsByPhone,
+} = require('./utils/appUserLifecycle');
 const {
   ensureWhatsappOtpTable,
   resolveOtpDestination,
@@ -250,44 +257,22 @@ const {
   verifyCustomerMetaWhatsappLoginOtp,
 } = require('./utils/whatsappLoginOtp');
 
-function pickCanonicalUserRow(matches) {
-  if (!matches.length) return null;
-  if (matches.length === 1) return matches[0];
-  const active = matches.filter((u) => !u.deleted);
-  const pool = active.length ? active : matches;
-  pool.sort((a, b) => {
-    const score = (u) => {
-      if (String(u.phoneNumber).startsWith('+962')) return 0;
-      if (String(u.phoneNumber).startsWith('+')) return 1;
-      if (String(u.phoneNumber).startsWith('0')) return 2;
-      return 3;
-    };
-    const diff = score(a) - score(b);
-    if (diff !== 0) return diff;
-    return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
-  });
-  return pool[0];
+function findUserByPhoneFlexible(phone) {
+  return findUserByPhoneFlexibleShared(db, findUserByPhone, phone);
 }
 
-function findUserByPhoneFlexible(phone) {
-  const keys = jordanMobileLookupKeys(phone);
-  const seen = new Set();
-  const matches = [];
-  for (const k of keys) {
-    const u = findUserByPhone.get(k);
-    if (u && !seen.has(u.phoneNumber)) {
-      seen.add(u.phoneNumber);
-      matches.push(u);
-    }
-  }
-  return pickCanonicalUserRow(matches);
+function authRegistrationFlags(existingUser) {
+  return {
+    alreadyRegistered: isUserActive(existingUser),
+    isNewUser: !existingUser || isUserDeleted(existingUser),
+  };
 }
 
 function retireDuplicatePhoneUserRows(canonicalPhoneKey) {
   const keys = jordanMobileLookupKeys(canonicalPhoneKey);
   for (const k of keys) {
     const u = findUserByPhone.get(k);
-    if (!u || u.phoneNumber === canonicalPhoneKey || u.deleted) continue;
+    if (!u || u.phoneNumber === canonicalPhoneKey || isUserDeleted(u)) continue;
     db.prepare(
       `UPDATE users SET deleted = 1, deletedAt = CURRENT_TIMESTAMP, token = NULL WHERE phoneNumber = ?`,
     ).run(u.phoneNumber);
@@ -295,13 +280,7 @@ function retireDuplicatePhoneUserRows(canonicalPhoneKey) {
 }
 
 function resolveAuthPhoneIdentity(phoneInput) {
-  const normalizedPhone = String(phoneInput || '').trim();
-  const phoneKey = normalizeJordanMobileKey(normalizedPhone);
-  const existingUser = findUserByPhoneFlexible(normalizedPhone);
-  const canonicalPhone =
-    existingUser?.phoneNumber ?? jordanMobileToE164(normalizedPhone) ?? phoneKey;
-  const alreadyRegistered = Boolean(existingUser && !existingUser.deleted);
-  return { normalizedPhone, phoneKey, canonicalPhone, existingUser, alreadyRegistered };
+  return resolveAuthPhoneIdentityShared(db, findUserByPhone, phoneInput);
 }
 
 function findDriverByPhoneFlexible(phone) {
@@ -395,15 +374,16 @@ attachAdmin(app, db, JWT_SECRET, io);
 attachDriverRoutes(app, db, JWT_SECRET, io);
 
 function finalizePhoneAuthSession(firebasePhone, firebaseUid, verificationIdToken) {
-  const existing = findUserByPhoneFlexible(firebasePhone);
-  const phoneKey = existing?.phoneNumber ?? firebasePhone;
+  const identity = resolveAuthPhoneIdentity(firebasePhone);
+  const existing = identity.existingUser;
+  const phoneKey = identity.canonicalPhone;
   if (existing && existing.isBlocked) {
     const e = new Error('User is blocked');
     e.statusCode = 403;
     throw e;
   }
   const newUserId =
-    existing && existing.deleted
+    existing && isUserDeleted(existing)
       ? `u_${Date.now()}_${Math.random().toString(16).slice(2)}`
       : (existing?.userId || phoneKey);
 
@@ -424,7 +404,7 @@ function finalizePhoneAuthSession(firebasePhone, firebaseUid, verificationIdToke
 
   retireDuplicatePhoneUserRows(phoneKey);
 
-  if (existing && existing.deleted) {
+  if (existing && isUserDeleted(existing)) {
     try {
       db.prepare(
         `UPDATE users SET name = NULL, addressName = NULL, addressLong = NULL, addressLat = NULL, addresses = '[]', fcmToken = NULL WHERE phoneNumber = ?`,
@@ -502,7 +482,7 @@ function finalizeFirebaseIdentitySession(decoded, verificationIdToken) {
     throw e;
   }
   const newUserId =
-    existingByUid && existingByUid.deleted
+    existingByUid && isUserDeleted(existingByUid)
       ? `u_${Date.now()}_${Math.random().toString(16).slice(2)}`
       : (existingByUid?.userId || userKey);
 
@@ -618,7 +598,7 @@ async function handleAuthRegister(req, res) {
     return res.status(400).json({ message: 'Invalid phone number', case: 2 });
   }
 
-  const existingUser = findUserByPhoneFlexible(normalizedPhone);
+  const existingUser = resolveAuthPhoneIdentity(normalizedPhone).existingUser;
   if (existingUser && existingUser.isBlocked) {
     return res.status(403).json({ message: 'User is blocked', case: 2 });
   }
@@ -632,7 +612,7 @@ async function handleAuthRegister(req, res) {
     return res.status(200).json({
       message: 'OTP SENT SUCCESSFUL',
       case: 1,
-      alreadyRegistered: Boolean(existingUser && !existingUser.deleted),
+      ...authRegistrationFlags(existingUser),
       sessionInfo,
       verificationId: sessionInfo,
       otpProvider: 'firebase',
@@ -666,7 +646,7 @@ async function handleTwilioAuthRegister(req, res) {
   }
 
   const normalizedPhone = String(phoneNumber).trim();
-  const { phoneKey, existingUser, alreadyRegistered } = resolveAuthPhoneIdentity(normalizedPhone);
+  const { phoneKey, existingUser } = resolveAuthPhoneIdentity(normalizedPhone);
   if (!phoneKey || phoneKey.replace(/\D/g, '').length < 9) {
     return res.status(400).json({ message: 'Invalid phone number', case: 2 });
   }
@@ -680,8 +660,7 @@ async function handleTwilioAuthRegister(req, res) {
     return res.status(200).json({
       message: 'OTP SENT SUCCESSFUL',
       case: 1,
-      alreadyRegistered,
-      isNewUser: !alreadyRegistered,
+      ...authRegistrationFlags(existingUser),
       sessionInfo: sent.sessionInfo,
       verificationId: sent.sessionInfo,
       otpProvider: 'twilio',
@@ -740,8 +719,7 @@ async function handleTwilioAuthVerifyOtp(req, res) {
       otpProvider: 'twilio',
       firebaseToken: null,
       case: 1,
-      alreadyRegistered: identity.alreadyRegistered,
-      isNewUser: !identity.alreadyRegistered,
+      ...authRegistrationFlags(identity.existingUser),
     });
   } catch (error) {
     if (error.statusCode === 403) {
@@ -776,7 +754,7 @@ function authenticateRequest(req, res, next) {
     const phone = payload?.phoneNumber;
     if (!phone) return res.status(401).json({ message: 'Invalid token' });
     const row = findUserByPhoneFlexible(phone);
-    if (!row || row.deleted) {
+    if (!row || isUserDeleted(row)) {
       return res.status(401).json({ message: 'User does not exist' });
     }
     if (row.isBlocked) {
@@ -790,6 +768,7 @@ function authenticateRequest(req, res, next) {
 }
 
 attachProfileRoutes(app, db, authenticateRequest);
+attachWalletRoutes(app, db, authenticateRequest);
 attachCheckoutRoutes(app, db, authenticateRequest);
 attachPaymentRoutes(app, db, authenticateRequest, io);
 attachContactRoutes(app, db, authenticateRequest);
@@ -866,8 +845,7 @@ app.post('/api/auth/whatsapp/send-code', async (req, res) => {
       success: true,
       message: delivery === 'sms' ? 'OTP sent via SMS (Twilio Verify)' : 'OTP sent via WhatsApp',
       case: 1,
-      alreadyRegistered: identity.alreadyRegistered,
-      isNewUser: !identity.alreadyRegistered,
+      ...authRegistrationFlags(identity.existingUser),
       verificationId: sent.sessionInfo,
       sessionInfo: sent.sessionInfo,
       expiresIn: sent.expiresInSec,
@@ -928,8 +906,7 @@ app.post('/api/auth/whatsapp/verify-code', async (req, res) => {
       firebaseToken: null,
       otpProvider: 'whatsapp',
       case: 1,
-      alreadyRegistered: identity.alreadyRegistered,
-      isNewUser: !identity.alreadyRegistered,
+      ...authRegistrationFlags(identity.existingUser),
     });
   } catch (error) {
     if (error.statusCode === 403) {
@@ -968,8 +945,7 @@ app.post('/api/auth/meta/whatsapp/send-code', async (req, res) => {
       success: true,
       message: 'OTP sent via WhatsApp (Meta Cloud API)',
       case: 1,
-      alreadyRegistered: identity.alreadyRegistered,
-      isNewUser: !identity.alreadyRegistered,
+      ...authRegistrationFlags(identity.existingUser),
       verificationId: sent.sessionInfo,
       sessionInfo: sent.sessionInfo,
       expiresIn: sent.expiresInSec,
@@ -1030,8 +1006,7 @@ app.post('/api/auth/meta/whatsapp/verify-code', async (req, res) => {
       firebaseToken: null,
       otpProvider: 'meta',
       case: 1,
-      alreadyRegistered: identity.alreadyRegistered,
-      isNewUser: !identity.alreadyRegistered,
+      ...authRegistrationFlags(identity.existingUser),
     });
   } catch (error) {
     if (error.statusCode === 403) {
@@ -1112,11 +1087,22 @@ async function deleteFirebaseUser(firebaseIdToken) {
   await axios.post(url, { idToken: firebaseIdToken });
 }
 
+const softDeleteUserByPhone = db.prepare(
+  `UPDATE users SET deleted = 1, deletedAt = CURRENT_TIMESTAMP, token = NULL WHERE phoneNumber = ?`,
+);
+
 // Soft delete user account (token only). On next login/signup, deleted users are treated as non-existent.
 app.delete('/api/auth/user', authenticateRequest, async (req, res) => {
-  const phone = req.user.phoneNumber;
   try {
-    db.prepare(`UPDATE users SET deleted = 1, deletedAt = CURRENT_TIMESTAMP, token = NULL WHERE phoneNumber = ?`).run(phone);
+    const result = softDeleteUserRowsByPhone(
+      db,
+      findUserByPhone,
+      softDeleteUserByPhone,
+      req.user.phoneNumber,
+    );
+    if (!result) {
+      return res.status(404).json({ success: false, message: 'User not found or already deleted' });
+    }
     return res.status(200).json({ success: true, message: 'Account deleted (soft)' });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Internal server error' });

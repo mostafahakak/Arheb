@@ -3,6 +3,15 @@ const axios = require('axios');
 const express = require('express');
 const attachCheckoutRoutes = require('../checkout');
 const { createArhebBoxRequest, ensureArhebBoxTable, enrichArhebBoxRow, notifyDriversAboutNewArhebBox } = require('../arhebBox');
+const {
+  ensureTopupsTable,
+  createTopupRecord,
+  findTopupByTranRef,
+  completeTopupPayment,
+  assertUserCanTopUp,
+  mapTopupRow,
+} = require('../wallet/topups');
+const { applyWalletDebitForOrder } = require('../wallet/checkoutWallet');
 
 const PAYTABS_API_URL = 'https://madfoat-secure.paytabs.com';
 const PROFILE_ID = 47149;
@@ -54,6 +63,7 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest, io) 
   try { db.exec('ALTER TABLE payment_transactions ADD COLUMN pendingPhoneNumber TEXT'); } catch (e) { /* exists */ }
 
   ensureArhebBoxTable(db);
+  ensureTopupsTable(db);
 
   function paytabsHeaders() {
     return {
@@ -95,22 +105,56 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest, io) 
   }
 
   async function finalizePendingEntitiesForTransaction(existing, tranRef) {
-    if (!existing || existing.orderId || existing.arhebBoxRequestId) return;
+    if (!existing) return;
+    if (existing.topupId) {
+      await completeTopupPayment(db, existing.topupId, {
+        tranRef,
+        responseStatus: 'A',
+        rawResponse: { source: 'payment_finalize' },
+      });
+      return;
+    }
+    const topupByRef = findTopupByTranRef(db, tranRef);
+    if (topupByRef && topupByRef.status !== 'completed') {
+      await completeTopupPayment(db, topupByRef.id, {
+        tranRef,
+        responseStatus: 'A',
+        rawResponse: { source: 'payment_finalize_by_ref' },
+      });
+      return;
+    }
+    if (existing.orderId || existing.arhebBoxRequestId) return;
     if (existing.pendingCheckoutJson) {
       try {
         const createOrderFromCheckoutBody = attachCheckoutRoutes.createOrderFromCheckoutBody;
         if (typeof createOrderFromCheckoutBody !== 'function') return;
         const checkout = JSON.parse(existing.pendingCheckoutJson);
         const userId = existing.pendingPhoneNumber || checkout?.phoneNumber;
+        const walletAmt = Number(checkout.walletAmountJod) || 0;
         const createRes = await createOrderFromCheckoutBody(userId, checkout, {
           forcePaymentType: 'Card',
+          storedPaymentType: walletAmt > 0 ? 'wallet+card' : 'Card',
           initialStatusOverride: 'Waiting confirmation',
+          skipWalletDebit: walletAmt > 0,
         });
         if (!createRes.ok) {
           console.error('finalizePendingEntitiesForTransaction checkout failed:', createRes.message);
           return;
         }
         const orderId = createRes.orderId;
+        if (walletAmt > 0) {
+          const debit = applyWalletDebitForOrder(db, {
+            phoneNumber: checkout.phoneNumber || existing.pendingPhoneNumber,
+            userId,
+            walletAmountJod: walletAmt,
+            orderId,
+          });
+          if (!debit.ok) {
+            console.error('finalizePendingEntitiesForTransaction wallet debit failed:', debit.message);
+            deleteOrderCascade(db, orderId);
+            return;
+          }
+        }
         db.prepare('UPDATE orders SET paymentTranRef = COALESCE(?, paymentTranRef), paymentCartId = COALESCE(?, paymentCartId) WHERE id = ?').run(tranRef || null, existing.cartId || null, orderId);
         db.prepare('UPDATE payment_transactions SET orderId = ?, pendingCheckoutJson = NULL, pendingPhoneNumber = NULL WHERE tranRef = ?').run(orderId, tranRef);
         applyCardPaymentSuccessToOrder(orderId, tranRef);
@@ -252,6 +296,159 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest, io) 
     }
   });
 
+  // --- Wallet top-up via card (Madfoat / PayTabs — same config as order payment) ---
+  app.post('/api/wallet/top-up/initiate', authenticateRequest, async (req, res) => {
+    try {
+      if (!SERVER_KEY) {
+        return res.status(503).json({ success: false, message: 'Payment gateway is not configured (PAYTABS_SERVER_KEY missing)' });
+      }
+      const body = req.body || {};
+      const amountJod = body.amountJod ?? body.amount;
+      const amount = Number(amountJod);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        return res.status(400).json({ success: false, message: 'amountJod must be a positive number' });
+      }
+      const paymentMethod = String(body.paymentMethod || 'card').trim().toLowerCase();
+      if (paymentMethod !== 'card') {
+        return res.status(400).json({
+          success: false,
+          message: 'Use paymentMethod card for hosted payment, or POST /api/wallet/top-up/cliq for Cliq top-up with paymentVerificationImage.',
+        });
+      }
+
+      const user = assertUserCanTopUp(db, req.user.phoneNumber);
+      const cartId = `WALLET-TOPUP-${Date.now()}`;
+      const cartCurrency = body.currency || CART_CURRENCY;
+      const callbackUrl = BASE_URL ? `${BASE_URL}/api/payment/callback` : '';
+      const returnUrl = BASE_URL ? `${BASE_URL}/api/payment/return` : '';
+
+      const topup = createTopupRecord(db, {
+        phoneNumber: user.phoneNumber,
+        userId: user.userId,
+        amountJod: amount,
+        paymentMethod: 'card',
+        status: 'initiated',
+        cartId,
+        note: body.note ? String(body.note).trim() : null,
+      });
+
+      const payload = {
+        profile_id: PROFILE_ID,
+        tran_type: 'sale',
+        tran_class: 'ecom',
+        cart_id: cartId,
+        cart_description: body.description || 'Arheb wallet top-up',
+        cart_currency: cartCurrency,
+        cart_amount: amount,
+        hide_shipping: true,
+      };
+      if (callbackUrl) payload.callback = callbackUrl;
+      if (returnUrl) payload.return = returnUrl;
+
+      const cName = body.customerName || undefined;
+      const cEmail = body.customerEmail || undefined;
+      const cPhone = body.customerPhone || user.phoneNumber || undefined;
+      if (cName || cEmail || cPhone) {
+        payload.customer_details = {};
+        if (cName) payload.customer_details.name = cName;
+        if (cEmail) payload.customer_details.email = cEmail;
+        if (cPhone) payload.customer_details.phone = cPhone;
+      }
+
+      let data;
+      try {
+        const response = await axios.post(`${PAYTABS_API_URL}/payment/request`, payload, {
+          headers: paytabsHeaders(),
+          timeout: 30000,
+        });
+        data = response.data;
+      } catch (error) {
+        db.prepare(`UPDATE topups SET status = 'failed', updatedAt = CURRENT_TIMESTAMP WHERE id = ?`).run(topup.id);
+        const errData = error.response?.data;
+        console.error('Wallet top-up initiate error:', errData || error.message);
+        return res.status(error.response?.status || 500).json({
+          success: false,
+          message: errData?.message || error.message || 'Payment request failed',
+        });
+      }
+
+      const tranRef = data.tran_ref || null;
+      const txStatus = data.redirect_url
+        ? 'pending_redirect'
+        : data.payment_result?.response_status === 'A'
+          ? 'completed'
+          : 'initiated';
+
+      const payInfo = db.prepare(`
+        INSERT INTO payment_transactions (topupId, orderId, tranRef, cartId, cartAmount, cartCurrency, tranType, status, redirectUrl, rawResponse, pendingPhoneNumber)
+        VALUES (?, NULL, ?, ?, ?, ?, 'sale', ?, ?, ?, ?)
+      `).run(
+        topup.id,
+        tranRef,
+        cartId,
+        amount,
+        cartCurrency,
+        txStatus,
+        data.redirect_url || null,
+        JSON.stringify(data),
+        user.phoneNumber,
+      );
+
+      db.prepare(`
+        UPDATE topups SET tranRef = ?, redirectUrl = ?, paymentTransactionId = ?, status = ?, rawResponse = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?
+      `).run(tranRef, data.redirect_url || null, payInfo.lastInsertRowid, txStatus, JSON.stringify(data), topup.id);
+
+      const paymentBlock = { tranRef, cartId, cartAmount: amount, cartCurrency, topupId: topup.id };
+
+      if (data.payment_result?.response_status === 'A') {
+        await completeTopupPayment(db, topup.id, {
+          tranRef,
+          responseStatus: 'A',
+          responseMessage: data.payment_result?.response_message,
+          rawResponse: data,
+        });
+        const refreshed = mapTopupRow(db.prepare('SELECT * FROM topups WHERE id = ?').get(topup.id));
+        return res.status(201).json({
+          success: true,
+          message: 'Wallet topped up successfully',
+          data: {
+            topup: refreshed,
+            payment: { ...paymentBlock, status: 'completed', paymentResult: data.payment_result },
+          },
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      if (data.redirect_url) {
+        return res.status(201).json({
+          success: true,
+          message: 'Top-up payment initiated; complete payment on the hosted page',
+          data: {
+            topup: mapTopupRow(db.prepare('SELECT * FROM topups WHERE id = ?').get(topup.id)),
+            payment: { ...paymentBlock, status: 'pending_redirect', redirectUrl: data.redirect_url, redirectMethod: 'GET' },
+          },
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      return res.status(201).json({
+        success: true,
+        message: 'Top-up payment submitted',
+        data: {
+          topup: mapTopupRow(db.prepare('SELECT * FROM topups WHERE id = ?').get(topup.id)),
+          payment: { ...paymentBlock, status: 'initiated', rawResponse: data },
+        },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      if (error.code === 'NOT_FOUND') {
+        return res.status(404).json({ success: false, message: error.message });
+      }
+      console.error('Wallet top-up initiate error:', error);
+      return res.status(500).json({ success: false, message: error.message || 'Internal server error' });
+    }
+  });
+
   // --- Initiate payment: creates order (checkout) + Madfoat session; paymentType is always Card ---
   app.post('/api/payment/initiate', authenticateRequest, async (req, res) => {
     const createOrderFromCheckoutBody = attachCheckoutRoutes.createOrderFromCheckoutBody;
@@ -294,8 +491,18 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest, io) 
         return res.status(dryRun.statusCode).json({ success: false, message: dryRun.message });
       }
 
-      const amount = Number(dryRun.preview?.totalAmount);
+      const walletAmt = Number(checkoutBody.walletAmountJod) || 0;
+      const amount =
+        walletAmt > 0
+          ? Number(dryRun.preview?.remainderJod)
+          : Number(dryRun.preview?.grandTotalJod ?? dryRun.preview?.totalAmount);
       if (!Number.isFinite(amount) || amount <= 0) {
+        if (walletAmt > 0 && Number(dryRun.preview?.remainderJod) <= 0) {
+          return res.status(400).json({
+            success: false,
+            message: 'When wallet covers the full order total, use POST /api/checkout with paymentType Wallet instead of payment/initiate.',
+          });
+        }
         return res.status(400).json({ success: false, message: 'Invalid order totalAmount' });
       }
 
@@ -470,12 +677,21 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest, io) 
         `).run(status, respStatus, respCode, respMessage, token || null, customerEmail || null, JSON.stringify(body), tranRef);
 
         if (status === 'completed') {
-          if (existing.arhebBoxRequestId) {
-            applyCardPaymentSuccessToArhebBox(existing.arhebBoxRequestId, tranRef);
-          } else if (existing.orderId) {
-            applyCardPaymentSuccessToOrder(existing.orderId, tranRef);
+          if (existing.topupId) {
+            await completeTopupPayment(db, existing.topupId, {
+              tranRef,
+              responseStatus: respStatus,
+              responseMessage: respMessage,
+              rawResponse: body,
+            });
+          } else {
+            if (existing.arhebBoxRequestId) {
+              applyCardPaymentSuccessToArhebBox(existing.arhebBoxRequestId, tranRef);
+            } else if (existing.orderId) {
+              applyCardPaymentSuccessToOrder(existing.orderId, tranRef);
+            }
+            await finalizePendingEntitiesForTransaction(existing, tranRef);
           }
-          await finalizePendingEntitiesForTransaction(existing, tranRef);
         }
       } else {
         db.prepare(`
@@ -505,12 +721,21 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest, io) 
           UPDATE payment_transactions SET status = ?, responseStatus = ?, responseMessage = ?, updatedAt = CURRENT_TIMESTAMP WHERE tranRef = ?
         `).run(status, respStatus || null, respMessage || null, tranRef);
         if (respStatus === 'A') {
-          if (existing.arhebBoxRequestId) {
-            applyCardPaymentSuccessToArhebBox(existing.arhebBoxRequestId, tranRef);
-          } else if (existing.orderId) {
-            applyCardPaymentSuccessToOrder(existing.orderId, tranRef);
+          if (existing.topupId) {
+            await completeTopupPayment(db, existing.topupId, {
+              tranRef,
+              responseStatus: respStatus,
+              responseMessage: respMessage,
+              rawResponse: params,
+            });
+          } else {
+            if (existing.arhebBoxRequestId) {
+              applyCardPaymentSuccessToArhebBox(existing.arhebBoxRequestId, tranRef);
+            } else if (existing.orderId) {
+              applyCardPaymentSuccessToOrder(existing.orderId, tranRef);
+            }
+            await finalizePendingEntitiesForTransaction(existing, tranRef);
           }
-          await finalizePendingEntitiesForTransaction(existing, tranRef);
         }
       }
     }
@@ -565,12 +790,21 @@ module.exports = function attachPaymentRoutes(app, db, authenticateRequest, io) 
           tranRef,
         );
         if (status === 'completed') {
-          if (existing.arhebBoxRequestId) {
-            applyCardPaymentSuccessToArhebBox(existing.arhebBoxRequestId, tranRef);
-          } else if (existing.orderId) {
-            applyCardPaymentSuccessToOrder(existing.orderId, tranRef);
+          if (existing.topupId) {
+            await completeTopupPayment(db, existing.topupId, {
+              tranRef,
+              responseStatus: data.payment_result?.response_status,
+              responseMessage: data.payment_result?.response_message,
+              rawResponse: data,
+            });
+          } else {
+            if (existing.arhebBoxRequestId) {
+              applyCardPaymentSuccessToArhebBox(existing.arhebBoxRequestId, tranRef);
+            } else if (existing.orderId) {
+              applyCardPaymentSuccessToOrder(existing.orderId, tranRef);
+            }
+            await finalizePendingEntitiesForTransaction(existing, tranRef);
           }
-          await finalizePendingEntitiesForTransaction(existing, tranRef);
         }
       }
 

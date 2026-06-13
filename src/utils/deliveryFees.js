@@ -129,6 +129,22 @@ function dropoffInSpecialFarDeliveryZone(lat, lng) {
 /**
  * @param {unknown} lat
  * @param {unknown} lng
+ * @returns {boolean}
+ */
+function dropoffInRemoteDeliveryZone(lat, lng) {
+  return remoteDeliveryZoneFixedFeeJod(lat, lng) != null;
+}
+
+/**
+ * Far / special delivery pins (Wadi Rum, remote south, etc.) — checkout allows Card & Cliq only (no COD).
+ */
+function dropoffRequiresCardOrCliqOnly(lat, lng) {
+  return dropoffInSpecialFarDeliveryZone(lat, lng) || dropoffInRemoteDeliveryZone(lat, lng);
+}
+
+/**
+ * @param {unknown} lat
+ * @param {unknown} lng
  * @returns {number | null} fixed JOD fee if inside any remote zone, else null
  */
 function remoteDeliveryZoneFixedFeeJod(lat, lng) {
@@ -402,6 +418,8 @@ module.exports = {
   remoteDeliveryZoneFixedFeeJod,
   specialFarDeliveryZoneFixedFeeJod,
   dropoffInSpecialFarDeliveryZone,
+  dropoffInRemoteDeliveryZone,
+  dropoffRequiresCardOrCliqOnly,
   storeOrderDeliveryFeeFromDistanceTiers,
   storeOrderDeliveryFeeDistanceOnly,
   storeOrderDeliveryFeeJod,
