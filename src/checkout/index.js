@@ -630,8 +630,25 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
     );
     const computedServiceFee = resolveStoreOrderServiceFeeJod(storeJsonForFees, platformTiers.defaultServiceFeeJod);
     const computedFeesTax = calcFeesTaxJod(computedDeliveryFee, computedServiceFee);
+    /**
+     * Charge base = items subtotal (after discount), NOT the client `totalAmount`.
+     * The app sends `totalAmount` already including delivery/service, so using it as the
+     * base double-counted the fees on card/wallet charges. Deriving the subtotal from the
+     * items keeps the server authoritative on fees and matches both new and legacy clients
+     * (legacy `totalAmount` == items subtotal, so the result is identical there).
+     */
+    const itemsSubtotalJod = round2(
+      itemsCopy.reduce(
+        (sum, it) => sum + safeNumber(it.price, 0) * safeNumber(it.quantity, 0),
+        0,
+      ),
+    );
+    const orderValueForChargeJod = Math.max(
+      0,
+      round2(itemsSubtotalJod - (safeNumber(finalDiscount, 0))),
+    );
     const grandTotalJod = computeCheckoutGrandTotalJod(
-      totalAmount,
+      orderValueForChargeJod,
       computedDeliveryFee,
       computedServiceFee,
       computedFeesTax,
