@@ -261,10 +261,27 @@ function findUserByPhoneFlexible(phone) {
   return findUserByPhoneFlexibleShared(db, findUserByPhone, phone);
 }
 
+function userRowHasProfileData(row) {
+  if (!row) return false;
+  if (row.name != null && String(row.name).trim() !== '') return true;
+  try {
+    const a = JSON.parse(row.addresses || '[]');
+    if (Array.isArray(a) && a.length > 0) return true;
+  } catch (e) {
+    /* ignore */
+  }
+  return row.addressName != null || row.addressLong != null || row.addressLat != null;
+}
+
 function authRegistrationFlags(existingUser) {
+  const active = isUserActive(existingUser);
+  // A returning customer whose row was soft-deleted (e.g. during the Firebase→WhatsApp
+  // transition) but still has a saved profile should NOT be treated as brand new.
+  const returningWithData =
+    Boolean(existingUser) && isUserDeleted(existingUser) && userRowHasProfileData(existingUser);
   return {
-    alreadyRegistered: isUserActive(existingUser),
-    isNewUser: !existingUser || isUserDeleted(existingUser),
+    alreadyRegistered: active || returningWithData,
+    isNewUser: !(active || returningWithData),
   };
 }
 
@@ -281,6 +298,118 @@ function retireDuplicatePhoneUserRows(canonicalPhoneKey) {
 
 function resolveAuthPhoneIdentity(phoneInput) {
   return resolveAuthPhoneIdentityShared(db, findUserByPhone, phoneInput);
+}
+
+/**
+ * Consolidate a customer's profile onto the canonical phone row so name/addresses survive
+ * the Firebase→WhatsApp transition. Pulls data from rows stored under alternate phone
+ * formats, and as a last resort recovers the address from the most recent order (orders
+ * persist even when the saved profile was cleared). Non-destructive: only fills gaps.
+ */
+function mergeDuplicatePhoneProfilesIntoCanonical(canonicalPhone) {
+  const canonicalRow = findUserByPhone.get(canonicalPhone);
+  if (!canonicalRow) return;
+
+  const keys = jordanMobileLookupKeys(canonicalPhone);
+  const rows = [];
+  const seen = new Set();
+  for (const k of keys) {
+    const u = findUserByPhone.get(k);
+    if (u && !seen.has(u.phoneNumber)) {
+      seen.add(u.phoneNumber);
+      rows.push(u);
+    }
+  }
+
+  const hasText = (v) => v != null && String(v).trim() !== '';
+  const parseAddrs = (u) => {
+    try {
+      const a = JSON.parse(u.addresses || '[]');
+      return Array.isArray(a) ? a : [];
+    } catch (e) {
+      return [];
+    }
+  };
+  const legacyAddr = (u) =>
+    u.addressName != null || u.addressLong != null || u.addressLat != null
+      ? [{ addressName: u.addressName || null, addressLong: u.addressLong ?? null, addressLat: u.addressLat ?? null }]
+      : [];
+
+  let mergedName = hasText(canonicalRow.name) ? canonicalRow.name : null;
+  if (!mergedName) {
+    for (const u of rows) {
+      if (hasText(u.name)) {
+        mergedName = u.name;
+        break;
+      }
+    }
+  }
+
+  let mergedFcm = hasText(canonicalRow.fcmToken) ? canonicalRow.fcmToken : null;
+  if (!mergedFcm) {
+    for (const u of rows) {
+      if (hasText(u.fcmToken)) {
+        mergedFcm = u.fcmToken;
+        break;
+      }
+    }
+  }
+
+  let mergedAddresses = parseAddrs(canonicalRow);
+  if (mergedAddresses.length === 0) mergedAddresses = legacyAddr(canonicalRow);
+  if (mergedAddresses.length === 0) {
+    for (const u of rows) {
+      const a = parseAddrs(u);
+      if (a.length) {
+        mergedAddresses = a;
+        break;
+      }
+    }
+  }
+  if (mergedAddresses.length === 0) {
+    for (const u of rows) {
+      const a = legacyAddr(u);
+      if (a.length) {
+        mergedAddresses = a;
+        break;
+      }
+    }
+  }
+  if (mergedAddresses.length === 0) {
+    try {
+      const placeholders = keys.map(() => '?').join(',');
+      const order = db
+        .prepare(
+          `SELECT addressName, addressLong, addressLat FROM orders
+           WHERE phoneNumber IN (${placeholders})
+             AND (addressLong IS NOT NULL OR addressLat IS NOT NULL OR addressName IS NOT NULL)
+           ORDER BY datetime(createdAt) DESC, id DESC LIMIT 1`,
+        )
+        .get(...keys);
+      if (order && (order.addressLong != null || order.addressLat != null || hasText(order.addressName))) {
+        mergedAddresses = [
+          {
+            addressName: order.addressName || null,
+            addressLong: order.addressLong ?? null,
+            addressLat: order.addressLat ?? null,
+          },
+        ];
+      }
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
+  try {
+    db.prepare(`UPDATE users SET name = ?, addresses = ?, fcmToken = ? WHERE phoneNumber = ?`).run(
+      mergedName ?? null,
+      JSON.stringify(mergedAddresses),
+      mergedFcm ?? null,
+      canonicalPhone,
+    );
+  } catch (e) {
+    /* ignore */
+  }
 }
 
 function findDriverByPhoneFlexible(phone) {
@@ -382,10 +511,9 @@ function finalizePhoneAuthSession(firebasePhone, firebaseUid, verificationIdToke
     e.statusCode = 403;
     throw e;
   }
-  const newUserId =
-    existing && isUserDeleted(existing)
-      ? `u_${Date.now()}_${Math.random().toString(16).slice(2)}`
-      : (existing?.userId || phoneKey);
+  // Reuse the existing identity so returning customers keep their saved profile and order
+  // history, even if their row was soft-deleted during the Firebase→WhatsApp transition.
+  const newUserId = existing?.userId || phoneKey;
 
   const token = jwt.sign(
     { phoneNumber: phoneKey, userId: newUserId },
@@ -402,17 +530,12 @@ function finalizePhoneAuthSession(firebasePhone, firebaseUid, verificationIdToke
     deletedAt: null,
   });
 
+  // Pull any name/addresses stored under alternate phone formats (or recoverable from past
+  // orders) into the canonical row, then retire the duplicate alias rows. This replaces the
+  // previous behavior that wiped the profile for soft-deleted rows and caused returning
+  // customers to lose their saved addresses.
+  mergeDuplicatePhoneProfilesIntoCanonical(phoneKey);
   retireDuplicatePhoneUserRows(phoneKey);
-
-  if (existing && isUserDeleted(existing)) {
-    try {
-      db.prepare(
-        `UPDATE users SET name = NULL, addressName = NULL, addressLong = NULL, addressLat = NULL, addresses = '[]', fcmToken = NULL WHERE phoneNumber = ?`,
-      ).run(phoneKey);
-    } catch (e) {
-      /* ignore */
-    }
-  }
 
   return {
     success: true,
