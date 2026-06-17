@@ -920,6 +920,19 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         storeScopeId: null,
         summary: `Credited wallet ${user.phoneNumber} +${amountJod} JOD`,
       });
+      const creditedAmount = Number(result.amountJod ?? amountJod);
+      const creditedAmountText = Number.isFinite(creditedAmount) ? creditedAmount.toFixed(2) : String(amountJod);
+      const newBalanceText = Number.isFinite(Number(result.balanceJod)) ? Number(result.balanceJod).toFixed(2) : '';
+      fcm
+        .sendToUserByPhone(
+          db,
+          user.phoneNumber,
+          'Wallet topped up',
+          `Your wallet has been topped up by ${creditedAmountText} JOD.${newBalanceText ? ` New balance: ${newBalanceText} JOD.` : ''}`,
+          null,
+          { type: 'wallet_credit', amountJod: creditedAmountText, balanceJod: newBalanceText },
+        )
+        .catch(() => {});
       return res.status(200).json({
         success: true,
         message: 'Wallet credited successfully',
