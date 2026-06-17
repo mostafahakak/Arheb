@@ -22,6 +22,12 @@ const {
 const { ensureActivityLogTable, logActivity, handleActivityLogList } = require('./activityLog');
 const { syncCategoriesToDb } = require('../categories');
 const {
+  ensureCategoryStoreOrderTable,
+  getCategoryStoreOrderMap,
+  saveCategoryStoreOrder,
+  listStoresForBrowseCategory,
+} = require('../utils/categoryStoreOrder');
+const {
   loadFoodTypes,
   saveFoodTypes,
   sortFoodTypes,
@@ -313,6 +319,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   ensureOrderStatusTimestampColumns(db);
   ensureDriverCashCeilingColumns(db);
   ensureWalletTables(db);
+  ensureCategoryStoreOrderTable(db);
 
   /** Default: Jordan today→today. Pass allDates=true for no date filter (all time). */
   function resolveOrdersListDateRange(query) {
@@ -5532,6 +5539,93 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     } catch (e) {
       console.error('Categories reorder error:', e);
       return res.status(500).json({ success: false, message: 'Failed to reorder categories' });
+    }
+  });
+
+  /** Stores shown inside a browse category — manual order per category (Admin / SuperAdmin). */
+  app.get('/api/admin/categories/:id/stores', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      const idParam = String(req.params.id || '').trim();
+      if (!idParam) return res.status(400).json({ success: false, message: 'Invalid category id' });
+      const categories = loadCategories();
+      const category = categories.find((c) => String(c.id) === idParam);
+      if (!category) return res.status(404).json({ success: false, message: 'Category not found' });
+      if (idParam === 'offers') {
+        return res.status(400).json({ success: false, message: 'Offers category cannot be reordered here' });
+      }
+      const orderMap = getCategoryStoreOrderMap(db, idParam);
+      const stores = loadStores();
+      const matched = listStoresForBrowseCategory(stores, category, orderMap);
+      return res.status(200).json({
+        success: true,
+        data: {
+          category: {
+            id: category.id,
+            nameEn: category.nameEn || category.name,
+            nameAr: category.nameAr || null,
+          },
+          stores: matched.map((s, idx) => ({
+            id: s.id,
+            name: s.nameEn || s.name || s.nameAr || String(s.id),
+            nameAr: s.nameAr || null,
+            nameEn: s.nameEn || s.name || null,
+            displayOrder: orderMap.has(String(s.id)) ? orderMap.get(String(s.id)) : idx + 1,
+            hasCustomOrder: orderMap.has(String(s.id)),
+            isOpen: s.isOpen !== false,
+            paused: s.paused === true,
+          })),
+        },
+      });
+    } catch (e) {
+      console.error('Category stores list error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to load category stores' });
+    }
+  });
+
+  app.post('/api/admin/categories/:id/stores/reorder', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      const idParam = String(req.params.id || '').trim();
+      if (!idParam) return res.status(400).json({ success: false, message: 'Invalid category id' });
+      const categories = loadCategories();
+      const category = categories.find((c) => String(c.id) === idParam);
+      if (!category) return res.status(404).json({ success: false, message: 'Category not found' });
+      if (idParam === 'offers') {
+        return res.status(400).json({ success: false, message: 'Offers category cannot be reordered here' });
+      }
+      const items = req.body?.order;
+      if (!Array.isArray(items) || items.length === 0) {
+        return res.status(400).json({ success: false, message: 'Provide { order: [{ storeId, displayOrder }] }' });
+      }
+      const allStores = loadStores();
+      const matchedIds = new Set(
+        listStoresForBrowseCategory(allStores, category, new Map()).map((s) => String(s.id)),
+      );
+      const orderedIds = [];
+      const seen = new Set();
+      const sortedItems = [...items].sort(
+        (a, b) => (Number(a.displayOrder) || 0) - (Number(b.displayOrder) || 0),
+      );
+      for (const item of sortedItems) {
+        const sid = item?.storeId != null ? String(item.storeId).trim() : '';
+        if (!sid || !matchedIds.has(sid) || seen.has(sid)) continue;
+        seen.add(sid);
+        orderedIds.push(sid);
+      }
+      for (const sid of matchedIds) {
+        if (!seen.has(sid)) orderedIds.push(sid);
+      }
+      const saved = saveCategoryStoreOrder(db, idParam, orderedIds);
+      logActivity(db, req, {
+        action: 'edit',
+        resourceType: 'category',
+        resourceId: idParam,
+        storeScopeId: null,
+        summary: `Reordered ${saved.length} store(s) in category ${category.nameEn || category.name || idParam}`,
+      });
+      return res.status(200).json({ success: true, data: { categoryId: idParam, order: saved } });
+    } catch (e) {
+      console.error('Category stores reorder error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to reorder category stores' });
     }
   });
 

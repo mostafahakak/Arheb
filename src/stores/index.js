@@ -8,6 +8,13 @@ const {
   compareStoresOpenFirstThenName,
   sortStoresOpenFirst,
 } = require('../utils/storeVisibility');
+const {
+  ensureCategoryStoreOrderTable,
+  findBrowseCategory,
+  getCategoryStoreOrderMap,
+  listStoresForBrowseCategory,
+} = require('../utils/categoryStoreOrder');
+const { loadCategoriesFromDb } = require('../categories');
 const { applyCatalogListPriceAndOriginal } = require('../utils/productCatalogPrice');
 const { getStorePaymentMethods, getEffectivePaymentMethodsForDropoff } = require('../utils/storePaymentMethods');
 const { enrichOpeningHoursObject } = require('../utils/openingHoursJordan');
@@ -362,40 +369,58 @@ module.exports = function attachStoresRoutes(app, db) {
       return res.status(400).json({ success: false, message: 'Category name is required' });
     }
     const storesResponse = loadStoresResponse();
-    const storesList = sortStoresOpenFirst(
-      filterStoresForCustomerBrowse(storesResponse?.data?.stores ?? []).map((s) => toPublicStore(s, getPlatformCheckoutFeeTiers(db))),
+    const rawStores = filterStoresForCustomerBrowse(storesResponse?.data?.stores ?? []).map((s) =>
+      toPublicStore(s, getPlatformCheckoutFeeTiers(db)),
     );
-    const categoryNameLower = categoryName.toLowerCase().trim();
-    const matches = (val) => {
-      if (val == null) return false;
-      const s = String(val).toLowerCase();
-      return s === categoryNameLower || s.includes(categoryNameLower) || categoryNameLower.includes(s);
-    };
 
-    const storeMatchesSubCategories = (store) => {
-      const subs = Array.isArray(store.subCategories) ? store.subCategories : [];
-      return subs.some(sub => {
-        if (typeof sub === 'string') return matches(sub);
-        if (sub && typeof sub === 'object') {
-          return matches(sub.name) || matches(sub.nameAr) || matches(sub.nameEn) || matches(sub.id);
-        }
-        return false;
-      });
-    };
-
-    const storesByCategory = enrichStoresWithOffers(storesList.filter(store =>
-      matches(store.category) || matches(store.categoryAr) || matches(store.categoryEn) ||
-      storeMatchesSubCategories(store)
-    ));
+    const fromDb = loadCategoriesFromDb(db);
+    const browseCategories = fromDb?.data?.categories ?? [];
+    const browseCategory = findBrowseCategory(browseCategories, { categoryName });
+    let storesByCategory;
+    if (browseCategory && browseCategory.id != null && String(browseCategory.id) !== 'offers') {
+      ensureCategoryStoreOrderTable(db);
+      const orderMap = getCategoryStoreOrderMap(db, browseCategory.id);
+      storesByCategory = enrichStoresWithOffers(
+        listStoresForBrowseCategory(rawStores, browseCategory, orderMap),
+      );
+    } else {
+      const storesList = sortStoresOpenFirst(rawStores);
+      const categoryNameLower = categoryName.toLowerCase().trim();
+      const matches = (val) => {
+        if (val == null) return false;
+        const s = String(val).toLowerCase();
+        return s === categoryNameLower || s.includes(categoryNameLower) || categoryNameLower.includes(s);
+      };
+      const storeMatchesSubCategories = (store) => {
+        const subs = Array.isArray(store.subCategories) ? store.subCategories : [];
+        return subs.some((sub) => {
+          if (typeof sub === 'string') return matches(sub);
+          if (sub && typeof sub === 'object') {
+            return matches(sub.name) || matches(sub.nameAr) || matches(sub.nameEn) || matches(sub.id);
+          }
+          return false;
+        });
+      };
+      storesByCategory = enrichStoresWithOffers(
+        storesList.filter(
+          (store) =>
+            matches(store.category) ||
+            matches(store.categoryAr) ||
+            matches(store.categoryEn) ||
+            storeMatchesSubCategories(store),
+        ),
+      );
+    }
     return res.status(200).json({
       success: true,
       message: 'Stores by category retrieved successfully',
       data: {
         categoryName: categoryName,
+        categoryId: browseCategory?.id ?? null,
         stores: storesByCategory,
-        count: storesByCategory.length
+        count: storesByCategory.length,
       },
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     });
   });
 

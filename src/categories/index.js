@@ -467,3 +467,4 @@ function attachCategoriesRoutes(app, db) {
 
 module.exports = attachCategoriesRoutes;
 module.exports.syncCategoriesToDb = syncCategoriesToDb;
+module.exports.loadCategoriesFromDb = loadCategoriesFromDb;
