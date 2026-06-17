@@ -62,6 +62,7 @@ const {
   rejectCliqTopup,
   findTopupById,
   mapTopupRow,
+  recordAdminTopupCompleted,
 } = require('../wallet/topups');
 const {
   getDriverCommissionSettings,
@@ -913,12 +914,20 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         note: note || 'Admin credit',
         createdByAdminId: req.admin?.id ?? null,
       });
+      const topupRow = recordAdminTopupCompleted(db, {
+        phoneNumber: user.phoneNumber,
+        userId: user.userId,
+        amountJod,
+        walletTransactionId: result.transactionId,
+        note: note || 'Admin credit',
+        adminId: req.admin?.id ?? null,
+      });
       logActivity(db, req, {
         action: 'edit',
         resourceType: 'user_wallet',
         resourceId: user.phoneNumber,
         storeScopeId: null,
-        summary: `Credited wallet ${user.phoneNumber} +${amountJod} JOD`,
+        summary: `Credited wallet ${user.phoneNumber} +${amountJod} JOD (top-up #${topupRow?.id ?? '?'})`,
       });
       const creditedAmount = Number(result.amountJod ?? amountJod);
       const creditedAmountText = Number.isFinite(creditedAmount) ? creditedAmount.toFixed(2) : String(amountJod);
@@ -942,6 +951,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             currency: 'JOD',
             lastTransactionId: result.transactionId,
           },
+          topup: topupRow ? mapTopupRow(topupRow, user.name || '') : null,
         },
       });
     } catch (e) {
@@ -1012,6 +1022,23 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       const result = approveCliqTopup(db, id, req.admin?.id);
       if (!result.ok) {
         return res.status(result.statusCode || 400).json({ success: false, message: result.message });
+      }
+      const approvedTopup = result.data?.topup;
+      if (approvedTopup?.phoneNumber) {
+        const amt = Number(approvedTopup.amountJod);
+        const amtText = Number.isFinite(amt) ? amt.toFixed(2) : String(approvedTopup.amountJod ?? '');
+        const bal = Number(result.data?.balanceJod);
+        const balText = Number.isFinite(bal) ? bal.toFixed(2) : '';
+        fcm
+          .sendToUserByPhone(
+            db,
+            approvedTopup.phoneNumber,
+            'Wallet topped up',
+            `Your Cliq top-up of ${amtText} JOD was approved.${balText ? ` New balance: ${balText} JOD.` : ''}`,
+            null,
+            { type: 'wallet_credit', amountJod: amtText, balanceJod: balText, topupId: String(id) },
+          )
+          .catch(() => {});
       }
       logActivity(db, req, {
         action: 'edit',
@@ -5459,6 +5486,53 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       summary: `Added category ${newCat.nameEn || newCat.name || newCat.id}`,
     });
     return res.status(201).json({ success: true, data: { category: newCat } });
+  });
+
+  // Manual ordering of restaurant categories (who shows first) — same idea as home banners reorder.
+  app.post('/api/admin/categories/reorder', auth, requireAdminOrSuper, (req, res) => {
+    try {
+      const items = req.body?.order;
+      if (!Array.isArray(items) || items.length === 0) {
+        return res.status(400).json({ success: false, message: 'Provide { order: [{ id, order }] }' });
+      }
+      const categories = loadCategories();
+      const orderById = new Map();
+      for (const item of items) {
+        if (item == null) continue;
+        const id = String(item.id);
+        const val = item.order === null || item.order === '' ? undefined : Number(item.order);
+        if (!Number.isFinite(val)) continue;
+        orderById.set(id, val);
+      }
+      let changed = 0;
+      for (const cat of categories) {
+        if (orderById.has(String(cat.id))) {
+          cat.order = orderById.get(String(cat.id));
+          changed++;
+        }
+      }
+      // Normalize so the list is 1..N by the new order (stable, no gaps/ties).
+      categories.sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0));
+      categories.forEach((c, i) => { c.order = i + 1; });
+      try {
+        syncCategoriesToDb(db, categories);
+      } catch (err) {
+        console.error('Categories DB sync failed:', err);
+        return res.status(500).json({ success: false, message: 'Database sync failed', error: err.message });
+      }
+      saveCategories(categories);
+      logActivity(db, req, {
+        action: 'edit',
+        resourceType: 'category',
+        resourceId: 'bulk',
+        storeScopeId: null,
+        summary: `Reordered ${changed} category/categories display order`,
+      });
+      return res.status(200).json({ success: true, data: { changed, categories } });
+    } catch (e) {
+      console.error('Categories reorder error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to reorder categories' });
+    }
   });
 
   app.patch('/api/admin/categories/:id', auth, requireAdminOrSuper, (req, res) => {

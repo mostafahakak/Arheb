@@ -246,6 +246,39 @@ function rejectCliqTopup(db, topupId, note) {
   return { ok: true, topup: mapTopupRow(findTopupById(db, topupId)) };
 }
 
+/** Admin manual wallet credit — show on top-ups list as completed (wallet already credited). */
+function recordAdminTopupCompleted(db, {
+  phoneNumber,
+  userId,
+  amountJod,
+  walletTransactionId,
+  note,
+  adminId,
+}) {
+  ensureTopupsTable(db);
+  const adminNote =
+    note && String(note).trim()
+      ? String(note).trim()
+      : adminId != null
+        ? `Admin credit (admin #${adminId})`
+        : 'Admin credit';
+  const info = db
+    .prepare(
+      `INSERT INTO topups (
+        phoneNumber, userId, amountJod, currency, paymentMethod, status,
+        walletTransactionId, note, completedAt
+      ) VALUES (?, ?, ?, 'JOD', 'admin', 'completed', ?, ?, CURRENT_TIMESTAMP)`,
+    )
+    .run(
+      phoneNumber,
+      userId || phoneNumber,
+      roundJod(amountJod),
+      walletTransactionId ?? null,
+      adminNote,
+    );
+  return findTopupById(db, info.lastInsertRowid);
+}
+
 function assertUserCanTopUp(db, phoneNumber) {
   const user = db.prepare('SELECT phoneNumber, userId, deleted FROM users WHERE phoneNumber = ?').get(phoneNumber);
   if (!user || isUserDeleted(user)) {
@@ -266,6 +299,7 @@ module.exports = {
   listTopups,
   approveCliqTopup,
   rejectCliqTopup,
+  recordAdminTopupCompleted,
   assertUserCanTopUp,
   roundJod,
 };
