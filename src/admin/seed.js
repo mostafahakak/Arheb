@@ -14,12 +14,50 @@ function createAdminsTable(db) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       email TEXT UNIQUE NOT NULL,
       passwordHash TEXT NOT NULL,
-      role TEXT NOT NULL CHECK(role IN ('superadmin', 'admin', 'store_admin')),
+      role TEXT NOT NULL,
       storeId TEXT,
       name TEXT,
       createdAt TEXT DEFAULT CURRENT_TIMESTAMP
     );
   `);
+  migrateAdminsRoleConstraint(db);
+}
+
+/**
+ * Older databases created the admins table with a CHECK constraint limiting
+ * role to ('superadmin','admin','store_admin'). Rebuild the table without that
+ * constraint so the new staff roles can be stored.
+ */
+function migrateAdminsRoleConstraint(db) {
+  try {
+    const info = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='admins'")
+      .get();
+    if (!info || !info.sql || !/CHECK\s*\(\s*role\s+IN/i.test(info.sql)) return;
+    const rebuild = db.transaction(() => {
+      db.exec(`
+        CREATE TABLE admins_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          email TEXT UNIQUE NOT NULL,
+          passwordHash TEXT NOT NULL,
+          role TEXT NOT NULL,
+          storeId TEXT,
+          name TEXT,
+          createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+      db.exec(
+        'INSERT INTO admins_new (id, email, passwordHash, role, storeId, name, createdAt) ' +
+          'SELECT id, email, passwordHash, role, storeId, name, createdAt FROM admins;',
+      );
+      db.exec('DROP TABLE admins;');
+      db.exec('ALTER TABLE admins_new RENAME TO admins;');
+    });
+    rebuild();
+    console.log('Admin migration: removed role CHECK constraint to allow staff roles');
+  } catch (e) {
+    console.error('Admin migration (role constraint) failed:', e.message);
+  }
 }
 
 function seedSuperAdmin(db, email, password) {
@@ -48,6 +86,7 @@ function seedAdmins(db) {
 module.exports = {
   ROLES,
   createAdminsTable,
+  migrateAdminsRoleConstraint,
   seedSuperAdmin,
   seedAdmins,
 };

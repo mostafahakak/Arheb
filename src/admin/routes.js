@@ -16,9 +16,21 @@ const {
   requireRole,
   requireSuperAdmin,
   requireAdminOrSuper,
+  requirePermission,
+  requirePermissionAllowStore,
   requireStoreAccess,
+  requireStoreAccessOrPermission,
   requireDashboardAdmin,
 } = require('./middleware');
+const {
+  PERMISSIONS: PERM,
+  getPermissionsForRole,
+  STAFF_ROLES,
+  STAFF_ROLE_PERMISSIONS,
+  ASSIGNABLE_ROLES,
+  ALL_KNOWN_ROLES,
+  isFullAccessRole,
+} = require('./permissions');
 const { ensureActivityLogTable, logActivity, handleActivityLogList } = require('./activityLog');
 const { syncCategoriesToDb } = require('../categories');
 const {
@@ -577,7 +589,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   const auth = authenticateAdmin(JWT_SECRET);
 
   // ——— Activity log (SuperAdmin / Admin: all; Store Admin: own actions only) ———
-  app.get('/api/admin/activity-log', auth, requireDashboardAdmin, (req, res) =>
+  app.get('/api/admin/activity-log', auth, requirePermissionAllowStore(PERM.LOGS_VIEW), (req, res) =>
     handleActivityLogList(db, req, res),
   );
 
@@ -604,6 +616,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         role: admin.role,
         storeId: admin.storeId || null,
         name: admin.name || null,
+        permissions: getPermissionsForRole(admin.role),
       },
     });
   });
@@ -620,6 +633,19 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         role: admin.role,
         storeId: admin.storeId || null,
         name: admin.name || null,
+        permissions: getPermissionsForRole(admin.role),
+      },
+    });
+  });
+
+  /** Catalog of permission keys and per-role presets (for the dashboard UI). */
+  app.get('/api/admin/permissions/catalog', auth, requireDashboardAdmin, (req, res) => {
+    return res.status(200).json({
+      success: true,
+      data: {
+        permissions: Object.values(PERM),
+        staffRoles: STAFF_ROLES,
+        rolePermissions: STAFF_ROLE_PERMISSIONS,
       },
     });
   });
@@ -657,7 +683,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— Admins CRUD (SuperAdmin: all; Admin: cannot create/update/delete SuperAdmin) ———
-  app.get('/api/admin/admins', auth, requireAdminOrSuper, (req, res) => {
+  app.get('/api/admin/admins', auth, requirePermission(PERM.ADMINS_VIEW), (req, res) => {
     const isSuper = req.admin.role === ROLES.SUPERADMIN;
     const rows = findAllAdmins.all();
     const list = isSuper ? rows : rows.filter((r) => r.role !== ROLES.SUPERADMIN);
@@ -665,7 +691,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— App users (SuperAdmin / Admin only): list/search, block/unblock, and user orders ———
-  app.get('/api/admin/users', auth, requireAdminOrSuper, (req, res) => {
+  app.get('/api/admin/users', auth, requirePermission(PERM.USERS_VIEW), (req, res) => {
     try {
       const q = (req.query.q || req.query.search || '').toString().trim();
       const withOrderStats =
@@ -1090,7 +1116,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     }
   });
 
-  app.get('/api/admin/users/:phone/orders', auth, requireAdminOrSuper, (req, res) => {
+  app.get('/api/admin/users/:phone/orders', auth, requirePermission(PERM.USERS_VIEW), (req, res) => {
     try {
       const phone = decodeURIComponent(String(req.params.phone || '').trim());
       if (!phone) return res.status(400).json({ success: false, message: 'Invalid phone' });
@@ -1128,7 +1154,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   /** Full customer profile: user, orders, Arheb Box, top stores, delivery locations. */
-  app.get('/api/admin/customers/:phone/profile', auth, requireAdminOrSuper, (req, res) => {
+  app.get('/api/admin/customers/:phone/profile', auth, requirePermission(PERM.USERS_VIEW), (req, res) => {
     try {
       const phone = decodeURIComponent(String(req.params.phone || '').trim());
       if (!phone) return res.status(400).json({ success: false, message: 'Invalid phone' });
@@ -1212,8 +1238,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       return res.status(403).json({ success: false, message: 'Only SuperAdmin can create SuperAdmin' });
     }
     const allowedRoles = req.admin.role === ROLES.SUPERADMIN
-      ? [ROLES.SUPERADMIN, ROLES.ADMIN, ROLES.STORE_ADMIN]
-      : [ROLES.ADMIN, ROLES.STORE_ADMIN];
+      ? [ROLES.SUPERADMIN, ...ASSIGNABLE_ROLES]
+      : [...ASSIGNABLE_ROLES];
     if (!allowedRoles.includes(role)) {
       return res.status(400).json({ success: false, message: 'Invalid role' });
     }
@@ -1284,6 +1310,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       if (role === ROLES.SUPERADMIN && req.admin.role !== ROLES.SUPERADMIN) {
         return res.status(403).json({ success: false, message: 'Only SuperAdmin can set SuperAdmin role' });
       }
+      if (!ALL_KNOWN_ROLES.includes(role)) {
+        return res.status(400).json({ success: false, message: 'Invalid role' });
+      }
       updates.push('role = ?');
       values.push(role);
       updates.push('storeId = ?');
@@ -1345,7 +1374,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— Stores ———
-  app.get('/api/admin/stores', auth, (req, res) => {
+  app.get('/api/admin/stores', auth, requirePermissionAllowStore(PERM.STORES_VIEW), (req, res) => {
     const stores = loadStores();
     let list =
       req.admin.role === ROLES.STORE_ADMIN
@@ -1463,7 +1492,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— Pause history: store admin sees their store (default today); Admin/SuperAdmin all stores or filter by storeIds + date range ———
-  app.get('/api/admin/stores/pause-history', auth, (req, res) => {
+  app.get('/api/admin/stores/pause-history', auth, requirePermissionAllowStore(PERM.STORES_VIEW), (req, res) => {
     const today = new Date().toISOString().slice(0, 10);
     let dateFrom = (req.query.dateFrom || today).toString().trim();
     let dateTo = (req.query.dateTo || today).toString().trim();
@@ -1574,7 +1603,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     });
   });
 
-  app.post('/api/admin/stores', auth, requireAdminOrSuper, (req, res) => {
+  app.post('/api/admin/stores', auth, requirePermission(PERM.STORES_ADD), (req, res) => {
     const body = req.body || {};
     const stores = loadStores();
     const ids = stores.map((s) => parseInt(String(s.id), 10)).filter((n) => !isNaN(n));
@@ -1681,7 +1710,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     });
   });
 
-  app.get('/api/admin/stores/:id', auth, requireStoreAccess((req) => req.params.id), (req, res) => {
+  app.get('/api/admin/stores/:id', auth, requireStoreAccessOrPermission((req) => req.params.id, PERM.STORES_VIEW), (req, res) => {
     const stores = loadStores();
     const store = stores.find((s) => String(s.id) === String(req.params.id));
     if (!store) return res.status(404).json({ success: false, message: 'Store not found' });
@@ -1693,7 +1722,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     return res.status(200).json({ success: true, data: { store: out } });
   });
 
-  app.get('/api/admin/stores/:id/stats', auth, requireStoreAccess((req) => req.params.id), (req, res) => {
+  app.get('/api/admin/stores/:id/stats', auth, requireStoreAccessOrPermission((req) => req.params.id, PERM.STORES_VIEW), (req, res) => {
     const storeId = String(req.params.id);
     const stores = loadStores();
     const store = stores.find((s) => String(s.id) === storeId);
@@ -1750,7 +1779,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     }
   });
 
-  app.patch('/api/admin/stores/:id', auth, requireStoreAccess((req) => req.params.id), (req, res) => {
+  app.patch('/api/admin/stores/:id', auth, requireStoreAccessOrPermission((req) => req.params.id, PERM.STORES_EDIT), (req, res) => {
     const stores = loadStores();
     const idx = stores.findIndex((s) => String(s.id) === String(req.params.id));
     if (idx === -1) return res.status(404).json({ success: false, message: 'Store not found' });
@@ -1925,7 +1954,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   /** Bulk set displayOrder for stores (Admin / SuperAdmin). Body: { order: [{ id, displayOrder }] } */
-  app.post('/api/admin/stores/reorder', auth, requireAdminOrSuper, (req, res) => {
+  app.post('/api/admin/stores/reorder', auth, requirePermission(PERM.STORES_EDIT), (req, res) => {
     try {
       const items = req.body?.order;
       if (!Array.isArray(items) || items.length === 0) {
@@ -1956,7 +1985,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   /** Apply checkout delivery/service fee flags to many stores (Admin / SuperAdmin). */
-  app.post('/api/admin/stores/bulk-checkout-policy', auth, requireAdminOrSuper, (req, res) => {
+  app.post('/api/admin/stores/bulk-checkout-policy', auth, requirePermission(PERM.STORES_EDIT), (req, res) => {
     const body = req.body || {};
     const stores = loadStores();
     const targetIds =
@@ -2070,7 +2099,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // Clone store: SuperAdmin/Admin can clone any store; Store Admin can clone only their store
-  app.post('/api/admin/stores/:id/clone', auth, requireStoreAccess((req) => req.params.id), (req, res) => {
+  app.post('/api/admin/stores/:id/clone', auth, requireStoreAccessOrPermission((req) => req.params.id, PERM.STORES_ADD), (req, res) => {
     const sourceId = req.params.id;
     const body = req.body || {};
     const stores = loadStores();
@@ -2266,7 +2295,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   }
 
   // ——— Products (per store) ———
-  app.get('/api/admin/stores/:storeId/products', auth, requireStoreAccess((req) => req.params.storeId), (req, res) => {
+  app.get('/api/admin/stores/:storeId/products', auth, requireStoreAccessOrPermission((req) => req.params.storeId, PERM.PRODUCTS_VIEW), (req, res) => {
     const products = loadProducts();
     let storeProducts = products.filter((p) => String(p.store?.id) === String(req.params.storeId));
 
@@ -2283,7 +2312,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     return res.status(200).json({ success: true, data: { products: storeProducts } });
   });
 
-  app.post('/api/admin/stores/:storeId/products', auth, requireStoreAccess((req) => req.params.storeId), (req, res) => {
+  app.post('/api/admin/stores/:storeId/products', auth, requireStoreAccessOrPermission((req) => req.params.storeId, PERM.PRODUCTS_ADD), (req, res) => {
     const storeId = req.params.storeId;
     const stores = loadStores();
     const store = stores.find((s) => String(s.id) === String(storeId));
@@ -2333,7 +2362,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
 
   const EXCEL_HEADERS = ['id', 'nameEn', 'nameAr', 'name', 'price', 'originalPrice', 'discount', 'unit', 'category', 'categoryAr', 'categoryEn', 'description', 'stock', 'isAvailable'];
 
-  app.post('/api/admin/stores/:storeId/products/import', auth, requireStoreAccess((req) => req.params.storeId), upload.single('file'), (req, res) => {
+  app.post('/api/admin/stores/:storeId/products/import', auth, requireStoreAccessOrPermission((req) => req.params.storeId, PERM.PRODUCTS_ADD), upload.single('file'), (req, res) => {
     const storeId = req.params.storeId;
     const stores = loadStores();
     const store = stores.find((s) => String(s.id) === String(storeId));
@@ -2431,7 +2460,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     });
   });
 
-  app.get('/api/admin/stores/:storeId/products/export', auth, requireStoreAccess((req) => req.params.storeId), (req, res) => {
+  app.get('/api/admin/stores/:storeId/products/export', auth, requireStoreAccessOrPermission((req) => req.params.storeId, PERM.PRODUCTS_VIEW), (req, res) => {
     const storeId = req.params.storeId;
     const categoryFilterRaw = req.query.categoryFilter;
     const categoryFilter =
@@ -2529,7 +2558,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // Approve pending product (SuperAdmin / Admin only)
-  app.post('/api/admin/pending-products/:id/approve', auth, requireAdminOrSuper, (req, res) => {
+  app.post('/api/admin/pending-products/:id/approve', auth, requirePermission(PERM.PRODUCTS_EDIT), (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
     const row = db.prepare('SELECT * FROM pending_products WHERE id = ?').get(id);
@@ -2565,7 +2594,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // Reject pending product (SuperAdmin / Admin only)
-  app.post('/api/admin/pending-products/:id/reject', auth, requireAdminOrSuper, (req, res) => {
+  app.post('/api/admin/pending-products/:id/reject', auth, requirePermission(PERM.PRODUCTS_EDIT), (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
     const row = db.prepare('SELECT * FROM pending_products WHERE id = ?').get(id);
@@ -2595,7 +2624,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     });
   });
 
-  app.patch('/api/admin/stores/:storeId/products/:productId', auth, requireStoreAccess((req) => req.params.storeId), (req, res) => {
+  app.patch('/api/admin/stores/:storeId/products/:productId', auth, requireStoreAccessOrPermission((req) => req.params.storeId, PERM.PRODUCTS_EDIT), (req, res) => {
     const { storeId, productId } = req.params;
     const stores = loadStores();
     const store = stores.find((s) => String(s.id) === String(storeId));
@@ -2636,7 +2665,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // Bulk apply same discount (%) to multiple products — same field as single-product discount
-  app.post('/api/admin/stores/:storeId/products/bulk-discount', auth, requireStoreAccess((req) => req.params.storeId), (req, res) => {
+  app.post('/api/admin/stores/:storeId/products/bulk-discount', auth, requireStoreAccessOrPermission((req) => req.params.storeId, PERM.PRODUCTS_EDIT), (req, res) => {
     const { storeId } = req.params;
     const stores = loadStores();
     const store = stores.find((s) => String(s.id) === String(storeId));
@@ -2685,7 +2714,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     return res.status(200).json({ success: true, data: { updated, discount: disc } });
   });
 
-  app.post('/api/admin/stores/:storeId/products/bulk-remove-discount', auth, requireStoreAccess((req) => req.params.storeId), (req, res) => {
+  app.post('/api/admin/stores/:storeId/products/bulk-remove-discount', auth, requireStoreAccessOrPermission((req) => req.params.storeId, PERM.PRODUCTS_EDIT), (req, res) => {
     const { storeId } = req.params;
     const stores = loadStores();
     const store = stores.find((s) => String(s.id) === String(storeId));
@@ -2720,7 +2749,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     return res.status(200).json({ success: true, data: { updated } });
   });
 
-  app.delete('/api/admin/stores/:storeId/products/:productId', auth, requireStoreAccess((req) => req.params.storeId), (req, res) => {
+  app.delete('/api/admin/stores/:storeId/products/:productId', auth, requireStoreAccessOrPermission((req) => req.params.storeId, PERM.PRODUCTS_EDIT), (req, res) => {
     const { storeId, productId } = req.params;
     const stores = loadStores();
     const store = stores.find((s) => String(s.id) === String(storeId));
@@ -2759,7 +2788,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   }
 
   // ——— Orders: same DB/table as checkout and order tracking; Store Admin sees their store or unassigned (null storeId) ———
-  app.get('/api/admin/orders/counts', auth, (req, res) => {
+  app.get('/api/admin/orders/counts', auth, requirePermissionAllowStore(PERM.ORDERS_VIEW), (req, res) => {
     const range = resolveOrdersListDateRange(req.query || {});
     const conditions = [];
     const params = [];
@@ -3101,12 +3130,12 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     return { orders: ordersWithMetrics, dateRange: range };
   }
 
-  app.get('/api/admin/orders', auth, (req, res) => {
+  app.get('/api/admin/orders', auth, requirePermissionAllowStore(PERM.ORDERS_VIEW), (req, res) => {
     const { orders: withItems, dateRange } = buildAdminOrdersList(req);
     return res.status(200).json({ success: true, data: { orders: withItems, dateRange } });
   });
 
-  app.get('/api/admin/orders/export', auth, (req, res) => {
+  app.get('/api/admin/orders/export', auth, requirePermissionAllowStore(PERM.ORDERS_VIEW), (req, res) => {
     try {
       const { orders: withItems } = buildAdminOrdersList(req);
       const rows = withItems.map((o) => ({
@@ -3157,7 +3186,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— Get single order (full details for admin) ———
-  app.get('/api/admin/orders/:orderId', auth, (req, res) => {
+  app.get('/api/admin/orders/:orderId', auth, requirePermissionAllowStore(PERM.ORDERS_VIEW), (req, res) => {
     const orderId = parseInt(req.params.orderId, 10);
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
 
@@ -3203,7 +3232,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     });
   });
 
-  app.patch('/api/admin/orders/:orderId/status', auth, (req, res) => {
+  app.patch('/api/admin/orders/:orderId/status', auth, requirePermissionAllowStore(PERM.ORDERS_EDIT), (req, res) => {
     const orderId = parseInt(req.params.orderId, 10);
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
@@ -3319,7 +3348,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— Reject order (cancel): Store Admin can reject when status is Waiting confirmation; order is set to Cancelled ———
-  app.post('/api/admin/orders/:orderId/reject', auth, (req, res) => {
+  app.post('/api/admin/orders/:orderId/reject', auth, requirePermissionAllowStore(PERM.ORDERS_EDIT), (req, res) => {
     const orderId = parseInt(req.params.orderId, 10);
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
@@ -3377,7 +3406,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— Delete order permanently (SuperAdmin only) ———
-  app.delete('/api/admin/orders/:orderId', auth, (req, res) => {
+  app.delete('/api/admin/orders/:orderId', auth, requirePermissionAllowStore(PERM.ORDERS_DELETE), (req, res) => {
     if (req.admin.role !== ROLES.SUPERADMIN) {
       return res.status(403).json({ success: false, message: 'Only SuperAdmin can delete orders' });
     }
@@ -3404,7 +3433,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— Get available drivers for assigning to an order (Admin / SuperAdmin only) ———
-  app.get('/api/admin/orders/:orderId/available-drivers', auth, requireAdminOrSuper, (req, res) => {
+  app.get('/api/admin/orders/:orderId/available-drivers', auth, requirePermission(PERM.DRIVERS_REASSIGN), (req, res) => {
     const orderId = parseInt(req.params.orderId, 10);
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
@@ -3432,7 +3461,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— Get nearby active drivers for an order (presence + distance to store; Admin / SuperAdmin only) ———
-  app.get('/api/admin/orders/:orderId/nearby-drivers', auth, requireAdminOrSuper, (req, res) => {
+  app.get('/api/admin/orders/:orderId/nearby-drivers', auth, requirePermission(PERM.DRIVERS_REASSIGN), (req, res) => {
     const orderId = parseInt(req.params.orderId, 10);
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
@@ -3473,7 +3502,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— All drivers for manual assign UI (Admin / SuperAdmin): online + distance first, then offline ———
-  app.get('/api/admin/orders/:orderId/assignable-drivers', auth, requireAdminOrSuper, (req, res) => {
+  app.get('/api/admin/orders/:orderId/assignable-drivers', auth, requirePermission(PERM.DRIVERS_REASSIGN), (req, res) => {
     const orderId = parseInt(req.params.orderId, 10);
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
@@ -3525,7 +3554,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— Request nearest online driver (one at a time; 20s then next nearest). Admin / SuperAdmin only ———
-  app.post('/api/admin/orders/:orderId/request-driver', auth, requireAdminOrSuper, (req, res) => {
+  app.post('/api/admin/orders/:orderId/request-driver', auth, requirePermission(PERM.DRIVERS_REASSIGN), (req, res) => {
     const orderId = parseInt(req.params.orderId, 10);
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
@@ -3566,7 +3595,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— Auto-assign: nearest available driver to the store (Admin / SuperAdmin only for manual trigger) ———
-  app.post('/api/admin/orders/:orderId/auto-assign', auth, requireAdminOrSuper, async (req, res) => {
+  app.post('/api/admin/orders/:orderId/auto-assign', auth, requirePermission(PERM.DRIVERS_REASSIGN), async (req, res) => {
     const orderId = parseInt(req.params.orderId, 10);
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
@@ -3611,7 +3640,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— Assign a specific driver to a store order (Admin / SuperAdmin). Same FCM/socket as cluster assign. ———
-  app.post('/api/admin/orders/:orderId/assign-driver', auth, requireAdminOrSuper, (req, res) => {
+  app.post('/api/admin/orders/:orderId/assign-driver', auth, requirePermission(PERM.DRIVERS_REASSIGN), (req, res) => {
     const orderId = parseInt(req.params.orderId, 10);
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
@@ -3687,7 +3716,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   /** Change driver on an order that already has one (Admin / SuperAdmin). */
-  app.post('/api/admin/orders/:orderId/reassign-driver', auth, requireAdminOrSuper, (req, res) => {
+  app.post('/api/admin/orders/:orderId/reassign-driver', auth, requirePermission(PERM.DRIVERS_REASSIGN), (req, res) => {
     const orderId = parseInt(req.params.orderId, 10);
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
@@ -3786,7 +3815,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— Get order tracking state (for dashboard live map; Store Admin / Admin / SuperAdmin) ———
-  app.get('/api/admin/orders/:orderId/tracking', auth, (req, res) => {
+  app.get('/api/admin/orders/:orderId/tracking', auth, requirePermissionAllowStore(PERM.TRACKING_VIEW, PERM.ORDERS_VIEW), (req, res) => {
     const paramId = parseInt(req.params.orderId, 10);
     if (isNaN(paramId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
 
@@ -3862,7 +3891,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— Driver + map payload for dashboard (track button: mapPreviewUrl + live location) ———
-  app.get('/api/admin/orders/:orderId/driver-map', auth, (req, res) => {
+  app.get('/api/admin/orders/:orderId/driver-map', auth, requirePermissionAllowStore(PERM.TRACKING_VIEW, PERM.ORDERS_VIEW), (req, res) => {
     const orderId = parseInt(req.params.orderId, 10);
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
@@ -3947,7 +3976,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— Live active drivers map (Aqaba dashboard) ———
-  app.get('/api/admin/drivers/active-map', auth, requireAdminOrSuper, (req, res) => {
+  app.get('/api/admin/drivers/active-map', auth, requirePermission(PERM.TRACKING_VIEW), (req, res) => {
     try {
       const active = getActiveDriversWithLocation();
       const stores = loadStores();
@@ -4038,7 +4067,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— Delete order (Admin and SuperAdmin only; order_items removed by CASCADE) ———
-  app.delete('/api/admin/orders/:orderId', auth, requireAdminOrSuper, (req, res) => {
+  app.delete('/api/admin/orders/:orderId', auth, requirePermission(PERM.ORDERS_DELETE), (req, res) => {
     const orderId = parseInt(req.params.orderId, 10);
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
@@ -4073,7 +4102,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   }
 
   // ——— Send broadcast notification to all registered app users (Admin / SuperAdmin) ———
-  app.post('/api/admin/notifications/broadcast', auth, requireAdminOrSuper, async (req, res) => {
+  app.post('/api/admin/notifications/broadcast', auth, requirePermission(PERM.NOTIFICATIONS_MANAGE), async (req, res) => {
     const { title, body, imageUrl } = req.body || {};
     if (!title || typeof title !== 'string' || !title.trim()) {
       return res.status(400).json({ success: false, message: 'title is required' });
@@ -4158,7 +4187,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— List all notifications (Admin / SuperAdmin) ———
-  app.get('/api/admin/notifications', auth, requireAdminOrSuper, (req, res) => {
+  app.get('/api/admin/notifications', auth, requirePermission(PERM.NOTIFICATIONS_MANAGE), (req, res) => {
     try {
       const rows = db.prepare(
         'SELECT id, title, body, imageUrl, successCount, failureCount, createdAt FROM notifications ORDER BY createdAt DESC, id DESC'
@@ -4486,7 +4515,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     }
   });
 
-  app.post('/api/admin/arheb-box/:id/reassign-driver', auth, requireAdminOrSuper, (req, res) => {
+  app.post('/api/admin/arheb-box/:id/reassign-driver', auth, requirePermission(PERM.DRIVERS_REASSIGN), (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
     const { driverId } = req.body || {};
@@ -4601,7 +4630,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— Arheb Box: nearest driver only (sequential + 20s timeout). Admin / SuperAdmin only ———
-  app.post('/api/admin/arheb-box/:id/request-driver', auth, requireAdminOrSuper, (req, res) => {
+  app.post('/api/admin/arheb-box/:id/request-driver', auth, requirePermission(PERM.DRIVERS_REASSIGN), (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
     try {
@@ -4697,7 +4726,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     }
   });
 
-  app.get('/api/admin/settings/driver-commission', auth, requireAdminOrSuper, (req, res) => {
+  app.get('/api/admin/settings/driver-commission', auth, requirePermission(PERM.SETTINGS_VIEW, PERM.DRIVERS_VIEW), (req, res) => {
     try {
       ensureDriverCommissionSettingsTable(db);
       const s = getDriverCommissionSettings(db);
@@ -4716,7 +4745,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     }
   });
 
-  app.patch('/api/admin/settings/driver-commission', auth, requireAdminOrSuper, (req, res) => {
+  app.patch('/api/admin/settings/driver-commission', auth, requirePermission(PERM.SETTINGS_EDIT), (req, res) => {
     const { commissionType, commissionValue } = req.body || {};
     if (commissionType === undefined && commissionValue === undefined) {
       return res.status(400).json({ success: false, message: 'commissionType and/or commissionValue required' });
@@ -4758,7 +4787,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— Drivers (SuperAdmin / Admin only: add, remove, block) ———
-  app.get('/api/admin/drivers/export', auth, requireAdminOrSuper, (req, res) => {
+  app.get('/api/admin/drivers/export', auth, requirePermission(PERM.DRIVERS_VIEW), (req, res) => {
     try {
       ensureDriverRatingsTable(db);
       ensureDriverCommissionPercentColumn(db);
@@ -4874,7 +4903,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     }
   });
 
-  app.get('/api/admin/drivers', auth, requireAdminOrSuper, (req, res) => {
+  app.get('/api/admin/drivers', auth, requirePermission(PERM.DRIVERS_VIEW), (req, res) => {
     try {
       ensureDriverRatingsTable(db);
       ensureDriverCommissionPercentColumn(db);
@@ -4943,7 +4972,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // Driver profile: orders (filterable), earnings totals, customer ratings (admin sees all)
-  app.get('/api/admin/drivers/:id/profile', auth, requireAdminOrSuper, (req, res) => {
+  app.get('/api/admin/drivers/:id/profile', auth, requirePermission(PERM.DRIVERS_VIEW), (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid driver id' });
     try {
@@ -5152,7 +5181,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     }
   });
 
-  app.post('/api/admin/drivers', auth, requireAdminOrSuper, (req, res) => {
+  app.post('/api/admin/drivers', auth, requirePermission(PERM.DRIVERS_EDIT), (req, res) => {
     const { name, mobile, email, vehicleType, vehicleNumber, licenseNumber, commissionPercent, commissionType, commissionValue } = req.body || {};
     if (!name || !String(name).trim() || !mobile || !String(mobile).trim()) {
       return res.status(400).json({ success: false, message: 'name and mobile are required' });
@@ -5300,7 +5329,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     }
   });
 
-  app.patch('/api/admin/drivers/:id', auth, requireAdminOrSuper, (req, res) => {
+  app.patch('/api/admin/drivers/:id', auth, requirePermission(PERM.DRIVERS_EDIT), (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid driver id' });
     const driver = db.prepare('SELECT * FROM drivers WHERE id = ?').get(id);
@@ -5432,7 +5461,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     }
   });
 
-  app.delete('/api/admin/drivers/:id', auth, requireAdminOrSuper, (req, res) => {
+  app.delete('/api/admin/drivers/:id', auth, requirePermission(PERM.DRIVERS_DELETE), (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid driver id' });
     try {
@@ -5455,12 +5484,12 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— Categories (SuperAdmin / Admin only) ———
-  app.get('/api/admin/categories', auth, requireAdminOrSuper, (req, res) => {
+  app.get('/api/admin/categories', auth, requirePermission(PERM.CATEGORIES_VIEW), (req, res) => {
     const categories = loadCategories();
     return res.status(200).json({ success: true, data: { categories } });
   });
 
-  app.post('/api/admin/categories', auth, requireAdminOrSuper, (req, res) => {
+  app.post('/api/admin/categories', auth, requirePermission(PERM.CATEGORIES_EDIT), (req, res) => {
     const categories = loadCategories();
     const body = req.body || {};
     const id = String(categories.length ? Math.max(...categories.map((c) => parseInt(c.id, 10) || 0)) + 1 : 1);
@@ -5496,7 +5525,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // Manual ordering of restaurant categories (who shows first) — same idea as home banners reorder.
-  app.post('/api/admin/categories/reorder', auth, requireAdminOrSuper, (req, res) => {
+  app.post('/api/admin/categories/reorder', auth, requirePermission(PERM.CATEGORIES_EDIT), (req, res) => {
     try {
       const items = req.body?.order;
       if (!Array.isArray(items) || items.length === 0) {
@@ -5543,7 +5572,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   /** Stores shown inside a browse category — manual order per category (Admin / SuperAdmin). */
-  app.get('/api/admin/categories/:id/stores', auth, requireAdminOrSuper, (req, res) => {
+  app.get('/api/admin/categories/:id/stores', auth, requirePermission(PERM.CATEGORIES_VIEW), (req, res) => {
     try {
       const idParam = String(req.params.id || '').trim();
       if (!idParam) return res.status(400).json({ success: false, message: 'Invalid category id' });
@@ -5582,7 +5611,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     }
   });
 
-  app.post('/api/admin/categories/:id/stores/reorder', auth, requireAdminOrSuper, (req, res) => {
+  app.post('/api/admin/categories/:id/stores/reorder', auth, requirePermission(PERM.CATEGORIES_EDIT), (req, res) => {
     try {
       const idParam = String(req.params.id || '').trim();
       if (!idParam) return res.status(400).json({ success: false, message: 'Invalid category id' });
@@ -5629,7 +5658,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     }
   });
 
-  app.patch('/api/admin/categories/:id', auth, requireAdminOrSuper, (req, res) => {
+  app.patch('/api/admin/categories/:id', auth, requirePermission(PERM.CATEGORIES_EDIT), (req, res) => {
     const categories = loadCategories();
     const idParam = String(req.params.id);
     const idx = categories.findIndex((c) => String(c.id) === idParam);
@@ -5661,7 +5690,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     return res.status(200).json({ success: true, data: { category: categories[idx] } });
   });
 
-  app.delete('/api/admin/categories/:id', auth, requireAdminOrSuper, (req, res) => {
+  app.delete('/api/admin/categories/:id', auth, requirePermission(PERM.CATEGORIES_EDIT), (req, res) => {
     const categories = loadCategories();
     const idParam = String(req.params.id);
     const idx = categories.findIndex((c) => String(c.id) === idParam);
@@ -5789,12 +5818,12 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— Popup (SuperAdmin / Admin only) ———
-  app.get('/api/admin/popup', auth, requireAdminOrSuper, (req, res) => {
+  app.get('/api/admin/popup', auth, requirePermission(PERM.SETTINGS_VIEW), (req, res) => {
     const data = loadPopup();
     return res.status(200).json({ success: true, data: { popup: data } });
   });
 
-  app.patch('/api/admin/popup', auth, requireAdminOrSuper, (req, res) => {
+  app.patch('/api/admin/popup', auth, requirePermission(PERM.SETTINGS_EDIT), (req, res) => {
     const body = req.body || {};
     const current = loadPopup();
     const updated = {
@@ -5815,7 +5844,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     return res.status(200).json({ success: true, data: { popup: updated } });
   });
 
-  app.delete('/api/admin/popup', auth, requireAdminOrSuper, (req, res) => {
+  app.delete('/api/admin/popup', auth, requirePermission(PERM.SETTINGS_EDIT), (req, res) => {
     const cleared = {
       enabled: false,
       image: '',
@@ -5835,7 +5864,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— Home banners / offers: link picker data (names → ids in dashboard) ———
-  app.get('/api/admin/home/link-options', auth, requireAdminOrSuper, (req, res) => {
+  app.get('/api/admin/home/link-options', auth, requirePermission(PERM.SETTINGS_VIEW), (req, res) => {
     try {
       const stores = sortStoresOpenFirst(loadStores()).map((s) => ({
         id: String(s.id),
@@ -5874,13 +5903,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— Home banners (SuperAdmin / Admin only) ———
-  app.get('/api/admin/home/banners', auth, requireAdminOrSuper, (req, res) => {
+  app.get('/api/admin/home/banners', auth, requirePermission(PERM.SETTINGS_VIEW), (req, res) => {
     const home = loadHome();
     const banners = normalizeHomeContentLinkArray(home?.data?.banners ?? []);
     return res.status(200).json({ success: true, data: { banners } });
   });
 
-  app.patch('/api/admin/home/banners', auth, requireAdminOrSuper, (req, res) => {
+  app.patch('/api/admin/home/banners', auth, requirePermission(PERM.SETTINGS_EDIT), (req, res) => {
     const body = req.body || {};
     const home = loadHome();
     const data = home.data || {};
@@ -5906,13 +5935,13 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— Home top offers (SuperAdmin / Admin only) — same backing file as GET /api/home `data.offers` ———
-  app.get('/api/admin/home/offers', auth, requireAdminOrSuper, (req, res) => {
+  app.get('/api/admin/home/offers', auth, requirePermission(PERM.SETTINGS_VIEW), (req, res) => {
     const home = loadHome();
     const offers = normalizeHomeContentLinkArray(home?.data?.offers ?? []);
     return res.status(200).json({ success: true, data: { offers } });
   });
 
-  app.patch('/api/admin/home/offers', auth, requireAdminOrSuper, (req, res) => {
+  app.patch('/api/admin/home/offers', auth, requirePermission(PERM.SETTINGS_EDIT), (req, res) => {
     const body = req.body || {};
     const home = loadHome();
     const data = home.data || {};
@@ -5938,7 +5967,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— App info / Contact (email, phone, cliqNumber) — Admin & SuperAdmin only ———
-  app.get('/api/admin/info', auth, requireAdminOrSuper, (req, res) => {
+  app.get('/api/admin/info', auth, requirePermission(PERM.SETTINGS_VIEW, PERM.APPINFO_VIEW), (req, res) => {
     try {
       ensureContactUsDriverDeliveryPercentColumn(db);
       ensureContactUsArhebBoxComingSoonColumn(db);
@@ -6016,7 +6045,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     }
   });
 
-  app.patch('/api/admin/info', auth, requireAdminOrSuper, (req, res) => {
+  app.patch('/api/admin/info', auth, requirePermission(PERM.SETTINGS_EDIT, PERM.FEES_DELIVERY_EDIT), (req, res) => {
     const body = req.body || {};
     const email = body.email !== undefined ? String(body.email).trim() : undefined;
     const phone = body.phone !== undefined ? String(body.phone).trim() : undefined;
@@ -6189,7 +6218,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— Platform store checkout fees (distance tiers + default service fee) ———
-  app.get('/api/admin/settings/checkout-fees', auth, requireAdminOrSuper, (req, res) => {
+  app.get('/api/admin/settings/checkout-fees', auth, requirePermission(PERM.SETTINGS_VIEW, PERM.FEES_DELIVERY_EDIT), (req, res) => {
     try {
       const tiers = getPlatformCheckoutFeeTiers(db);
       return res.status(200).json({
@@ -6269,7 +6298,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   /** Fixed delivery zones (haversine km — store checkout + Arheb Box). SuperAdmin edits; Admin/SuperAdmin read. */
-  app.get('/api/admin/settings/delivery-fixed-zones', auth, requireAdminOrSuper, (req, res) => {
+  app.get('/api/admin/settings/delivery-fixed-zones', auth, requirePermission(PERM.SETTINGS_VIEW, PERM.FEES_LOCATION_EDIT), (req, res) => {
     try {
       seedDefaultDeliveryFixedZonesIfEmpty(db);
       const zones = listDeliveryFixedZones(db);
@@ -6287,7 +6316,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     }
   });
 
-  app.put('/api/admin/settings/delivery-fixed-zones', auth, requireSuperAdmin, (req, res) => {
+  app.put('/api/admin/settings/delivery-fixed-zones', auth, requirePermission(PERM.FEES_LOCATION_EDIT), (req, res) => {
     try {
       const zones = replaceDeliveryFixedZones(db, req.body?.zones ?? []);
       logActivity(db, req, {
@@ -6541,7 +6570,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— E-Invoice (JOFOTARA) ———
-  app.get('/api/admin/einvoices', auth, requireAdminOrSuper, (req, res) => {
+  app.get('/api/admin/einvoices', auth, requirePermission(PERM.INVOICES_VIEW), (req, res) => {
     try {
       const { status, dateFrom, dateTo } = req.query;
       const conditions = ["einvoiceStatus IS NOT NULL AND einvoiceStatus != ''"];
@@ -6609,7 +6638,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     }
   });
 
-  app.get('/api/admin/orders/:orderId/einvoice', auth, requireAdminOrSuper, (req, res) => {
+  app.get('/api/admin/orders/:orderId/einvoice', auth, requirePermission(PERM.INVOICES_VIEW), (req, res) => {
     const orderId = parseInt(req.params.orderId, 10);
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const order = findOrderById.get(orderId);
@@ -6627,7 +6656,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     });
   });
 
-  app.post('/api/admin/orders/:orderId/einvoice/retry', auth, requireAdminOrSuper, async (req, res) => {
+  app.post('/api/admin/orders/:orderId/einvoice/retry', auth, requirePermission(PERM.INVOICES_VIEW), async (req, res) => {
     const orderId = parseInt(req.params.orderId, 10);
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const isBox =
@@ -6669,7 +6698,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   // ——— Online merchants (merchant presence) ———
-  app.get('/api/admin/merchants/online', auth, requireAdminOrSuper, (req, res) => {
+  app.get('/api/admin/merchants/online', auth, requirePermission(PERM.STORES_VIEW, PERM.TRACKING_VIEW), (req, res) => {
     try {
       const { getOnlineMerchants } = require('../merchantPresence');
       return res.status(200).json({
