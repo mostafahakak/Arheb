@@ -457,10 +457,10 @@ module.exports = function attachStoresRoutes(app, db) {
       data: {
         storeId: String(store.id),
         paymentMethods,
-        ...(!paymentMethods.cod && Number.isFinite(lat) && Number.isFinite(lng)
+        ...(!paymentMethods.cod && !paymentMethods.visa_on_delivery && Number.isFinite(lat) && Number.isFinite(lng)
           ? {
               paymentMethodsNote:
-                'Cash on delivery is not available for this delivery area. Use Card or Cliq.',
+                'Cash / Visa on delivery is not available for this delivery area. Use Card or Cliq.',
             }
           : {}),
       },

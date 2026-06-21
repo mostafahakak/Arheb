@@ -3132,7 +3132,19 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
 
   app.get('/api/admin/orders', auth, requirePermissionAllowStore(PERM.ORDERS_VIEW), (req, res) => {
     const { orders: withItems, dateRange } = buildAdminOrdersList(req);
-    return res.status(200).json({ success: true, data: { orders: withItems, dateRange } });
+    return res.status(200).json({
+      success: true,
+      data: {
+        orders: withItems,
+        dateRange,
+        availablePaymentTypes: [
+          { key: 'cash', label: 'Cash on delivery', labelAr: 'الدفع عند الاستلام' },
+          { key: 'Card', label: 'Card', labelAr: 'بطاقة' },
+          { key: 'Cliq', label: 'Cliq', labelAr: 'كليك' },
+          { key: 'visa_on_delivery', label: 'Visa on delivery', labelAr: 'فيزا عند الاستلام' },
+        ],
+      },
+    });
   });
 
   app.get('/api/admin/orders/export', auth, requirePermissionAllowStore(PERM.ORDERS_VIEW), (req, res) => {
