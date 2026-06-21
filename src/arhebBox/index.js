@@ -52,17 +52,21 @@ function calcFeesTaxJod(deliveryFeeJod, serviceFeeJod) {
   return round2(FEES_TAX_RATE * base);
 }
 
-function buildInvoice(deliveryFeeJod, serviceFeeJod) {
+function buildInvoice(deliveryFeeJod, serviceFeeJod, itemsSubtotalJod = 0) {
   const delivery = round2(safeNumber(deliveryFeeJod, 0));
   const service = round2(safeNumber(serviceFeeJod, 0));
   const taxJod = calcFeesTaxJod(deliveryFeeJod, serviceFeeJod);
+  const itemsSubtotal = round2(safeNumber(itemsSubtotalJod, 0));
+  const feesTotal = round2(delivery + service + taxJod);
   return {
     currency: 'JOD',
+    itemsSubtotal,
     deliveryFee: delivery,
     serviceFee: service,
     feesTaxRate: FEES_TAX_RATE,
     feesTax: taxJod,
-    total: round2(delivery + service + taxJod),
+    feesTotal,
+    total: round2(itemsSubtotal + feesTotal),
   };
 }
 
@@ -131,7 +135,7 @@ function enrichRequestRow(row, db) {
     deliveryFee: money.deliveryFee,
     serviceFee: money.serviceFee,
     feesTax: money.feesTax,
-    invoice: buildInvoice(deliveryFee, serviceFee),
+    invoice: buildInvoice(deliveryFee, serviceFee, money.itemsSubtotal),
     distanceKm: row.distanceKm != null ? Number(row.distanceKm) : null,
     minAmountJod: row.minAmountJod != null ? Number(row.minAmountJod) : null,
     driverId: row.driverId ?? null,

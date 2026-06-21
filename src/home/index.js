@@ -441,7 +441,7 @@ module.exports = function attachHomeRoutes(app, db, JWT_SECRET) {
             }
 
             const mapStoreSummary = (r) => {
-              const money = storeOrderMoneyFields(r);
+              const money = storeOrderMoneyFields(r, { db });
               return {
                 orderType: 'store',
                 id: r.id,

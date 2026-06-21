@@ -387,7 +387,7 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
       }
       const serviceFee = order.serviceFee != null ? Number(order.serviceFee) : STORE_ORDER_SERVICE_FEE_JOD;
       const feesTax = order.feesTax != null ? Number(order.feesTax) : 0;
-      const money = storeOrderMoneyFields({ ...order, serviceFee, feesTax });
+      const money = storeOrderMoneyFields({ ...order, serviceFee, feesTax }, { items, db });
       return res.status(200).json({
         success: true,
         message: 'Order retrieved successfully',
@@ -421,13 +421,15 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
               },
               invoice: {
                 currency: 'JOD',
+                itemsSubtotal: money.itemsSubtotal,
                 deliveryFee: money.deliveryFee,
                 serviceFee: money.serviceFee,
                 feesTaxRate: money.feesTax > 0 && money.deliveryFee + money.serviceFee > 0
                   ? round2(money.feesTax / (money.deliveryFee + money.serviceFee))
                   : 0,
                 feesTax: money.feesTax,
-                total: round2(money.deliveryFee + money.serviceFee + money.feesTax),
+                feesTotal: money.feesTotal,
+                total: money.totalAmount,
               },
               status: order.status,
               storeId: order.storeId ?? null,

@@ -88,21 +88,27 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
     };
   }
 
-  function buildInvoice(deliveryFeeJod, serviceFeeJod) {
+  function buildInvoice(deliveryFeeJod, serviceFeeJod, itemsSubtotalJod = 0) {
     const taxJod = calcFeesTaxJod(deliveryFeeJod, serviceFeeJod);
+    const delivery = round2(safeNumber(deliveryFeeJod, 0));
+    const service = round2(safeNumber(serviceFeeJod, 0));
+    const itemsSubtotal = round2(safeNumber(itemsSubtotalJod, 0));
+    const feesTotal = round2(delivery + service + taxJod);
     return {
       currency: 'JOD',
-      deliveryFee: round2(safeNumber(deliveryFeeJod, 0)),
-      serviceFee: round2(safeNumber(serviceFeeJod, 0)),
+      itemsSubtotal,
+      deliveryFee: delivery,
+      serviceFee: service,
       feesTaxRate: FEES_TAX_RATE,
       feesTax: taxJod,
-      total: round2(safeNumber(deliveryFeeJod, 0) + safeNumber(serviceFeeJod, 0) + taxJod),
+      feesTotal,
+      total: round2(itemsSubtotal + feesTotal),
     };
   }
 
   /** Customer-facing money: DB totalAmount is items subtotal; totalAmount in API is grand total. */
-  function customerStoreOrderMoney(order, serviceFee, feesTax) {
-    return storeOrderMoneyFields({ ...order, serviceFee, feesTax });
+  function customerStoreOrderMoney(order, serviceFee, feesTax, options = {}) {
+    return storeOrderMoneyFields({ ...order, serviceFee, feesTax }, options);
   }
   // Helper function to get storeId from first product if not provided
   const getStoreIdFromProduct = (productId) => {
@@ -749,7 +755,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
           serviceFee: computedServiceFee,
           feesTax: computedFeesTax,
           weightKg: round3(weightKgNum),
-          totalAmount,
+          totalAmount: orderValueForChargeJod,
           status: initialStatus,
           paymentType: paymentTypeForStorage,
           promoCode: finalPromoCode,
@@ -816,7 +822,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       order.feesTax != null
         ? Number(order.feesTax)
         : calcFeesTaxJod(order.deliveryFee, serviceFeeOut);
-    const money = customerStoreOrderMoney(order, serviceFeeOut, feesTaxOut);
+    const money = customerStoreOrderMoney(order, serviceFeeOut, feesTaxOut, { items: itemsOut });
 
     const checkoutPayload = {
       orderId,
@@ -837,7 +843,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
           itemsSubtotal: money.itemsSubtotal,
           totalAmount: money.totalAmount,
           orderSummary: buildOrderSummary(money.itemsSubtotal, money.deliveryFee, money.serviceFee),
-          invoice: buildInvoice(money.deliveryFee, money.serviceFee),
+          invoice: buildInvoice(money.deliveryFee, money.serviceFee, money.itemsSubtotal),
           status: order.status,
           paymentType: order.paymentType,
           promoCode: order.promoCode || null,
@@ -938,7 +944,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
           feesTaxNote: FEES_TAX_RATE > 0
             ? `${Math.round(FEES_TAX_RATE * 100)}% tax on delivery fee plus service fee (not on order subtotal).`
             : 'Tax on delivery/service fees is currently disabled.',
-          invoiceTotal: invoice.total,
+          invoiceTotal: invoice.feesTotal,
           paymentMethods,
           paymentMethodsNote: !paymentMethods.cod && !paymentMethods.visaondelivery
             ? 'Cash / Visa on delivery is not available for this delivery area. Use Card or Cliq.'
@@ -1027,7 +1033,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         const serviceFee = order.serviceFee != null ? Number(order.serviceFee) : fallbackStoreOrderServiceFeeJod();
         const feesTax =
           order.feesTax != null ? Number(order.feesTax) : calcFeesTaxJod(order.deliveryFee, serviceFee);
-        const money = customerStoreOrderMoney(order, serviceFee, feesTax);
+        const money = customerStoreOrderMoney(order, serviceFee, feesTax, { items, db });
         return enrichWithJordanTime(
           {
             id: order.id,
@@ -1045,7 +1051,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
             itemsSubtotal: money.itemsSubtotal,
             totalAmount: money.totalAmount,
             orderSummary: buildOrderSummary(money.itemsSubtotal, money.deliveryFee, money.serviceFee),
-            invoice: buildInvoice(money.deliveryFee, money.serviceFee),
+            invoice: buildInvoice(money.deliveryFee, money.serviceFee, money.itemsSubtotal),
             status: order.status,
             storeId: order.storeId ?? null,
             driverId: order.driverId ?? null,
@@ -1158,7 +1164,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         order.feesTax != null
           ? Number(order.feesTax)
           : calcFeesTaxJod(order.deliveryFee, serviceFee);
-      const money = customerStoreOrderMoney(order, serviceFee, feesTax);
+      const money = customerStoreOrderMoney(order, serviceFee, feesTax, { items, db });
 
       return res.status(200).json({
         success: true,
@@ -1181,7 +1187,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
               itemsSubtotal: money.itemsSubtotal,
               totalAmount: money.totalAmount,
               orderSummary: buildOrderSummary(money.itemsSubtotal, money.deliveryFee, money.serviceFee),
-              invoice: buildInvoice(money.deliveryFee, money.serviceFee),
+              invoice: buildInvoice(money.deliveryFee, money.serviceFee, money.itemsSubtotal),
               status: order.status,
               storeId: order.storeId ?? null,
               driverId: order.driverId ?? null,
@@ -1291,7 +1297,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         updatedOrder.feesTax != null
           ? Number(updatedOrder.feesTax)
           : calcFeesTaxJod(updatedOrder.deliveryFee, serviceFee);
-      const money = customerStoreOrderMoney(updatedOrder, serviceFee, feesTax);
+      const money = customerStoreOrderMoney(updatedOrder, serviceFee, feesTax, { items, db });
 
       return res.status(200).json({
         success: true,
@@ -1313,7 +1319,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
             itemsSubtotal: money.itemsSubtotal,
             totalAmount: money.totalAmount,
             orderSummary: buildOrderSummary(money.itemsSubtotal, money.deliveryFee, money.serviceFee),
-            invoice: buildInvoice(money.deliveryFee, money.serviceFee),
+            invoice: buildInvoice(money.deliveryFee, money.serviceFee, money.itemsSubtotal),
             status: updatedOrder.status,
             paymentType: updatedOrder.paymentType,
             promoCode: updatedOrder.promoCode || null,
