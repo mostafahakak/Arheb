@@ -1461,9 +1461,9 @@ When a store has selected food types (admin sets **`foodTypes`** on create/patch
 
 ### Search Stores & Products
 
-Searches stores and products by text. Returns stores whose name/category (EN/AR) contain the query, and products whose name/category contain the query. Stores and products are returned in separate lists.
+Searches stores and products by text. Returns stores whose name, category, address, or subcategories (EN/AR) contain the query, and products whose name, category, description, or **parent store name** contain the query. Stores and products are returned in separate lists.
 
-**Visibility:** Results include only stores that are **open for customer browse**: **paused**, **merchant-closed** (`isOpen === false`), **outside Jordan opening hours**, **blocked**, or **hiddenFromCustomers** stores are **omitted**, and **no products** from those stores are returned. Each matched product’s nested **`store`** includes **`status`** and **`isOpen`** aligned with the canonical store record.
+**Visibility:** Same browse rules as **`GET /api/stores`** — **blocked** and **hiddenFromCustomers** stores are omitted (and their products). **Paused**, **merchant-closed**, and **outside-hours** stores **still appear** in results with **`isOpen`** / **`status`** so customers can find them; open stores are listed first.
 
 **Endpoint:** `GET /api/search?q=text`
 
@@ -1471,6 +1471,7 @@ Searches stores and products by text. Returns stores whose name/category (EN/AR)
 
 **Query Parameters:**
 - `q` (or `query`) - Search text (case-insensitive, partial match)
+- `type` (or `scope`) - Optional: `all` (default), `stores`, or `products`
 
 **Success Response (200):**
 ```json
@@ -1486,7 +1487,9 @@ Searches stores and products by text. Returns stores whose name/category (EN/AR)
         "nameEn": "Store Name",
         "category": "restaurant",
         "logo": "https://...",
-        "rate": 4.5
+        "rate": 4.5,
+        "isOpen": true,
+        "status": "open"
       }
     ],
     "products": [
@@ -1496,22 +1499,25 @@ Searches stores and products by text. Returns stores whose name/category (EN/AR)
         "nameAr": "اسم المنتج",
         "nameEn": "Product Name",
         "price": 4.5,
-        "store": { "id": "1", "name": "Store Name" }
+        "store": { "id": "1", "name": "Store Name", "isOpen": true, "status": "open" }
       }
-    ]
+    ],
+    "storeCount": 1,
+    "productCount": 1,
+    "type": "all"
   },
   "timestamp": "2024-01-15T10:30:00Z"
 }
 ```
 
-**Empty Query:** If `q` is missing or empty, returns `{ data: { stores: [], products: [] } }`.
+**Empty Query:** If `q` is missing or empty, returns `{ data: { stores: [], products: [], type: "all" } }`.
 
 **Example:**
 ```javascript
-const response = await fetch('https://arheb-backend.onrender.com/api/search?q=pizza');
+const response = await fetch('https://arheb-backend.onrender.com/api/search?q=pizza&type=all');
 const data = await response.json();
-console.log(data.data.stores);   // Stores matching "pizza"
-console.log(data.data.products); // Products matching "pizza"
+console.log(data.data.stores, data.data.storeCount);
+console.log(data.data.products, data.data.productCount);
 ```
 
 ---
@@ -3929,10 +3935,10 @@ Store state is derived from **admin flags + Jordan opening hours**:
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/admin/stores` | List stores (Store Admin sees only their store). Admin/SuperAdmin query params: `isOpen=true` (only effectively open stores), `isOpen=false` (only effectively closed stores), `paused=true` (only paused stores). **Analytics (A/S only):** `withStats=1` (or any `sortBy`) attaches per-store **`stats`**: `{ orderCount, ordersGrandTotalJod, avgPreparationTimeMinutes, avgDeliveryTimeMinutes, avgResponseTimeMinutes }`. Optional **`dateFrom`** / **`dateTo`** (`YYYY-MM-DD`) limit stats to that created-at range. **`sortBy`**: `orderCount` \| `orderValue` \| `avgResponse` \| `avgPrep` \| `avgDelivery` (aliases accepted). **`sortDir`**: `asc` \| `desc` (default `desc`). |
-| POST | `/api/admin/stores` | Create store (Admin and SuperAdmin only). Body: name, nameEn, nameAr, cover, logo, phone, address, addressEn, deliveryFee, minimumOrder, optional **`paymentMethods`**: `{ cod, card, cliq }` booleans (at least one must be `true`). |
+| POST | `/api/admin/stores` | Create store (Admin and SuperAdmin only). Body: name, nameEn, nameAr, cover, logo, phone, address, addressEn, deliveryFee, minimumOrder, optional **`paymentMethods`**: `{ cod, card, cliq, visaondelivery }` booleans (at least one must be `true`). |
 | GET | `/api/admin/stores/:id` | Get one store |
 | GET | `/api/admin/stores/:id/stats` | **Store profile statistics** (Admin/SuperAdmin, or Store Admin for own store). Query: optional **`dateFrom`**, **`dateTo`**. Response `data`: `{ store, stats, customPreparingTimeMinutes, systemAvgPreparationTimeMinutes }`. **`stats.summary`**: order counts, revenue sums, avg response/prep/delivery minutes. **`stats.statusAvgMinutes`**: avg minutes in **Waiting confirmation** → **Preparing** → **On the way**. **`stats.recentOrders`**: last 50 orders (id, status, amounts, payment, driver). |
-| PATCH | `/api/admin/stores/:id` | Update store (…, optional **`paymentMethods`**: partial `{ cod, card, cliq }` merges with existing; send **`paymentMethods`: `null`** to clear and fall back to defaults all `true`). At least one method must remain enabled. Same other fields as before: checkout overrides, **`preparingTimeMinutes`** (admin target prep time in minutes; `null` clears), **`paused`**, **`blocked`**, **`hiddenFromCustomers`**, **`isExclusive`** / **`isPremium`**, **`foodTypes`**, etc. |
+| PATCH | `/api/admin/stores/:id` | Update store (…, optional **`paymentMethods`**: partial `{ cod, card, cliq, visaondelivery }` merges with existing; send **`paymentMethods`: `null`** to clear and fall back to defaults all `true`). At least one method must remain enabled. Same other fields as before: checkout overrides, **`preparingTimeMinutes`** (admin target prep time in minutes; `null` clears), **`paused`**, **`blocked`**, **`hiddenFromCustomers`**, **`isExclusive`** / **`isPremium`**, **`foodTypes`**, etc. |
 | DELETE | `/api/admin/stores/:id` | Delete store (Admin and SuperAdmin only). Removes store and its products. |
 
 ---
@@ -4017,7 +4023,7 @@ Order list and order detail responses include **`driverId`** and **`driverName`*
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/admin/orders/counts` | Returns `{ active, complete }`: active = orders not Delivered/Cancelled; complete = Delivered or Cancelled. Store Admin: only their store. |
-| GET | `/api/admin/orders` | List orders (Store Admin: only their store). Each order includes driverId, driverName when assigned, and enriched metrics above. Query: `dateFrom`, `dateTo`, **`orderId`** (exact numeric id — **skips date range** when set), `status`, `orderType` (`store` \| `arheb_box`), `statusFilter` (`active` \| `complete`), `storeId`, `storeIds`, `storeName`, `name` (customer name/phone), **`paymentType`**, `driverId`, `unassigned`. Sorted by `createdAt DESC, id DESC`. |
+| GET | `/api/admin/orders` | List orders (Store Admin: only their store). Each order includes driverId, driverName when assigned, and enriched metrics above. Query: `dateFrom`, `dateTo`, **`orderId`** (exact numeric id — **skips date range** when set), `status`, `orderType` (`store` \| `arheb_box`), `statusFilter` (`active` \| `complete`), `storeId`, `storeIds`, `storeName`, `name` (customer name/phone), **`paymentType`** (`cash`, `card`, `cliq`, `visaondelivery` — case-insensitive), `driverId`, `unassigned`. Sorted by `createdAt DESC, id DESC`. Response includes **`availablePaymentTypes`**: `[ { key, label, labelAr }, … ]` for the payment filter dropdown (cash, Card, Cliq, Visa on delivery). |
 | GET | `/api/admin/orders/export` | Excel (`.xlsx`) with same query filters. Columns include: `itemsJod`, `restaurantSalesBeforeFeeJod`, `restaurantResPercent`, `restaurantResValueJod`, `grandTotalJod`, `driverJod`, `netDel`, `prepTimeMinutes`, `deliveryTimeMinutes`, plus standard order fields. |
 | GET | `/api/admin/orders/:orderId` | Get one order with full details (items, address, notes, paymentType, storeName, driverId, driverName, enriched metrics, etc.). Store Admin: only their store. |
 | PATCH | `/api/admin/orders/:orderId/status` | Update order status. Body: `{ "status": "Preparing" }` (exact status strings as in app). Records status timestamps. On **Delivered** + **cash** payment, adds order grand total to driver **`cashCollectedJod`**. **Store Admin:** only **one step forward** in the flow, or **Cancelled** only while still awaiting payment/confirmation (see Order status section). |
@@ -4985,7 +4991,7 @@ For issues or questions, please contact: `contact@arheb.app`
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| GET | `/api/stores/:id/payment-methods` | None | `{ storeId, paymentMethods: { cod, card, cliq } }` for checkout UI. |
+| GET | `/api/stores/:id/payment-methods` | None | `{ storeId, paymentMethods: { cod, card, cliq, visaondelivery } }` for checkout UI. Optional `latitude` / `longitude` apply [special zone rules](#special-delivery-zones-payment). |
 | POST | `/api/checkout/quote-fees` | User (Bearer) | Pre-checkout quote: `storeId`, `deliveryLocation`, optional `weightKg`, optional **`cartAmount`** (items subtotal for cart-threshold delivery). Returns delivery/service, **`feesTaxRate` 0**, `distanceKm`, platform cap, `pricingNote`. |
 | GET | `/api/admin/settings/checkout-fees` | Admin / SuperAdmin | Platform checkout tiers, flat delivery, cart-threshold delivery fields, default service fee. |
 | PATCH | `/api/admin/settings/checkout-fees` | **SuperAdmin** | Update platform checkout fees (see [Admin platform checkout fees](#admin-platform-checkout-fees)). |

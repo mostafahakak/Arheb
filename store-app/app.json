@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "Arheb Store",
+    "slug": "arheb-store",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "arhebstore",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": false,
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#111827"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.arheb.storeadmin"
+    },
+    "android": {
+      "package": "com.arheb.storeadmin",
+      "googleServicesFile": "./google-services.json",
+      "adaptiveIcon": {
+        "backgroundColor": "#111827"
+      }
+    },
+    "plugins": [
+      "expo-notifications",
+      "expo-font"
+    ],
+    "extra": {
+      "apiBase": "https://arheb-backend.onrender.com"
+    }
+  }
+}

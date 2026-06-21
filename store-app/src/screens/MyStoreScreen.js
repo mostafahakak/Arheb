@@ -89,7 +89,14 @@ export default function MyStoreScreen() {
     );
   }
 
-  const pm = store.paymentMethods || { cod: true, card: true, cliq: true, visaondelivery: true };
+  const pm = {
+    cod: store.paymentMethods?.cod !== false,
+    card: store.paymentMethods?.card !== false,
+    cliq: store.paymentMethods?.cliq !== false,
+    visaondelivery:
+      store.paymentMethods?.visaondelivery !== false &&
+      store.paymentMethods?.visa_on_delivery !== false,
+  };
   const isOpen = store.paused !== true && store.isOpen !== false;
   const statusLabel = store.paused ? t('paused') : store.isOpen === false ? t('closed') : t('open');
 

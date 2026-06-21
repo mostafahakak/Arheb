@@ -1,0 +1,230 @@
+{
+  "project_info": {
+    "project_number": "914622884520",
+    "project_id": "arheb-40c1e",
+    "storage_bucket": "arheb-40c1e.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:914622884520:android:867ba86ffa40f14baff09d",
+        "android_client_info": {
+          "package_name": "com.arheb.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "914622884520-9kh9nd8s8qspojl9p4o6d17e9v8n762j.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.arheb.app",
+            "certificate_hash": "9e2abc2ed470b8d1e4909a2bb2ac3b6b6ec3a396"
+          }
+        },
+        {
+          "client_id": "914622884520-odd9a5k88odi0s5re0m7l04950au58p5.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.arheb.app",
+            "certificate_hash": "c30e6f344a9c21a698d6463eb6dd91e9a6d3a3b6"
+          }
+        },
+        {
+          "client_id": "914622884520-pev8vh3vpg5ve65d34lu1pcrddduke2h.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.arheb.app",
+            "certificate_hash": "2dd73a5cf6e021b8d4d8c633a1295bbeb3135a9c"
+          }
+        },
+        {
+          "client_id": "914622884520-69472hopqi6fuhjvhuaeqi4891ps36g1.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCwyoBngUriIh4RxmaKucRLH5iLcWH8dZI"
+        },
+        {
+          "current_key": "AIzaSyC7CKS5KFWYmgXP7WmVkribvPx_p-nfbzw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "914622884520-69472hopqi6fuhjvhuaeqi4891ps36g1.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "914622884520-0ecv2m5t5fk6k5n27a3lpt8ooe2e5mub.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.arheb.app"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:914622884520:android:38822cad86a15f47aff09d",
+        "android_client_info": {
+          "package_name": "com.arheb.driver"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "914622884520-4odjos71kvqhj3dpb686gbbnelaqu8l9.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.arheb.driver",
+            "certificate_hash": "6d34eb4f49faa71b2de5e95d287a6f95d3cda50e"
+          }
+        },
+        {
+          "client_id": "914622884520-mdrfh17p2t2gvu8r5499cdqhcgf04bjj.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.arheb.driver",
+            "certificate_hash": "3cd6d7ba2bfe757905176326f24465b2638e0381"
+          }
+        },
+        {
+          "client_id": "914622884520-pd1lldfnabhn63q1f5cbf71ft2c8nj6l.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.arheb.driver",
+            "certificate_hash": "2605cd684b0291a9d3d6abbc8ac4ef1c0a3715ef"
+          }
+        },
+        {
+          "client_id": "914622884520-69472hopqi6fuhjvhuaeqi4891ps36g1.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCwyoBngUriIh4RxmaKucRLH5iLcWH8dZI"
+        },
+        {
+          "current_key": "AIzaSyC7CKS5KFWYmgXP7WmVkribvPx_p-nfbzw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "914622884520-69472hopqi6fuhjvhuaeqi4891ps36g1.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "914622884520-0ecv2m5t5fk6k5n27a3lpt8ooe2e5mub.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.arheb.app"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:914622884520:android:f165af1940c88aceaff09d",
+        "android_client_info": {
+          "package_name": "com.arheb.store"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "914622884520-hn7gtv55pusf92r4lcmnef4epc0ocgb7.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.arheb.store",
+            "certificate_hash": "33d42a97ed946f97b2f588d1c7ce99115931c3f2"
+          }
+        },
+        {
+          "client_id": "914622884520-pskbdpshg30rc0648rl2404ncer53ohu.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.arheb.store",
+            "certificate_hash": "3cd6d7ba2bfe757905176326f24465b2638e0381"
+          }
+        },
+        {
+          "client_id": "914622884520-69472hopqi6fuhjvhuaeqi4891ps36g1.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCwyoBngUriIh4RxmaKucRLH5iLcWH8dZI"
+        },
+        {
+          "current_key": "AIzaSyC7CKS5KFWYmgXP7WmVkribvPx_p-nfbzw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "914622884520-69472hopqi6fuhjvhuaeqi4891ps36g1.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "914622884520-0ecv2m5t5fk6k5n27a3lpt8ooe2e5mub.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.arheb.app"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:914622884520:android:512e80da0d59414baff09d",
+        "android_client_info": {
+          "package_name": "com.arheb.storeadmin"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "914622884520-69472hopqi6fuhjvhuaeqi4891ps36g1.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCwyoBngUriIh4RxmaKucRLH5iLcWH8dZI"
+        },
+        {
+          "current_key": "AIzaSyC7CKS5KFWYmgXP7WmVkribvPx_p-nfbzw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "914622884520-69472hopqi6fuhjvhuaeqi4891ps36g1.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "914622884520-0ecv2m5t5fk6k5n27a3lpt8ooe2e5mub.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.arheb.app"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
