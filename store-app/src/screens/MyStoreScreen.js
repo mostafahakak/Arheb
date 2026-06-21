@@ -67,7 +67,7 @@ export default function MyStoreScreen() {
   };
 
   const togglePayment = (key, value) => {
-    const current = store?.paymentMethods || { cod: true, card: true, cliq: true, visa_on_delivery: true };
+    const current = store?.paymentMethods || { cod: true, card: true, cliq: true, visaondelivery: true };
     const next = { ...current, [key]: value };
     patch({ paymentMethods: next }, { paymentMethods: next });
   };
@@ -89,7 +89,7 @@ export default function MyStoreScreen() {
     );
   }
 
-  const pm = store.paymentMethods || { cod: true, card: true, cliq: true, visa_on_delivery: true };
+  const pm = store.paymentMethods || { cod: true, card: true, cliq: true, visaondelivery: true };
   const isOpen = store.paused !== true && store.isOpen !== false;
   const statusLabel = store.paused ? t('paused') : store.isOpen === false ? t('closed') : t('open');
 
@@ -132,7 +132,7 @@ export default function MyStoreScreen() {
           <PaymentToggle label={t('cod')} value={pm.cod !== false} disabled={saving} onChange={(v) => togglePayment('cod', v)} />
           <PaymentToggle label={t('card')} value={pm.card !== false} disabled={saving} onChange={(v) => togglePayment('card', v)} />
           <PaymentToggle label={t('cliq')} value={pm.cliq !== false} disabled={saving} onChange={(v) => togglePayment('cliq', v)} />
-          <PaymentToggle label={t('visaOnDelivery')} value={pm.visa_on_delivery !== false} disabled={saving} onChange={(v) => togglePayment('visa_on_delivery', v)} last />
+          <PaymentToggle label={t('visaOnDelivery')} value={pm.visaondelivery !== false} disabled={saving} onChange={(v) => togglePayment('visaondelivery', v)} last />
         </Card>
 
         <Text style={styles.sectionTitle}>{t('storeDetails')}</Text>

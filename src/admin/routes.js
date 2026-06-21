@@ -60,6 +60,9 @@ const {
 const {
   mergeStorePaymentMethodsPatch,
   validatePaymentMethodsEnabled,
+  getAvailablePaymentTypesCatalog,
+  appendPaymentTypeSqlFilter,
+  paymentTypeFilterValues,
 } = require('../utils/storePaymentMethods');
 const {
   enrichStoreOpeningHours,
@@ -2966,8 +2969,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       }
       if (status && String(status).trim()) { conditions.push('status = ?'); params.push(String(status).trim()); }
       if (paymentTypeTrimmed) {
-        conditions.push("LOWER(TRIM(COALESCE(paymentType, ''))) = LOWER(?)");
-        params.push(paymentTypeTrimmed);
+        appendPaymentTypeSqlFilter(conditions, params, paymentTypeTrimmed, 'paymentType');
       }
       if (unassigned === 'true' || unassigned === '1') {
         conditions.push('driverId IS NULL');
@@ -3051,8 +3053,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           boxCond.push("status = 'cancelled'");
         }
         if (paymentTypeTrimmed) {
-          boxCond.push("LOWER(TRIM(COALESCE(paymentMethod, ''))) = LOWER(?)");
-          boxParams.push(paymentTypeTrimmed);
+          appendPaymentTypeSqlFilter(boxCond, boxParams, paymentTypeTrimmed, 'paymentMethod');
         }
         if (unassigned === 'true' || unassigned === '1') {
           boxCond.push('driverId IS NULL');
@@ -3137,12 +3138,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       data: {
         orders: withItems,
         dateRange,
-        availablePaymentTypes: [
-          { key: 'cash', label: 'Cash on delivery', labelAr: 'الدفع عند الاستلام' },
-          { key: 'Card', label: 'Card', labelAr: 'بطاقة' },
-          { key: 'Cliq', label: 'Cliq', labelAr: 'كليك' },
-          { key: 'visa_on_delivery', label: 'Visa on delivery', labelAr: 'فيزا عند الاستلام' },
-        ],
+        availablePaymentTypes: getAvailablePaymentTypesCatalog(),
       },
     });
   });
@@ -5030,8 +5026,9 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       }
       const paymentTypeFilter = req.query.paymentType ? String(req.query.paymentType).trim() : '';
       if (paymentTypeFilter) {
-        const want = paymentTypeFilter.toLowerCase();
-        orderRows = orderRows.filter((o) => String(o.paymentType || '').trim().toLowerCase() === want);
+        const aliases = paymentTypeFilterValues(paymentTypeFilter);
+        const wantSet = new Set((aliases || [paymentTypeFilter]).map((v) => String(v).trim().toLowerCase()));
+        orderRows = orderRows.filter((o) => wantSet.has(String(o.paymentType || '').trim().toLowerCase()));
       }
 
       const deliveredFiltered = orderRows.filter((o) => String(o.status || '') === 'Delivered');

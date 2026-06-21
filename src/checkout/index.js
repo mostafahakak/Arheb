@@ -21,6 +21,7 @@ const {
   isPaymentTypeAllowedForStore,
   paymentMethodRejectedUserMessage,
   getEffectivePaymentMethodsForDropoff,
+  normalizePaymentTypeForStorage,
 } = require('../utils/storePaymentMethods');
 const {
   computeCheckoutGrandTotalJod,
@@ -681,16 +682,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       options.storedPaymentType ||
       walletPlan.paymentType ||
       normalizedPaymentType;
-    const paymentTypeForStorage = (() => {
-      const t = String(finalPaymentType || '').toLowerCase();
-      if (t === 'wallet+card') return 'Wallet+Card';
-      if (t === 'wallet+cliq') return 'Wallet+Cliq';
-      if (t === 'wallet') return 'Wallet';
-      if (t === 'card') return 'Card';
-      if (t === 'cliq') return 'Cliq';
-      if (t === 'cash' || t === 'cod') return 'Cash';
-      return String(finalPaymentType).charAt(0).toUpperCase() + String(finalPaymentType).slice(1);
-    })();
+    const paymentTypeForStorage = normalizePaymentTypeForStorage(finalPaymentType);
 
     if (!options.initialStatusOverride) {
       const pt = String(finalPaymentType).toLowerCase();
@@ -948,7 +940,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
             : 'Tax on delivery/service fees is currently disabled.',
           invoiceTotal: invoice.total,
           paymentMethods,
-          paymentMethodsNote: !paymentMethods.cod && !paymentMethods.visa_on_delivery
+          paymentMethodsNote: !paymentMethods.cod && !paymentMethods.visaondelivery
             ? 'Cash / Visa on delivery is not available for this delivery area. Use Card or Cliq.'
             : null,
           pricingNote: (() => {
