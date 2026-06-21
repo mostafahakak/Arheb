@@ -5,6 +5,7 @@ const { mapOrderItemsRows } = require('../utils/orderItemApi');
 const { enrichWithJordanTime } = require('../utils/jordanTime');
 const { ensureDriverRatingsTable, round2 } = require('../utils/driverCommission');
 const { STORE_ORDER_SERVICE_FEE_JOD } = require('../utils/deliveryFees');
+const { customerOwnsOrder, customerOwnsArhebBox } = require('../utils/customerOrders');
 
 function isDeliveredOrderStatus(status) {
   return String(status || '').trim().toLowerCase() === 'delivered';
@@ -80,10 +81,10 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
   }
 
   // Helper function to verify order ownership (for customer)
-  function verifyOrderOwnership(orderId, userId) {
+  function verifyOrderOwnership(orderId, userId, phoneNumber) {
     const order = findOrderById.get(orderId);
     if (!order) return false;
-    return order.userId === userId;
+    return customerOwnsOrder(order, userId, phoneNumber);
   }
 
   const findArhebBoxById = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?');
@@ -151,7 +152,7 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
         }
         socket.role = 'driver';
       } else {
-        if (boxRow.phoneNumber !== user.phoneNumber) {
+        if (!customerOwnsArhebBox(boxRow, user.userId, user.phoneNumber)) {
           return next(new Error('Unauthorized: You are not authorized to track this request'));
         }
         socket.role = 'customer';
@@ -182,7 +183,7 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
       socket.role = 'driver';
     } else {
       const userId = user.userId || user.phoneNumber;
-      if (order.userId === userId || order.phoneNumber === user.phoneNumber) {
+      if (customerOwnsOrder(order, userId, user.phoneNumber)) {
         socket.role = 'customer';
       } else {
         return next(new Error('Unauthorized: You are not authorized to track this order'));
@@ -335,6 +336,7 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
     try {
       const orderId = parseInt(req.params.orderId);
       const userId = req.user.userId || req.user.phoneNumber;
+      const phone = req.user.phoneNumber || userId;
       if (isNaN(orderId)) {
         return res.status(400).json({ success: false, message: 'Invalid order ID' });
       }
@@ -344,7 +346,7 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
         if (!boxRow) {
           return res.status(404).json({ success: false, message: 'Order not found' });
         }
-        if (boxRow.phoneNumber !== req.user.phoneNumber) {
+        if (!customerOwnsArhebBox(boxRow, req.user.userId, req.user.phoneNumber)) {
           return res.status(403).json({ success: false, message: 'Access denied' });
         }
         const { enrichArhebBoxRow } = require('../arhebBox');
@@ -370,7 +372,7 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
       if (!order) {
         return res.status(404).json({ success: false, message: 'Order not found' });
       }
-      if (order.userId !== userId) {
+      if (!customerOwnsOrder(order, userId, phone)) {
         return res.status(403).json({ success: false, message: 'Access denied' });
       }
       const findOrderItems = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
@@ -454,6 +456,7 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
     try {
       const orderId = parseInt(req.params.orderId, 10);
       const userId = req.user.userId || req.user.phoneNumber;
+      const phone = req.user.phoneNumber || userId;
       if (isNaN(orderId)) {
         return res.status(400).json({ success: false, message: 'Invalid order ID' });
       }
@@ -461,7 +464,7 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
       if (!order) {
         return res.status(404).json({ success: false, message: 'Order not found' });
       }
-      if (order.userId !== userId) {
+      if (!customerOwnsOrder(order, userId, phone)) {
         return res.status(403).json({ success: false, message: 'This order does not belong to you' });
       }
       const statusLower = String(order.status || '').trim().toLowerCase();
@@ -506,10 +509,9 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
       if (!order) {
         return res.status(404).json({ success: false, message: 'Order not found' });
       }
-      const uid = req.user.userId;
-      const phone = req.user.phoneNumber;
-      const owns = order.userId === uid || order.phoneNumber === phone;
-      if (!owns) {
+      const uid = req.user.userId || req.user.phoneNumber;
+      const phone = req.user.phoneNumber || uid;
+      if (!customerOwnsOrder(order, uid, phone)) {
         return res.status(403).json({ success: false, message: 'Access denied' });
       }
       if (!isDeliveredOrderStatus(order.status) || order.driverId == null) {
@@ -563,6 +565,7 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
     try {
       const orderId = parseInt(req.params.orderId);
       const userId = req.user.userId || req.user.phoneNumber;
+      const phone = req.user.phoneNumber || userId;
 
       if (isNaN(orderId)) {
         return res.status(400).json({
@@ -576,7 +579,7 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
         if (!boxRow) {
           return res.status(404).json({ success: false, message: 'Order not found' });
         }
-        if (boxRow.phoneNumber !== req.user.phoneNumber) {
+        if (!customerOwnsArhebBox(boxRow, userId, phone)) {
           return res.status(403).json({ success: false, message: 'Access denied' });
         }
         const trackKey = `box_${orderId}`;
@@ -622,7 +625,7 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
       }
 
       // Verify order ownership
-      if (!verifyOrderOwnership(orderId, userId)) {
+      if (!verifyOrderOwnership(orderId, userId, phone)) {
         return res.status(403).json({
           success: false,
           message: 'Access denied'

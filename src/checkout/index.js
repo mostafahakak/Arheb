@@ -30,6 +30,13 @@ const {
 } = require('../wallet/checkoutWallet');
 const { resolveStorePickupLocation } = require('../utils/mapsUrlResolve');
 const { ensureOrderStatusTimestampColumns, recordOrderStatusTimestamp } = require('../utils/orderStatusTimestamps');
+const {
+  customerOwnsOrder,
+  loadStoreOrdersForCustomer,
+  loadArhebBoxForCustomer,
+  isTerminalOrderStatus,
+  isActiveOrderStatus,
+} = require('../utils/customerOrders');
 
 module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   const { getJsonPath } = require('../config/jsonPaths');
@@ -243,9 +250,6 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
 
   const findUserByPhone = db.prepare('SELECT * FROM users WHERE phoneNumber = ?');
   const findOrderById = db.prepare('SELECT * FROM orders WHERE id = ?');
-  const findOrdersByUserId = db.prepare(
-    'SELECT * FROM orders WHERE userId = ? OR phoneNumber = ? ORDER BY createdAt DESC, id DESC',
-  );
   
   // Promo code queries
   const findPromoCodeByName = db.prepare('SELECT * FROM promo_codes WHERE name = ?');
@@ -1013,8 +1017,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       const userId = req.user.userId || req.user.phoneNumber;
       const phone = req.user.phoneNumber || userId;
 
-      // Fetch all store orders for this user (match legacy rows by phone or userId)
-      const orders = findOrdersByUserId.all(userId, phone);
+      const orders = loadStoreOrdersForCustomer(db, userId, phone);
 
       // Fetch items for each order
       const findOrderItems = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
@@ -1063,17 +1066,15 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
 
       let arhebBoxRequests = [];
       try {
-        const boxRows = db
-          .prepare(
-            `SELECT * FROM arheb_box_requests
-             WHERE phoneNumber = ? OR phoneNumber = ?
-             ORDER BY createdAt DESC, id DESC`,
-          )
-          .all(userId, phone);
-        arhebBoxRequests = boxRows.map((r) => enrichArhebBoxRow(r, db));
+        arhebBoxRequests = loadArhebBoxForCustomer(db, userId, phone).map((r) => enrichArhebBoxRow(r, db));
       } catch (e) {
         if (!e.message || !e.message.includes('no such table')) throw e;
       }
+
+      const activeStoreOrders = ordersWithItems.filter((o) => isActiveOrderStatus(o.status));
+      const orderHistoryStore = ordersWithItems.filter((o) => isTerminalOrderStatus(o.status));
+      const activeArhebBox = arhebBoxRequests.filter((r) => isActiveOrderStatus(r.status));
+      const orderHistoryArhebBox = arhebBoxRequests.filter((r) => isTerminalOrderStatus(r.status));
 
       const combinedOrders = [
         ...ordersWithItems.map((o) => ({ ...o, orderType: 'store' })),
@@ -1084,6 +1085,8 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         if (tb !== ta) return tb - ta;
         return (Number(b.id) || 0) - (Number(a.id) || 0);
       });
+      const combinedActiveOrders = combinedOrders.filter((o) => isActiveOrderStatus(o.status));
+      const combinedOrderHistory = combinedOrders.filter((o) => isTerminalOrderStatus(o.status));
 
       return res.status(200).json({
         success: true,
@@ -1091,10 +1094,18 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
         data: {
           orders: ordersWithItems,
           count: ordersWithItems.length,
+          activeOrders: activeStoreOrders,
+          activeCount: activeStoreOrders.length,
+          orderHistory: orderHistoryStore,
+          orderHistoryCount: orderHistoryStore.length,
           arhebBoxRequests,
           arhebBoxCount: arhebBoxRequests.length,
+          activeArhebBoxRequests: activeArhebBox,
+          orderHistoryArhebBox,
           combinedOrders,
           combinedCount: combinedOrders.length,
+          combinedActiveOrders,
+          combinedOrderHistory,
         },
         timestamp: new Date().toISOString()
       });
@@ -1111,7 +1122,8 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   app.get('/api/checkout/:orderId', authenticateRequest, (req, res) => {
     try {
       const orderId = parseInt(req.params.orderId);
-      const userId = req.user.phoneNumber;
+      const userId = req.user.userId || req.user.phoneNumber;
+      const phone = req.user.phoneNumber || userId;
 
       if (isNaN(orderId)) {
         return res.status(400).json({
@@ -1130,7 +1142,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       }
 
       // Verify the order belongs to the authenticated user
-      if (order.userId !== userId && order.phoneNumber !== userId) {
+      if (!customerOwnsOrder(order, userId, phone)) {
         return res.status(403).json({
           success: false,
           message: 'Access denied'
@@ -1205,7 +1217,8 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
   app.put('/api/checkout/:orderId/rate', authenticateRequest, (req, res) => {
     try {
       const orderId = parseInt(req.params.orderId);
-      const userId = req.user.phoneNumber;
+      const userId = req.user.userId || req.user.phoneNumber;
+      const phone = req.user.phoneNumber || userId;
       const { rating } = req.body;
 
       if (isNaN(orderId)) {
@@ -1233,7 +1246,7 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
       }
 
       // Verify the order belongs to the authenticated user
-      if (order.userId !== userId && order.phoneNumber !== userId) {
+      if (!customerOwnsOrder(order, userId, phone)) {
         return res.status(403).json({
           success: false,
           message: "Can't rate this order"

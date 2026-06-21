@@ -10,6 +10,12 @@ const {
 } = require('../utils/storeVisibility');
 const { normalizeHomeContentLinkArray } = require('../utils/homeContentLinks');
 const { applyCatalogListPriceAndOriginal } = require('../utils/productCatalogPrice');
+const {
+  loadStoreOrdersForCustomer,
+  loadArhebBoxForCustomer,
+  isTerminalOrderStatus,
+  isActiveOrderStatus,
+} = require('../utils/customerOrders');
 
 function round2Money(n) {
   return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -380,20 +386,6 @@ module.exports = function attachHomeRoutes(app, db, JWT_SECRET) {
     console.warn('No home data found to seed the database');
   }
 
-  const findActiveStoreOrdersForUser = db.prepare(`
-    SELECT id, status, createdAt, totalAmount, deliveryFee, serviceFee, feesTax FROM orders
-    WHERE (userId = ? OR phoneNumber = ?)
-      AND LOWER(COALESCE(TRIM(status), '')) NOT IN ('delivered', 'cancelled', 'payment rejected')
-    ORDER BY datetime(COALESCE(createdAt, '1970-01-01')) DESC, id DESC
-  `);
-
-  const findActiveArhebBoxForUser = db.prepare(`
-    SELECT id, status, createdAt, amount, deliveryFee, serviceFee, feesTax FROM arheb_box_requests
-    WHERE (phoneNumber = ? OR phoneNumber = ?)
-      AND LOWER(COALESCE(TRIM(status), '')) NOT IN ('delivered', 'cancelled')
-    ORDER BY datetime(COALESCE(createdAt, '1970-01-01')) DESC, id DESC
-  `);
-
   app.get('/api/home', (req, res) => {
     const homeResponse = loadHomeResponse();
     const response = homeResponse
@@ -468,48 +460,60 @@ module.exports = function attachHomeRoutes(app, db, JWT_SECRET) {
           const userId = payload.userId || phoneNumber;
           if (phoneNumber || userId) {
             const phone = phoneNumber || userId;
-            const storeRows = findActiveStoreOrdersForUser.all(userId, phone);
+            const storeRows = loadStoreOrdersForCustomer(db, userId, phone);
             let boxRows = [];
             try {
-              boxRows = findActiveArhebBoxForUser.all(userId, phone);
+              boxRows = loadArhebBoxForCustomer(db, userId, phone);
             } catch (e) {
               if (!e.message || !e.message.includes('no such table')) throw e;
             }
-            const activeOrders = [
-              ...storeRows.map((r) => {
-                const money = storeOrderMoneyFields(r);
-                return {
-                  orderType: 'store',
-                  id: r.id,
-                  status: r.status,
-                  createdAt: r.createdAt ?? null,
-                  totalAmount: money.totalAmount,
-                  itemsSubtotal: money.itemsSubtotal,
-                  deliveryFee: money.deliveryFee,
-                  serviceFee: money.serviceFee,
-                  feesTax: money.feesTax,
-                };
-              }),
-              ...boxRows.map((r) => {
-                const money = arhebBoxOrderMoneyFields(r);
-                return {
-                  orderType: 'arheb_box',
-                  id: r.id,
-                  status: r.status,
-                  createdAt: r.createdAt ?? null,
-                  totalAmount: money.totalAmount,
-                  itemsSubtotal: money.itemsSubtotal,
-                  deliveryFee: money.deliveryFee,
-                  serviceFee: money.serviceFee,
-                  feesTax: money.feesTax,
-                };
-              }),
-            ].sort((a, b) => {
-              const ta = new Date(a.createdAt || 0).getTime();
-              const tb = new Date(b.createdAt || 0).getTime();
-              if (tb !== ta) return tb - ta;
-              return (Number(b.id) || 0) - (Number(a.id) || 0);
-            });
+
+            const mapStoreSummary = (r) => {
+              const money = storeOrderMoneyFields(r);
+              return {
+                orderType: 'store',
+                id: r.id,
+                status: r.status,
+                createdAt: r.createdAt ?? null,
+                totalAmount: money.totalAmount,
+                itemsSubtotal: money.itemsSubtotal,
+                deliveryFee: money.deliveryFee,
+                serviceFee: money.serviceFee,
+                feesTax: money.feesTax,
+              };
+            };
+            const mapBoxSummary = (r) => {
+              const money = arhebBoxOrderMoneyFields(r);
+              return {
+                orderType: 'arheb_box',
+                id: r.id,
+                status: r.status,
+                createdAt: r.createdAt ?? null,
+                totalAmount: money.totalAmount,
+                itemsSubtotal: money.itemsSubtotal,
+                deliveryFee: money.deliveryFee,
+                serviceFee: money.serviceFee,
+                feesTax: money.feesTax,
+              };
+            };
+
+            const sortOrders = (list) =>
+              [...list].sort((a, b) => {
+                const ta = new Date(a.createdAt || 0).getTime();
+                const tb = new Date(b.createdAt || 0).getTime();
+                if (tb !== ta) return tb - ta;
+                return (Number(b.id) || 0) - (Number(a.id) || 0);
+              });
+
+            const activeOrders = sortOrders([
+              ...storeRows.filter((r) => isActiveOrderStatus(r.status)).map(mapStoreSummary),
+              ...boxRows.filter((r) => isActiveOrderStatus(r.status)).map(mapBoxSummary),
+            ]);
+            const orderHistory = sortOrders([
+              ...storeRows.filter((r) => isTerminalOrderStatus(r.status)).map(mapStoreSummary),
+              ...boxRows.filter((r) => isTerminalOrderStatus(r.status)).map(mapBoxSummary),
+            ]);
+
             if (activeOrders.length) {
               response.activeOrders = activeOrders;
               const top = activeOrders[0];
@@ -523,6 +527,9 @@ module.exports = function attachHomeRoutes(app, db, JWT_SECRET) {
                 serviceFee: top.serviceFee,
                 feesTax: top.feesTax,
               };
+            }
+            if (orderHistory.length) {
+              response.orderHistory = orderHistory;
             }
           }
         } catch (e) {
