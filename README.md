@@ -730,7 +730,7 @@ Retrieves all products that currently have a discount applied. This is useful fo
 
 Stores can be **paused**, **blocked**, or **hidden from browse** (`hiddenFromCustomers`, Admin/SuperAdmin): **blocked** stores never appear in public APIs; **hidden** stores are omitted from customer browse lists but are not the same as paused. **Paused** stores can still appear in `GET /api/stores` with `status: "paused"` (sorted after open stores). **Exclusive** / **premium** flags (`isExclusive` / `isPremium` — set together by admin) mark featured stores; use **`GET /api/stores/exclusive`** (or legacy **`/api/stores/premium`**) for that curated list.
 
-Public listings use **`GET /api/stores`**, **`/api/stores/top-rated`**, **`/api/stores/premium`**, **`/api/stores/exclusive`**, **`/api/stores/category/:name`**, and **store products** — all exclude **blocked** and **hidden** stores. Each store includes **`paymentMethods`**: `{ "cod": true, "card": true, "cliq": true }` (cash on delivery, card, Cliq). If the field is omitted in storage, all three default to **`true`**. **`POST /api/checkout`** and **`POST /api/payment/initiate`** reject a **`paymentType`** the store has disabled. **Special / remote delivery zones** (Wadi Rum, etc.) further restrict checkout to **Card + Cliq only** — see [Special delivery zones (payment)](#special-delivery-zones-payment). Admin APIs return full store records; **`PATCH /api/admin/stores/:id`** accepts **`paymentMethods`** (partial updates merge) and supports `paused`, `blocked`, `hiddenFromCustomers`, and **`isExclusive`** (SuperAdmin/Admin only).
+Public listings use **`GET /api/stores`**, **`/api/stores/top-rated`**, **`/api/stores/premium`**, **`/api/stores/exclusive`**, **`/api/stores/category/:name`**, and **store products** — all exclude **blocked** and **hidden** stores. Each store includes **`paymentMethods`**: `{ "cod": true, "card": true, "cliq": true, "visa_on_delivery": true }` (cash on delivery, card, Cliq, Visa on delivery). If the field is omitted in storage, all four default to **`true`**. **`POST /api/checkout`** and **`POST /api/payment/initiate`** reject a **`paymentType`** the store has disabled. **Special / remote delivery zones** (Wadi Rum, etc.) further restrict checkout to **Card + Cliq only** — see [Special delivery zones (payment)](#special-delivery-zones-payment). Admin APIs return full store records; **`PATCH /api/admin/stores/:id`** accepts **`paymentMethods`** (partial updates merge) and supports `paused`, `blocked`, `hiddenFromCustomers`, and **`isExclusive`** (SuperAdmin/Admin only).
 
 ### Get All Stores
 
@@ -772,7 +772,8 @@ Retrieves all stores that are **listed for customer browse** (not blocked, not h
         "paymentMethods": {
           "cod": true,
           "card": true,
-          "cliq": true
+          "cliq": true,
+          "visa_on_delivery": true
         }
       }
     ]
@@ -780,7 +781,7 @@ Retrieves all stores that are **listed for customer browse** (not blocked, not h
 }
 ```
 
-Each store includes **`status`**, **`isExclusive`** / **`isPremium`** (same meaning — exclusive/premium tier), **`closingTime`** (string or `null`), **`openingTime`** (string or `null`), **`storeCategories`** (array of `{ id, nameEn, nameAr, name }`), **`foodTypes`** (array of resolved `{ id, nameEn, nameAr, name, image, displayOrder }` — what the store sells; see [Food Types](#food-types)), and **`paymentMethods`** (`cod` = cash on delivery; use with `paymentType` **`cash`** or **`cod`** at checkout).
+Each store includes **`status`**, **`isExclusive`** / **`isPremium`** (same meaning — exclusive/premium tier), **`closingTime`** (string or `null`), **`openingTime`** (string or `null`), **`storeCategories`** (array of `{ id, nameEn, nameAr, name }`), **`foodTypes`** (array of resolved `{ id, nameEn, nameAr, name, image, displayOrder }` — what the store sells; see [Food Types](#food-types)), and **`paymentMethods`** (`cod` = cash on delivery, `visa_on_delivery` = Visa on delivery — driver carries a portable card terminal; use with `paymentType` **`visa_on_delivery`** at checkout).
 
 ---
 
@@ -799,7 +800,7 @@ When the customer’s **delivery coordinates** are known, pass them as query par
 | `latitude` | `lat` | number | Customer drop-off latitude |
 | `longitude` | `lng`, `long` | number | Customer drop-off longitude |
 
-If both coordinates are valid numbers, **`paymentMethods.cod`** may be **`false`** even when the store normally allows COD. When COD is disabled for the location, the response may include **`paymentMethodsNote`**.
+If both coordinates are valid numbers, **`paymentMethods.cod`** and **`paymentMethods.visa_on_delivery`** may be **`false`** even when the store normally allows them. When COD / Visa on delivery is disabled for the location, the response may include **`paymentMethodsNote`**.
 
 **Authentication:** Not required
 
@@ -819,9 +820,10 @@ GET /api/stores/1/payment-methods?latitude=29.5743&longitude=35.421
     "paymentMethods": {
       "cod": false,
       "card": true,
-      "cliq": true
+      "cliq": true,
+      "visa_on_delivery": false
     },
-    "paymentMethodsNote": "Cash on delivery is not available for this delivery area. Use Card or Cliq."
+    "paymentMethodsNote": "Cash / Visa on delivery is not available for this delivery area. Use Card or Cliq."
   },
   "timestamp": "2024-01-15T10:30:00Z"
 }
@@ -837,14 +839,15 @@ GET /api/stores/1/payment-methods?latitude=29.5743&longitude=35.421
     "paymentMethods": {
       "cod": true,
       "card": true,
-      "cliq": false
+      "cliq": false,
+      "visa_on_delivery": true
     }
   },
   "timestamp": "2024-01-15T10:30:00Z"
 }
 ```
 
-**Checkout mapping:** `paymentType` **`cash`** or **`cod`** → **`cod`**; **`card`** → **`card`**; **`cliq`** → **`cliq`** (case-insensitive).
+**Checkout mapping:** `paymentType` **`cash`** or **`cod`** → **`cod`**; **`card`** → **`card`**; **`cliq`** → **`cliq`**; **`visa_on_delivery`** or **`Visa on delivery`** or **`visaondelivery`** → **`visa_on_delivery`** (case-insensitive).
 
 ---
 
@@ -2001,7 +2004,8 @@ Call **before** `POST /api/checkout` to preview **delivery fee**, **service fee*
     "paymentMethods": {
       "cod": true,
       "card": true,
-      "cliq": true
+      "cliq": true,
+      "visa_on_delivery": true
     },
     "paymentMethodsNote": null,
     "pricingNote": "…"
@@ -2011,8 +2015,8 @@ Call **before** `POST /api/checkout` to preview **delivery fee**, **service fee*
 ```
 
 - **`deliveryFee`**: Resolved from distance tiers, optional platform **`flatDeliveryFeeJod`**, optional **cart ≥ threshold** delivery (store or platform), per-store **fixed** / **free** checkout delivery, then special-far / uncapped / remote rules. See **`pricingNote`** in the live response for the active rule text.
-- **`paymentMethods`**: Effective checkout options for this **`deliveryLocation`** (store flags + [special zone rules](#special-delivery-zones-payment)). Use this to hide COD in the UI before submit.
-- **`paymentMethodsNote`**: Human-readable hint when COD is disabled for the drop-off (otherwise `null`).
+- **`paymentMethods`**: Effective checkout options for this **`deliveryLocation`** (store flags + [special zone rules](#special-delivery-zones-payment)). Use this to hide COD / Visa on delivery in the UI before submit.
+- **`paymentMethodsNote`**: Human-readable hint when COD / Visa on delivery is disabled for the drop-off (otherwise `null`).
 - **`deliveryFeeMaxJod`**: Platform cap from [Admin platform checkout fees](#admin-platform-checkout-fees) (informational; some zones ignore the cap).
 - **`serviceFee`**: Platform default or per-store override.
 - **`feesTax`**: **`feesTaxRate × (deliveryFee + serviceFee)`**; rate is **0** in current builds.
@@ -2031,6 +2035,7 @@ Some delivery areas use the same geographic pins as **special-far** and **remote
 | Rule | Behavior |
 |------|----------|
 | **COD / cash** | **Not allowed** — server returns **400** if `paymentType` is `cash` or `cod` |
+| **Visa on delivery** | **Not allowed** — server returns **400** if `paymentType` is `visa_on_delivery` |
 | **Card** | Allowed |
 | **Cliq** | Allowed |
 | **Wallet** | Allowed (full wallet, or wallet + card/cliq remainder) |
@@ -2039,7 +2044,7 @@ Some delivery areas use the same geographic pins as **special-far** and **remote
 
 1. Call **`POST /api/checkout/quote-fees`** with `deliveryLocation` — read **`data.paymentMethods`** and **`data.paymentMethodsNote`**.
 2. Or call **`GET /api/stores/:id/payment-methods?latitude=…&longitude=…`** when the user picks an address.
-3. Hide or disable the COD option when **`paymentMethods.cod === false`**.
+3. Hide or disable the COD and Visa on delivery options when **`paymentMethods.cod === false`** / **`paymentMethods.visa_on_delivery === false`**.
 4. Always send **`addressLat`** / **`addressLong`** on **`POST /api/checkout`** and **`POST /api/payment/initiate`** so the server can enforce the rule even if the UI is outdated.
 
 **Error (400) when COD is used in a restricted zone:**
@@ -2047,7 +2052,7 @@ Some delivery areas use the same geographic pins as **special-far** and **remote
 ```json
 {
   "success": false,
-  "message": "Cash on delivery is not available for this delivery area. Please use Card or Cliq."
+  "message": "Cash / Visa on delivery is not available for this delivery area. Please use Card or Cliq."
 }
 ```
 
@@ -2095,7 +2100,7 @@ Creates a new order with items, customer information, and delivery details.
 - `phoneNumber` (string) - Customer phone number
 - `totalAmount` (number) - Total order amount
 - `deliveryFee` (number) - Delivery fee
-- `paymentType` (string) - Payment method (e.g., "cash", "card")
+- `paymentType` (string) - Payment method (`"cash"`, `"card"`, `"cliq"`, `"visa_on_delivery"`)
 
 **Optional Fields:**
 - `name` (string) - Customer name
@@ -2111,7 +2116,7 @@ Creates a new order with items, customer information, and delivery details.
 
 **Note:** 
 - Status is automatically set to "Waiting confirmation"
-- **`paymentType`** must be allowed for the order’s store **and delivery location**: **`cash`** / **`cod`** (COD), **`card`**, **`cliq`**, or wallet variants — matching **`paymentMethods`** (see [Get Store Payment Methods](#get-store-payment-methods) and [Special delivery zones (payment)](#special-delivery-zones-payment)). Send **`addressLat`** / **`addressLong`** so location rules apply. If disabled, the API returns **400** with a clear message.
+- **`paymentType`** must be allowed for the order’s store **and delivery location**: **`cash`** / **`cod`** (COD), **`card`**, **`cliq`**, **`visa_on_delivery`** (Visa on delivery), or wallet variants — matching **`paymentMethods`** (see [Get Store Payment Methods](#get-store-payment-methods) and [Special delivery zones (payment)](#special-delivery-zones-payment)). Send **`addressLat`** / **`addressLong`** so location rules apply. If disabled, the API returns **400** with a clear message.
 - Optional **`walletAmountJod`** (number): pay part or all of the grand total from the customer wallet — see [Checkout split payment](#checkout-split-payment-wallet--cardcliq). Stored on the order as **`walletAmountJod`**.
 - If `promoCode` is provided and valid, the discount will be automatically applied from the promo code value. **Store-specific** promo codes (see [Admin promo codes](#admin-promo-codes)) only apply when the order’s store (from `storeId` or inferred from cart items) matches that promo’s store; otherwise the request fails with **`promo code not available for this store`**. If the promo has **`minOrderAmount`**, the client must send **`cartAmount`** ≥ that threshold (or the request fails).
 - If `promoCode` is invalid, order creation will fail with **`invalid promoCode`**
@@ -3651,7 +3656,7 @@ Single reference for every **`/api/admin/*`** route (mirrors `src/admin/routes.j
 | Method | Endpoint | Access | Notes |
 |--------|----------|--------|-------|
 | GET | `/api/admin/orders/counts` | Auth | Aggregates; optional `storeIds`. |
-| GET | `/api/admin/orders` | Auth | List + filters (`orderId`, dates, status, `orderType`, `paymentType`, …). Enriched with metrics — see [Admin Orders](#admin-orders). |
+| GET | `/api/admin/orders` | Auth | List + filters (`orderId`, dates, status, `orderType`, `paymentType`, …). Enriched with metrics. Response includes **`availablePaymentTypes`** array for filter UI — see [Admin Orders](#admin-orders). |
 | GET | `/api/admin/orders/export` | Auth | Excel export (same filters). Columns include items JOD, Res %, Res Value, driver JOD, net del, prep/delivery minutes. |
 | GET | `/api/admin/orders/:orderId` | Auth | Detail; box: `?type=arheb_box`. |
 | PATCH | `/api/admin/orders/:orderId/status` | Auth | SA = step-forward / reject rules. |
@@ -4202,7 +4207,7 @@ These fields are **returned** on **`GET /api/home`** inside each item in **`data
 | Param | Description |
 |--------|-------------|
 | `status` | Filter orders by exact DB status (e.g. `Delivered`, `On the way`). Omit or use `all` for no status filter. |
-| `paymentType` | Filter orders by payment method (`cash`, `card`, `cliq` — case-insensitive). |
+| `paymentType` | Filter orders by payment method (`cash`, `card`, `cliq`, `visa_on_delivery` — case-insensitive). |
 | `dateFrom` | `YYYY-MM-DD` — filter orders by `date(createdAt) >= dateFrom` |
 | `dateTo` | `YYYY-MM-DD` — filter orders by `date(createdAt) <= dateTo` |
 | `page`, `perPage` | Pagination for the **orders** list (default `perPage` 25) |
@@ -5196,6 +5201,39 @@ For issues or questions, please contact: `contact@arheb.app`
 - **Customer:** **POST /api/orders/:orderId/rate-driver** — rate the driver 1–5 + optional notes; one rating per order; updates **`drivers.rating`** and **`ratingCount`**. See [Rate Driver (Customer)](#rate-driver-customer).
 - **Customer:** **POST /api/orders/:orderId/cancel** — cancel own order when status is **Waiting confirmation**, **Preparing**, **Pending payment**, or **Waiting cliq confirmation**. Returns 400 if On the way / Delivered. See [Cancel Order (Customer)](#cancel-order-customer).
 - **Admin dashboard:** **GET /api/admin/drivers/:id/profile** — filters, paginated orders with **`driverShare`**, **`earningsForFilteredDelivered`**, full **`ratings`** list. UI: **Drivers** → **Profile** → `/dashboard/drivers/profile/?id=` (static export–friendly URL).
+
+### Visa on delivery payment method
+
+- **New payment option `visa_on_delivery`** — the driver carries a portable card/Visa terminal and charges the customer at the door. Works like other methods (COD, Card, Cliq) with per-store toggles.
+- **Default:** Enabled for all stores. Stores with no explicit `paymentMethods` get all four methods as `true`.
+- **Admin:** `PATCH /api/admin/stores/:id` — send `{ "paymentMethods": { "visa_on_delivery": false } }` to disable. Partial merge; other flags unchanged.
+- **Store app:** Toggle on **My Store** screen alongside COD / Card / Cliq.
+- **Customer checkout:** Send `paymentType: "visa_on_delivery"` (also accepts `"Visa on delivery"` or `"visaondelivery"`, case-insensitive). Server validates against store + location rules.
+- **Special / remote zones:** Disabled (same as COD) — Card + Cliq only.
+- **Driver cash ceiling:** Not affected — Visa on delivery is not cash; no ceiling check.
+- **Admin orders API:** `GET /api/admin/orders` now returns **`availablePaymentTypes`** array: `[ { key, label, labelAr }, … ]` for all four methods. Dashboard should use this for the payment type filter dropdown. Filter with `?paymentType=visa_on_delivery`.
+
+### Customer order totals fix
+
+- **`totalAmount`** on customer-facing APIs (**`GET /api/checkout`**, **`GET /api/checkout/:orderId`**, **`GET /api/orders/:orderId`**, **`GET /api/home` active orders**) now returns the **grand total** (items + delivery + service + tax), not the raw DB value (items-only subtotal).
+- New field **`itemsSubtotal`** shows the items-only value (same as DB `totalAmount` for store orders; `amount` for Arheb Box).
+- **`orderSummary.total`** was already correct; now `totalAmount` matches it.
+- Shared helper: `src/utils/orderMoney.js` — `storeOrderMoneyFields` / `arhebBoxOrderMoneyFields`.
+- Driver payloads unchanged: `totalPrice` remains items subtotal; `deliveryFee` / `serviceFee` / `feesTax` are separate.
+
+### Customer search improvements
+
+- **`GET /api/search`** rewritten to use browse-level store visibility (same rules as `GET /api/stores`), so closed/paused stores still appear in results.
+- **Products match store name** — searching "Crispy" finds products from Crispy Chicken.
+- **Broader fields:** address, descriptions, subcategories for store matching.
+- **Optional `?type=stores|products|all`** filter (default `all`).
+- Response includes **`storeCount`** and **`productCount`**.
+
+### Delivered orders fix
+
+- Customer "My Orders" APIs (**`GET /api/checkout`**, **`GET /api/home`**) now return **delivered** and **cancelled** orders in **`orderHistory`** / **`combinedOrderHistory`** — they were previously missing because only active orders were loaded.
+- Flexible Jordan phone matching: `+962`, `00962`, `079…` variants all match the same customer.
+- Ownership checks on single-order endpoints (**`GET /api/orders/:orderId`**, cancel, rate, tracking, WebSocket auth) use the same flexible matching.
 
 <div align="center">
 
