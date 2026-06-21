@@ -4843,8 +4843,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         oParams.push(dateTo);
       }
       if (paymentTypeQ) {
-        oCond.push("LOWER(TRIM(COALESCE(paymentType, ''))) = LOWER(?)");
-        oParams.push(paymentTypeQ);
+        appendPaymentTypeSqlFilter(oCond, oParams, paymentTypeQ, 'paymentType');
       }
       if (storeIdQ) {
         oCond.push('CAST(storeId AS TEXT) = ?');
