@@ -948,8 +948,8 @@ module.exports = function attachCheckoutRoutes(app, db, authenticateRequest) {
             : 'Tax on delivery/service fees is currently disabled.',
           invoiceTotal: invoice.total,
           paymentMethods,
-          paymentMethodsNote: !paymentMethods.cod
-            ? 'Cash on delivery is not available for this delivery area. Use Card or Cliq.'
+          paymentMethodsNote: !paymentMethods.cod && !paymentMethods.visa_on_delivery
+            ? 'Cash / Visa on delivery is not available for this delivery area. Use Card or Cliq.'
             : null,
           pricingNote: (() => {
             const parts = [];

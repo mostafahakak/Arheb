@@ -1,8 +1,8 @@
 /**
  * Per-store checkout payment options (stored on each store JSON row as `paymentMethods`).
- * Default when missing: all methods enabled (cod, card, cliq).
+ * Default when missing: all methods enabled (cod, card, cliq, visa_on_delivery).
  *
- * Special / remote delivery pins (Wadi Rum, etc.) restrict checkout to Card + Cliq only (no COD).
+ * Special / remote delivery pins (Wadi Rum, etc.) restrict checkout to Card + Cliq only (no COD / no Visa on delivery).
  */
 
 const { dropoffRequiresCardOrCliqOnly } = require('./deliveryFees');
@@ -15,7 +15,7 @@ function coercePaymentFlag(v, defaultTrue = true) {
 
 /**
  * @param {object | null | undefined} store
- * @returns {{ cod: boolean, card: boolean, cliq: boolean }}
+ * @returns {{ cod: boolean, card: boolean, cliq: boolean, visa_on_delivery: boolean }}
  */
 function getStorePaymentMethods(store) {
   const pm = store && store.paymentMethods && typeof store.paymentMethods === 'object' ? store.paymentMethods : {};
@@ -23,11 +23,13 @@ function getStorePaymentMethods(store) {
     cod: coercePaymentFlag(pm.cod, true),
     card: coercePaymentFlag(pm.card, true),
     cliq: coercePaymentFlag(pm.cliq, true),
+    visa_on_delivery: coercePaymentFlag(pm.visa_on_delivery, true),
   };
 }
 
 /**
  * Effective methods for a dropoff coordinate (store flags + location rules).
+ * Remote / special-far zones disable COD and Visa on delivery (card + cliq only).
  * @param {object | null | undefined} store
  * @param {unknown} lat
  * @param {unknown} lng
@@ -43,6 +45,7 @@ function getEffectivePaymentMethodsForDropoff(store, lat, lng) {
     cod: false,
     card: true,
     cliq: true,
+    visa_on_delivery: false,
   };
 }
 
@@ -63,12 +66,13 @@ function mergeStorePaymentMethodsPatch(existingStore, patch) {
   if ('cod' in patch) out.cod = Boolean(patch.cod);
   if ('card' in patch) out.card = Boolean(patch.card);
   if ('cliq' in patch) out.cliq = Boolean(patch.cliq);
+  if ('visa_on_delivery' in patch) out.visa_on_delivery = Boolean(patch.visa_on_delivery);
   return out;
 }
 
 function validatePaymentMethodsEnabled(pm) {
-  if (pm.cod || pm.card || pm.cliq) return { ok: true };
-  return { ok: false, message: 'At least one payment method (cod, card, cliq) must be enabled' };
+  if (pm.cod || pm.card || pm.cliq || pm.visa_on_delivery) return { ok: true };
+  return { ok: false, message: 'At least one payment method (cod, card, cliq, visa_on_delivery) must be enabled' };
 }
 
 /** @param {string} paymentTypeLower */
@@ -77,6 +81,7 @@ function paymentTypeToMethodKey(paymentTypeLower) {
   if (t === 'cash' || t === 'cod') return 'cod';
   if (t === 'card') return 'card';
   if (t === 'cliq') return 'cliq';
+  if (t === 'visa_on_delivery' || t === 'visa on delivery' || t === 'visaondelivery') return 'visa_on_delivery';
   return null;
 }
 
@@ -103,10 +108,10 @@ function paymentMethodRejectedUserMessage(paymentTypeLower, lat, lng) {
   const key = paymentTypeToMethodKey(paymentTypeLower);
   const la = typeof lat === 'number' ? lat : Number(lat);
   const ln = typeof lng === 'number' ? lng : Number(lng);
-  if (key === 'cod' && Number.isFinite(la) && Number.isFinite(ln) && dropoffRequiresCardOrCliqOnly(la, ln)) {
-    return 'Cash on delivery is not available for this delivery area. Please use Card or Cliq.';
+  if ((key === 'cod' || key === 'visa_on_delivery') && Number.isFinite(la) && Number.isFinite(ln) && dropoffRequiresCardOrCliqOnly(la, ln)) {
+    return 'Cash / Visa on delivery is not available for this delivery area. Please use Card or Cliq.';
   }
-  const labels = { cod: 'Cash on delivery', card: 'Card payment', cliq: 'Cliq' };
+  const labels = { cod: 'Cash on delivery', card: 'Card payment', cliq: 'Cliq', visa_on_delivery: 'Visa on delivery' };
   const label = key ? labels[key] || 'This payment method' : 'This payment method';
   return `${label} is not available for this store`;
 }
