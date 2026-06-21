@@ -6,6 +6,7 @@ const { enrichWithJordanTime } = require('../utils/jordanTime');
 const { ensureDriverRatingsTable, round2 } = require('../utils/driverCommission');
 const { STORE_ORDER_SERVICE_FEE_JOD } = require('../utils/deliveryFees');
 const { customerOwnsOrder, customerOwnsArhebBox } = require('../utils/customerOrders');
+const { storeOrderMoneyFields } = require('../utils/orderMoney');
 
 function isDeliveredOrderStatus(status) {
   return String(status || '').trim().toLowerCase() === 'delivered';
@@ -385,11 +386,8 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
         } catch (e) { /* ignore */ }
       }
       const serviceFee = order.serviceFee != null ? Number(order.serviceFee) : STORE_ORDER_SERVICE_FEE_JOD;
-      const deliveryNum = Number(order.deliveryFee) || 0;
-      const feesTax =
-        order.feesTax != null
-          ? Number(order.feesTax)
-          : Math.round(((0.07 * (deliveryNum + serviceFee)) + Number.EPSILON) * 100) / 100;
+      const feesTax = order.feesTax != null ? Number(order.feesTax) : 0;
+      const money = storeOrderMoneyFields({ ...order, serviceFee, feesTax });
       return res.status(200).json({
         success: true,
         message: 'Order retrieved successfully',
@@ -404,27 +402,32 @@ module.exports = function attachOrderTrackingRoutes(io, app, db, authenticateReq
               addressLong: order.addressLong,
               addressLat: order.addressLat,
               discount: order.discount,
-              deliveryFee: order.deliveryFee,
-              serviceFee,
-              feesTax,
+              deliveryFee: money.deliveryFee,
+              serviceFee: money.serviceFee,
+              feesTax: money.feesTax,
               weightKg: order.weightKg != null ? Number(order.weightKg) : 0,
-              totalAmount: order.totalAmount,
+              itemsSubtotal: money.itemsSubtotal,
+              totalAmount: money.totalAmount,
               orderSummary: {
                 currency: 'JOD',
-                orderValue: Math.round(((Number(order.totalAmount) || 0) + Number.EPSILON) * 100) / 100,
-                deliveryFee: Math.round(((Number(order.deliveryFee) || 0) + Number.EPSILON) * 100) / 100,
-                serviceFee: Math.round(((Number(serviceFee) || 0) + Number.EPSILON) * 100) / 100,
-                feesTaxRate: 0.07,
-                feesTax: Math.round(((Number(feesTax) || 0) + Number.EPSILON) * 100) / 100,
-                total: Math.round((((Number(order.totalAmount) || 0) + (Number(order.deliveryFee) || 0) + (Number(serviceFee) || 0) + (Number(feesTax) || 0)) + Number.EPSILON) * 100) / 100,
+                orderValue: money.itemsSubtotal,
+                deliveryFee: money.deliveryFee,
+                serviceFee: money.serviceFee,
+                feesTaxRate: money.feesTax > 0 && money.deliveryFee + money.serviceFee > 0
+                  ? round2(money.feesTax / (money.deliveryFee + money.serviceFee))
+                  : 0,
+                feesTax: money.feesTax,
+                total: money.totalAmount,
               },
               invoice: {
                 currency: 'JOD',
-                deliveryFee: Math.round(((Number(order.deliveryFee) || 0) + Number.EPSILON) * 100) / 100,
-                serviceFee: Math.round(((Number(serviceFee) || 0) + Number.EPSILON) * 100) / 100,
-                feesTaxRate: 0.07,
-                feesTax: Math.round(((Number(feesTax) || 0) + Number.EPSILON) * 100) / 100,
-                total: Math.round((((Number(order.deliveryFee) || 0) + (Number(serviceFee) || 0) + (Number(feesTax) || 0)) + Number.EPSILON) * 100) / 100,
+                deliveryFee: money.deliveryFee,
+                serviceFee: money.serviceFee,
+                feesTaxRate: money.feesTax > 0 && money.deliveryFee + money.serviceFee > 0
+                  ? round2(money.feesTax / (money.deliveryFee + money.serviceFee))
+                  : 0,
+                feesTax: money.feesTax,
+                total: round2(money.deliveryFee + money.serviceFee + money.feesTax),
               },
               status: order.status,
               storeId: order.storeId ?? null,

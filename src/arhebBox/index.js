@@ -9,6 +9,7 @@ const { getPlatformCheckoutFeeTiers } = require('../utils/platformCheckoutFees')
 const { quoteFromPickupDropoff, minAmountJod, distanceKm: haversineKm } = require('./pricing');
 const { isArhebBoxOrdersPaused } = require('./pause');
 const { seedDefaultDeliveryFixedZonesIfEmpty } = require('../utils/deliveryFixedZones');
+const { arhebBoxOrderMoneyFields } = require('../utils/orderMoney');
 
 const FEES_TAX_RATE = 0;
 
@@ -103,6 +104,12 @@ function enrichRequestRow(row, db) {
     row.feesTax != null && Number.isFinite(Number(row.feesTax))
       ? round2(Number(row.feesTax))
       : calcFeesTaxJod(deliveryFee, serviceFee);
+  const money = arhebBoxOrderMoneyFields({
+    amount: row.amount,
+    deliveryFee,
+    serviceFee,
+    feesTax,
+  });
   const base = {
     id: row.id,
     phoneNumber: row.phoneNumber ?? null,
@@ -118,10 +125,12 @@ function enrichRequestRow(row, db) {
     paymentMethod: row.paymentMethod || null,
     whoPays: row.whoPays || null,
     amount: row.amount != null ? Number(row.amount) : null,
+    itemsSubtotal: money.itemsSubtotal,
+    totalAmount: money.totalAmount,
     weightKg,
-    deliveryFee,
-    serviceFee,
-    feesTax,
+    deliveryFee: money.deliveryFee,
+    serviceFee: money.serviceFee,
+    feesTax: money.feesTax,
     invoice: buildInvoice(deliveryFee, serviceFee),
     distanceKm: row.distanceKm != null ? Number(row.distanceKm) : null,
     minAmountJod: row.minAmountJod != null ? Number(row.minAmountJod) : null,
