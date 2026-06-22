@@ -4296,6 +4296,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           {
             id: o.id,
             totalAmount: money.totalAmount,
+            grandTotalJod: money.totalAmount,
             itemsSubtotal: money.itemsSubtotal,
             deliveryFee: money.deliveryFee,
             serviceFee: money.serviceFee,
@@ -4314,6 +4315,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         {
           id: r.id,
           totalAmount: money.totalAmount,
+          grandTotalJod: money.totalAmount,
           itemsSubtotal: money.itemsSubtotal,
           deliveryFee: money.deliveryFee,
           serviceFee: money.serviceFee,
