@@ -23,6 +23,7 @@ const {
 const { getActiveFromListWithDistance } = require('../driverPresence');
 const { offerNextSequentialDriver, offerNextSequentialArhebBoxDriver, parseLatLongFromGoogleMapsUrl } = require('../utils/sequentialDriverOffer');
 const { notifyArhebBoxCustomerDriverToPick, notifyArhebBoxCustomerDriverEnRoute } = require('../utils/arhebBoxFcm');
+const { storeOrderMoneyFields } = require('../utils/orderMoney');
 const {
   sendDriverLoginOtp,
   verifyDriverLoginOtp,
@@ -167,9 +168,7 @@ function orderToDriverApi(order, items = [], driverRow = null, store = null, db 
       : (order.addressName || address)
         ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(order.addressName || address)}`
         : null;
-  const deliveryFeeNum = Math.round(((Number(order.deliveryFee) || 0) + Number.EPSILON) * 100) / 100;
-  const serviceFeeNum = Math.round(((Number(order.serviceFee) || 0) + Number.EPSILON) * 100) / 100;
-  const feesTaxNum = Math.round(((Number(order.feesTax) || 0) + Number.EPSILON) * 100) / 100;
+  const money = storeOrderMoneyFields(order, { items, db });
   const createdAt = order.createdAt || null;
   const storeName = store ? store.nameEn || store.name || store.nameAr || null : null;
   const out = {
@@ -178,10 +177,12 @@ function orderToDriverApi(order, items = [], driverRow = null, store = null, db 
     storeId: order.storeId != null ? String(order.storeId) : null,
     storeName,
     products: productList,
-    totalPrice: order.totalAmount ?? 0,
-    deliveryFee: deliveryFeeNum,
-    serviceFee: serviceFeeNum,
-    feesTax: feesTaxNum,
+    /** Full payable total (items + delivery + service + tax). */
+    totalPrice: money.totalAmount,
+    itemsSubtotal: money.itemsSubtotal,
+    deliveryFee: money.deliveryFee,
+    serviceFee: money.serviceFee,
+    feesTax: money.feesTax,
     /** Driver earnings (JOD) for this order — same as `driverShare.earningsJod` when commission is resolved. */
     profitJod: null,
     discountAmount: order.discount ?? 0,
