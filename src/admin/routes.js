@@ -154,6 +154,7 @@ const {
 } = require('../utils/deliveryFixedZones');
 const { round2: round2Money } = require('../utils/deliveryFees');
 const { enrichAdminOrderMetrics, isCashPaymentType, orderGrandTotalJod } = require('../utils/orderAdminMetrics');
+const { storeOrderMoneyFields, arhebBoxOrderMoneyFields } = require('../utils/orderMoney');
 const { ensureOrderStatusTimestampColumns, recordOrderStatusTimestamp } = require('../utils/orderStatusTimestamps');
 const {
   ensureDriverCashCeilingColumns,
@@ -771,7 +772,16 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           SELECT u.phoneNumber, u.userId, u.name, u.addressName, u.createdAt, u.deleted, u.isBlocked,
             COUNT(o.id) AS orderCount,
             ROUND(COALESCE(SUM(
-              COALESCE(o.totalAmount, 0) + COALESCE(o.deliveryFee, 0) + COALESCE(o.serviceFee, 0) + COALESCE(o.feesTax, 0)
+              CASE
+                WHEN (SELECT COUNT(*) FROM order_items oi WHERE oi.orderId = o.id) > 0
+                  THEN MAX(
+                         0,
+                         (SELECT COALESCE(SUM(oi.price * oi.quantity), 0) FROM order_items oi WHERE oi.orderId = o.id)
+                           - COALESCE(o.discount, 0)
+                       )
+                       + COALESCE(o.deliveryFee, 0) + COALESCE(o.serviceFee, 0) + COALESCE(o.feesTax, 0)
+                ELSE COALESCE(o.totalAmount, 0)
+              END
             ), 0), 2) AS ordersGrandTotalJod
           FROM users u
           LEFT JOIN orders o ON (
@@ -4247,9 +4257,21 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       }
     }
 
-    const totalRevenueStore = orders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
-    const totalRevenueBox = boxRows.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
-    const totalRevenue = totalRevenueStore + totalRevenueBox;
+    // Revenue excludes cancelled / payment-rejected orders, and counts the full payable
+    // amount per order (items subtotal + delivery + service + tax), not the items-only value.
+    const isRevenueExcludedStatus = (status) => {
+      const s = String(status || '').trim().toLowerCase();
+      return s === 'cancelled' || s.includes('payment rejected');
+    };
+    const totalRevenueStore = orders.reduce((sum, o) => {
+      if (isRevenueExcludedStatus(o.status)) return sum;
+      return sum + storeOrderMoneyFields(o, { db }).totalAmount;
+    }, 0);
+    const totalRevenueBox = boxRows.reduce((sum, r) => {
+      if (isRevenueExcludedStatus(r.status)) return sum;
+      return sum + arhebBoxOrderMoneyFields(r).totalAmount;
+    }, 0);
+    const totalRevenue = round2Money(totalRevenueStore + totalRevenueBox);
 
     const byStatus = {};
     orders.forEach((o) => {
@@ -4269,10 +4291,15 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     const recent = recentMerged.slice(0, 50).map((item) => {
       if (item.kind === 'store') {
         const o = item.o;
+        const money = storeOrderMoneyFields(o, { db });
         return enrichWithJordanTime(
           {
             id: o.id,
-            totalAmount: o.totalAmount,
+            totalAmount: money.totalAmount,
+            itemsSubtotal: money.itemsSubtotal,
+            deliveryFee: money.deliveryFee,
+            serviceFee: money.serviceFee,
+            feesTax: money.feesTax,
             status: o.status,
             createdAt: o.createdAt,
             storeId: o.storeId,
@@ -4282,10 +4309,15 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         );
       }
       const r = item.o;
+      const money = arhebBoxOrderMoneyFields(r);
       return enrichWithJordanTime(
         {
           id: r.id,
-          totalAmount: Number(r.amount) || 0,
+          totalAmount: money.totalAmount,
+          itemsSubtotal: money.itemsSubtotal,
+          deliveryFee: money.deliveryFee,
+          serviceFee: money.serviceFee,
+          feesTax: money.feesTax,
           status: r.status,
           createdAt: r.createdAt,
           storeId: null,

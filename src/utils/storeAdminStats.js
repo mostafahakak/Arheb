@@ -28,7 +28,16 @@ function loadStoreOrderStatsMap(db, dateFrom, dateTo) {
         storeId,
         COUNT(*) AS orderCount,
         ROUND(COALESCE(SUM(
-          COALESCE(totalAmount, 0) + COALESCE(deliveryFee, 0) + COALESCE(serviceFee, 0) + COALESCE(feesTax, 0)
+          CASE
+            WHEN (SELECT COUNT(*) FROM order_items oi WHERE oi.orderId = orders.id) > 0
+              THEN MAX(
+                     0,
+                     (SELECT COALESCE(SUM(oi.price * oi.quantity), 0) FROM order_items oi WHERE oi.orderId = orders.id)
+                       - COALESCE(discount, 0)
+                   )
+                   + COALESCE(deliveryFee, 0) + COALESCE(serviceFee, 0) + COALESCE(feesTax, 0)
+            ELSE COALESCE(totalAmount, 0)
+          END
         ), 0), 2) AS ordersGrandTotalJod,
         ROUND(AVG(
           CASE WHEN preparingAt IS NOT NULL AND onTheWayAt IS NOT NULL
@@ -110,9 +119,28 @@ function buildStoreProfileStats(db, storeId, dateFrom, dateTo) {
         COUNT(*) AS orderCount,
         SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END) AS deliveredCount,
         SUM(CASE WHEN status = 'Cancelled' THEN 1 ELSE 0 END) AS cancelledCount,
-        ROUND(COALESCE(SUM(COALESCE(totalAmount, 0)), 0), 2) AS itemsSubtotalSumJod,
         ROUND(COALESCE(SUM(
-          COALESCE(totalAmount, 0) + COALESCE(deliveryFee, 0) + COALESCE(serviceFee, 0) + COALESCE(feesTax, 0)
+          CASE
+            WHEN (SELECT COUNT(*) FROM order_items oi WHERE oi.orderId = orders.id) > 0
+              THEN MAX(
+                     0,
+                     (SELECT COALESCE(SUM(oi.price * oi.quantity), 0) FROM order_items oi WHERE oi.orderId = orders.id)
+                       - COALESCE(discount, 0)
+                   )
+            ELSE COALESCE(totalAmount, 0)
+          END
+        ), 0), 2) AS itemsSubtotalSumJod,
+        ROUND(COALESCE(SUM(
+          CASE
+            WHEN (SELECT COUNT(*) FROM order_items oi WHERE oi.orderId = orders.id) > 0
+              THEN MAX(
+                     0,
+                     (SELECT COALESCE(SUM(oi.price * oi.quantity), 0) FROM order_items oi WHERE oi.orderId = orders.id)
+                       - COALESCE(discount, 0)
+                   )
+                   + COALESCE(deliveryFee, 0) + COALESCE(serviceFee, 0) + COALESCE(feesTax, 0)
+            ELSE COALESCE(totalAmount, 0)
+          END
         ), 0), 2) AS ordersGrandTotalJod,
         ROUND(AVG(
           CASE WHEN preparingAt IS NOT NULL AND onTheWayAt IS NOT NULL
