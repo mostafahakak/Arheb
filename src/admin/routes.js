@@ -4263,9 +4263,22 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       const s = String(status || '').trim().toLowerCase();
       return s === 'cancelled' || s.includes('payment rejected');
     };
+    const storesForRecentMetrics = loadStores();
+    const storeByIdRecentMetrics = Object.fromEntries(
+      storesForRecentMetrics.map((s) => [String(s.id), s]),
+    );
+    const enrichStoreOrderForDashboard = (o) =>
+      enrichAdminOrderMetrics(
+        {
+          ...o,
+          orderType: 'store',
+          items: mapOrderItemsForAdmin(findOrderItems.all(o.id)),
+        },
+        storeByIdRecentMetrics,
+      );
     const totalRevenueStore = orders.reduce((sum, o) => {
       if (isRevenueExcludedStatus(o.status)) return sum;
-      return sum + storeOrderMoneyFields(o, { db }).totalAmount;
+      return sum + enrichStoreOrderForDashboard(o).grandTotalJod;
     }, 0);
     const totalRevenueBox = boxRows.reduce((sum, r) => {
       if (isRevenueExcludedStatus(r.status)) return sum;
@@ -4291,16 +4304,16 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     const recent = recentMerged.slice(0, 50).map((item) => {
       if (item.kind === 'store') {
         const o = item.o;
-        const money = storeOrderMoneyFields(o, { db });
+        const enriched = enrichStoreOrderForDashboard(o);
         return enrichWithJordanTime(
           {
             id: o.id,
-            totalAmount: money.totalAmount,
-            grandTotalJod: money.totalAmount,
-            itemsSubtotal: money.itemsSubtotal,
-            deliveryFee: money.deliveryFee,
-            serviceFee: money.serviceFee,
-            feesTax: money.feesTax,
+            totalAmount: enriched.grandTotalJod,
+            grandTotalJod: enriched.grandTotalJod,
+            itemsSubtotal: enriched.itemsSubtotalJod ?? enriched.restaurantSalesBeforeFeeJod,
+            deliveryFee: o.deliveryFee,
+            serviceFee: o.serviceFee,
+            feesTax: o.feesTax,
             status: o.status,
             createdAt: o.createdAt,
             storeId: o.storeId,
