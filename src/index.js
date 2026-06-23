@@ -31,6 +31,17 @@ const { attachAdminDashboardNamespace } = require('./utils/adminDashboardSocket'
 
 dotenv.config();
 
+// Keep the process alive when an error escapes async background work (Socket.IO event
+// handlers, timers, FCM/WhatsApp callbacks). Without these, a single uncaught error crashes
+// the whole server and Render reports "Instance failed" + restarts. We log the full error so
+// the real root cause is visible, instead of taking the entire service down.
+process.on('uncaughtException', (err) => {
+  console.error('[fatal] uncaughtException — server kept alive:', err?.stack || err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[fatal] unhandledRejection — server kept alive:', reason?.stack || reason);
+});
+
 // Render persistent disk defaults:
 // - If ARHEB_DATA_DIR is not set and /data/arheb exists, use it for SQLite DB.
 // - If ARHEB_JSON_DIR is not set and /data/arheb exists, use it for JSON files too.
@@ -462,6 +473,15 @@ app.use((req, res, next) => {
   });
 
   next();
+});
+
+// Fast health check for Render (and uptime pingers to keep the instance warm).
+// Must respond instantly without touching the DB or external services.
+app.get(['/healthz', '/health'], (req, res) => {
+  res.status(200).json({ status: 'ok', uptimeSec: Math.round(process.uptime()) });
+});
+app.get('/', (req, res) => {
+  res.status(200).json({ status: 'ok', service: 'arheb-backend' });
 });
 
 const testClientDir = path.join(__dirname, '..', 'test-client');
@@ -1241,6 +1261,30 @@ app.use((err, req, res, next) => {
   if (res.headersSent) return next(err);
   res.status(500).json({ success: false, message: 'Internal server error', case: 2 });
 });
+
+// Indexes for the hot order paths. Without these, every admin/driver/customer order query
+// (and the per-order item lookups) does a full-table scan; since better-sqlite3 is synchronous
+// that blocks the event loop and slows ALL requests. Run after route modules add their columns
+// (storeId, driverId, etc.). Each is independent so a missing column can't block the others.
+function ensureOrderPerformanceIndexes() {
+  const statements = [
+    'CREATE INDEX IF NOT EXISTS idx_order_items_orderId ON order_items(orderId)',
+    'CREATE INDEX IF NOT EXISTS idx_orders_createdAt ON orders(createdAt)',
+    'CREATE INDEX IF NOT EXISTS idx_orders_storeId ON orders(storeId)',
+    'CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)',
+    'CREATE INDEX IF NOT EXISTS idx_orders_phoneNumber ON orders(phoneNumber)',
+    'CREATE INDEX IF NOT EXISTS idx_orders_driverId ON orders(driverId)',
+    'CREATE INDEX IF NOT EXISTS idx_driver_requests_order ON driver_requests(orderId, status)',
+  ];
+  for (const sql of statements) {
+    try {
+      db.exec(sql);
+    } catch (e) {
+      console.warn('[startup] index skipped:', sql, '-', e.message);
+    }
+  }
+}
+ensureOrderPerformanceIndexes();
 
 httpServer.listen(PORT, () => {
   console.log(`Auth backend listening on http://localhost:${PORT}`);

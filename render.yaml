@@ -4,9 +4,13 @@ services:
   - type: web
     name: arheb-backend
     runtime: node
+    # NOTE: live service runs on a paid plan with a persistent disk (configured in the Render
+    # dashboard, which overrides this file). This blueprint is kept in sync for reference.
     plan: free
     buildCommand: npm install
     startCommand: npm start
+    # Render restarts the instance if this endpoint stops returning 200.
+    healthCheckPath: /healthz
     # Set JOFOTARA_PAUSED=false (or remove) when JoFotara should run again.
     envVars:
       - key: JOFOTARA_PAUSED
