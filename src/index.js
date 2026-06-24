@@ -1349,10 +1349,20 @@ function ensureOrderPerformanceIndexes() {
     }
   }
 }
-ensureOrderPerformanceIndexes();
 
 httpServer.listen(PORT, () => {
   console.log(`Auth backend listening on http://localhost:${PORT}`);
   console.log(`WebSocket server ready for order tracking`);
+  // Bind the port FIRST so Render's health check passes immediately, THEN build indexes.
+  // On the very first deploy after adding an index, CREATE INDEX on a large table can block
+  // the synchronous event loop for several seconds; doing it before listen() would make the
+  // deploy-time health check time out (5s, not configurable). After the first run the indexes
+  // exist, so this is effectively instant on subsequent boots.
+  setImmediate(() => {
+    const startedAt = Date.now();
+    ensureOrderPerformanceIndexes();
+    const ms = Date.now() - startedAt;
+    if (ms > 200) console.log(`[startup] order performance indexes ready in ${ms}ms`);
+  });
 });
 

@@ -10,6 +10,17 @@ services:
     buildCommand: npm install
     startCommand: npm start
     # Render restarts the instance if this endpoint stops returning 200.
+    # IMPORTANT: Render's health check timeout is FIXED at 5s per check and CANNOT be increased
+    # (https://render.com/docs/health-checks). An instance is only restarted after 60s of
+    # CONSECUTIVE failures. Failures here mean the Node event loop was blocked (synchronous SQLite)
+    # so even this trivial endpoint couldn't answer in 5s — the fix is to keep the loop free, not
+    # to change this value (which isn't possible).
+    #
+    # ALTERNATIVE: to stop transient event-loop lag from causing restarts, REMOVE healthCheckPath
+    # so Render falls back to a TCP check. The Linux kernel completes the TCP handshake from the
+    # listen backlog even while the JS event loop is briefly blocked, so short lag spikes won't
+    # trip the 5s timeout. (Live service config lives in the Render dashboard, which overrides this
+    # file — change it there too.)
     healthCheckPath: /healthz
     # Set JOFOTARA_PAUSED=false (or remove) when JoFotara should run again.
     envVars:
