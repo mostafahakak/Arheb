@@ -129,6 +129,80 @@ function sumDriverEarningsForArhebBoxes(db, boxRows) {
   }, 0);
 }
 
+/**
+ * Driver home stats (today/lifetime profit + counts) are expensive: they scan ALL delivered
+ * orders/boxes for the driver and sum earnings row-by-row. The driver app polls /api/driver/home
+ * every few seconds, so without caching this rescans the driver's entire history on every poll —
+ * under load that blocks the synchronous SQLite/event loop and trips Render's health check.
+ * Cache per driver for a short TTL; lists (available/active orders) are still computed live.
+ */
+const driverHomeStatsCache = new Map();
+const DRIVER_HOME_STATS_TTL_MS = 15000;
+
+function computeDriverHomeStats(db, driverId, driverRow) {
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const todayStr = todayStart.toISOString().slice(0, 10);
+  const todayOrders = db
+    .prepare('SELECT * FROM orders WHERE driverId = ? AND status = ? AND date(createdAt) = ?')
+    .all(driverId, 'Delivered', todayStr);
+  const allDelivered = db.prepare('SELECT * FROM orders WHERE driverId = ? AND status = ?').all(driverId, 'Delivered');
+  let todayBoxDelivered = [];
+  let allBoxDelivered = [];
+  try {
+    todayBoxDelivered = db
+      .prepare(
+        `SELECT * FROM arheb_box_requests WHERE driverId = ? AND LOWER(TRIM(status)) = 'delivered' AND date(createdAt) = ?`,
+      )
+      .all(driverId, todayStr);
+    allBoxDelivered = db
+      .prepare(`SELECT * FROM arheb_box_requests WHERE driverId = ? AND LOWER(TRIM(status)) = 'delivered'`)
+      .all(driverId);
+  } catch (e) {
+    if (!e.message || !e.message.includes('no such table')) throw e;
+  }
+  const todayProfit =
+    sumDriverEarningsForOrders(db, todayOrders) + sumDriverEarningsForArhebBoxes(db, todayBoxDelivered);
+  const totalProfit =
+    sumDriverEarningsForOrders(db, allDelivered) + sumDriverEarningsForArhebBoxes(db, allBoxDelivered);
+  const todayDeliveryFees =
+    todayOrders.reduce((s, o) => s + (Number(o.deliveryFee) || 0), 0) +
+    todayBoxDelivered.reduce((s, b) => s + (Number(b.deliveryFee) || 0), 0);
+  const totalDeliveryFees =
+    allDelivered.reduce((s, o) => s + (Number(o.deliveryFee) || 0), 0) +
+    allBoxDelivered.reduce((s, b) => s + (Number(b.deliveryFee) || 0), 0);
+  return {
+    todayProfit,
+    totalProfit,
+    todayDeliveryFees,
+    totalDeliveryFees,
+    /** @deprecated full delivery fee totals; prefer todayProfit/totalProfit */
+    todayEarnings: todayProfit,
+    totalEarnings: totalProfit,
+    todayOrders: todayOrders.length + todayBoxDelivered.length,
+    totalOrders: allDelivered.length + allBoxDelivered.length,
+    rating: driverRow.rating ?? 5,
+  };
+}
+
+function getDriverHomeStatsCached(db, driverId, driverRow) {
+  const key = Number(driverId);
+  const now = Date.now();
+  const cached = driverHomeStatsCache.get(key);
+  if (cached && now - cached.at < DRIVER_HOME_STATS_TTL_MS) {
+    // Keep rating fresh from the current row; everything else from cache.
+    return { ...cached.stats, rating: driverRow.rating ?? 5 };
+  }
+  const stats = computeDriverHomeStats(db, driverId, driverRow);
+  driverHomeStatsCache.set(key, { at: now, stats });
+  return stats;
+}
+
+/** Invalidate a driver's cached home stats (call after a delivery completes). */
+function invalidateDriverHomeStats(driverId) {
+  if (driverId != null) driverHomeStatsCache.delete(Number(driverId));
+}
+
 // Map DB order + items + driver to API shape; optional store adds storeAddress, storeMapsUrl, etc.
 // Pass db to include driverShare (commission snapshot + earnings in JOD).
 function orderToDriverApi(order, items = [], driverRow = null, store = null, db = null) {
@@ -934,7 +1008,12 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
   // GET /api/driver/home
   app.get('/api/driver/home', driverAuth, (req, res) => {
     const driverId = req.driver.id;
-    const driverOrders = db.prepare('SELECT * FROM orders WHERE driverId = ? ORDER BY id DESC').all(driverId);
+    // Only ACTIVE orders are needed for the live lists below (delivering/picking). Excluding
+    // Delivered/Cancelled keeps this bounded — otherwise it loads the driver's entire history on
+    // every poll, which grows forever and blocks the event loop under load.
+    const driverOrders = db
+      .prepare("SELECT * FROM orders WHERE driverId = ? AND status NOT IN ('Delivered', 'Cancelled') ORDER BY id DESC")
+      .all(driverId);
     const currentOrder = driverOrders.find((o) => mapOrderStatus(o.status) === 'delivering');
     const inProgressOrders = driverOrders.filter((o) => mapOrderStatus(o.status) === 'delivering' && o.id !== (currentOrder && currentOrder.id));
     const driverToPickOrders = driverOrders
@@ -971,36 +1050,6 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     // `arhebBoxAvailable` = assigned to me + open pool (same shape as pre–split API for older driver apps)
     const arhebBoxAvailable = [...arhebBoxMyActive, ...arhebBoxUnassigned];
 
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const todayStr = todayStart.toISOString().slice(0, 10);
-    const todayOrders = db.prepare('SELECT * FROM orders WHERE driverId = ? AND status = ? AND date(createdAt) = ?').all(driverId, 'Delivered', todayStr);
-    const allDelivered = db.prepare('SELECT * FROM orders WHERE driverId = ? AND status = ?').all(driverId, 'Delivered');
-    let todayBoxDelivered = [];
-    let allBoxDelivered = [];
-    try {
-      todayBoxDelivered = db
-        .prepare(
-          `SELECT * FROM arheb_box_requests WHERE driverId = ? AND LOWER(TRIM(status)) = 'delivered' AND date(createdAt) = ?`,
-        )
-        .all(driverId, todayStr);
-      allBoxDelivered = db
-        .prepare(`SELECT * FROM arheb_box_requests WHERE driverId = ? AND LOWER(TRIM(status)) = 'delivered'`)
-        .all(driverId);
-    } catch (e) {
-      if (!e.message || !e.message.includes('no such table')) throw e;
-    }
-    const todayProfit =
-      sumDriverEarningsForOrders(db, todayOrders) + sumDriverEarningsForArhebBoxes(db, todayBoxDelivered);
-    const totalProfit =
-      sumDriverEarningsForOrders(db, allDelivered) + sumDriverEarningsForArhebBoxes(db, allBoxDelivered);
-    const todayDeliveryFees =
-      todayOrders.reduce((s, o) => s + (Number(o.deliveryFee) || 0), 0) +
-      todayBoxDelivered.reduce((s, b) => s + (Number(b.deliveryFee) || 0), 0);
-    const totalDeliveryFees =
-      allDelivered.reduce((s, o) => s + (Number(o.deliveryFee) || 0), 0) +
-      allBoxDelivered.reduce((s, b) => s + (Number(b.deliveryFee) || 0), 0);
-
     const defaultPct = getDriverDeliveryDefaultPercent(db);
     const homeCommission =
       req.driver.commissionPercent != null && Number.isFinite(Number(req.driver.commissionPercent))
@@ -1018,18 +1067,9 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
       rating: req.driver.rating ?? 5,
       commissionPercent: homeCommission,
     };
-    const stats = {
-      todayProfit,
-      totalProfit,
-      todayDeliveryFees,
-      totalDeliveryFees,
-      /** @deprecated full delivery fee totals; prefer todayProfit/totalProfit */
-      todayEarnings: todayProfit,
-      totalEarnings: totalProfit,
-      todayOrders: todayOrders.length + todayBoxDelivered.length,
-      totalOrders: allDelivered.length + allBoxDelivered.length,
-      rating: req.driver.rating ?? 5,
-    };
+    // Lifetime/today profit aggregates are cached per driver (see getDriverHomeStatsCached) so the
+    // frequent home poll doesn't rescan the whole delivery history on every request.
+    const stats = getDriverHomeStatsCached(db, driverId, req.driver);
 
     const storesList = loadStores();
     const storeById = Object.fromEntries(storesList.map((s) => [s.id, s]));
@@ -1680,6 +1720,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
       updateOrderStatus.run('Delivered', orderId);
     }
     emitOrderStatus(orderId, 'Delivered');
+    invalidateDriverHomeStats(driverId);
 
     // Notify customer with clickable payload (opens order details in the app).
     fcm.sendToUserByPhone(
@@ -1934,6 +1975,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     }
     db.prepare('UPDATE arheb_box_requests SET status = ? WHERE id = ?').run('delivered', requestId);
     emitBoxStatus(requestId, 'delivered');
+    invalidateDriverHomeStats(driverId);
     try {
       const { submitJofotaraInvoiceForArhebBox } = require('../jofotara');
       submitJofotaraInvoiceForArhebBox(db, requestId).catch((e) => {

@@ -42,6 +42,48 @@ process.on('unhandledRejection', (reason) => {
   console.error('[fatal] unhandledRejection — server kept alive:', reason?.stack || reason);
 });
 
+// When Render shows "Instance failed" with NO [fatal] line above, the process was not killed by a
+// JS exception — it was either (a) terminated by the platform (SIGTERM, e.g. failed health check or
+// deploy) or (b) hard-killed for memory (SIGKILL/OOM, which cannot be logged). These diagnostics
+// make the real cause visible:
+//   - [signal] line  => platform asked us to stop (health check timeout / deploy / scale-down).
+//   - [health] line with a big event-loop lag just before a restart => the loop was blocked
+//     (synchronous SQLite under load), so /healthz couldn't answer in time and Render restarted us.
+//   - rss climbing toward the plan limit with NO line at all => OOM (SIGKILL).
+['SIGTERM', 'SIGINT'].forEach((sig) => {
+  process.on(sig, () => {
+    const mem = process.memoryUsage();
+    console.error(
+      `[signal] received ${sig} — platform is stopping this instance. ` +
+        `rss=${Math.round(mem.rss / 1048576)}MB heapUsed=${Math.round(mem.heapUsed / 1048576)}MB ` +
+        `uptimeSec=${Math.round(process.uptime())}`,
+    );
+    process.exit(0);
+  });
+});
+
+// Event-loop lag + memory watchdog. better-sqlite3 is synchronous, so a heavy/spiky request can
+// freeze the loop; if that freeze outlasts Render's health-check timeout the instance is restarted
+// with no crash log. We log only when something is actually wrong so this stays quiet normally.
+(() => {
+  const INTERVAL_MS = 5000;
+  let last = Date.now();
+  const timer = setInterval(() => {
+    const now = Date.now();
+    const lag = now - last - INTERVAL_MS;
+    last = now;
+    const mem = process.memoryUsage();
+    const rssMb = Math.round(mem.rss / 1048576);
+    if (lag > 1000 || rssMb > 1024) {
+      console.warn(
+        `[health] event-loop lag=${lag}ms rss=${rssMb}MB heapUsed=${Math.round(mem.heapUsed / 1048576)}MB`,
+      );
+    }
+  }, INTERVAL_MS);
+  // Don't keep the process alive just for the watchdog.
+  if (timer.unref) timer.unref();
+})();
+
 // Render persistent disk defaults:
 // - If ARHEB_DATA_DIR is not set and /data/arheb exists, use it for SQLite DB.
 // - If ARHEB_JSON_DIR is not set and /data/arheb exists, use it for JSON files too.
