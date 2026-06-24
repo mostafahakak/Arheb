@@ -2951,9 +2951,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   }
 
   // ——— Orders (sorted newest first; filter by date range, status, store, name, orderType, paymentType, driver) ———
-  function buildAdminOrdersList(req) {
+  function buildAdminOrdersList(req, options = {}) {
     const range = resolveOrdersListDateRange(req.query || {});
-    const listMode = req.query.list === '1' || req.query.list === 'true';
+    const listMode =
+      options.full === true
+        ? false
+        : req.query.full === '1' || req.query.full === 'true'
+          ? false
+          : req.query.list !== '0' && req.query.list !== 'false';
     const { status, storeId, storeIds, storeName, name, orderType, statusFilter, paymentType, driverId, unassigned, orderId } = req.query;
     const paymentTypeTrimmed =
       paymentType && String(paymentType).trim() ? String(paymentType).trim() : '';
@@ -3232,7 +3237,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
 
   app.get('/api/admin/orders/export', auth, requirePermissionAllowStore(PERM.ORDERS_VIEW), (req, res) => {
     try {
-      const { orders: withItems } = buildAdminOrdersList(req);
+      const { orders: withItems } = buildAdminOrdersList(req, { full: true });
       const rows = withItems.map((o) => ({
         id: o.id,
         orderType: o.orderType || 'store',
