@@ -170,11 +170,19 @@ const storesResponsePath = getJsonPath('stores_listing_response.json');
 /** Avoid readFileSync+JSON.parse on every admin request (orders list calls this 3× per request). */
 let storesListCache = { at: 0, stores: null };
 const STORES_LIST_CACHE_MS = 30000;
+const productsResponsePath = getJsonPath('products_listing_response.json');
+/** Avoid readFileSync+JSON.parse on every order row (mapOrderItemsForAdmin). */
+let productsListCache = { at: 0, products: null };
+const PRODUCTS_LIST_CACHE_MS = 30000;
+
+function invalidateProductsListCache() {
+  productsListCache = { at: 0, products: null };
+}
 
 function invalidateStoresListCache() {
   storesListCache = { at: 0, stores: null };
 }
-const productsResponsePath = getJsonPath('products_listing_response.json');
+
 const categoriesResponsePath = getJsonPath('categories_response.json');
 const popupJsonPath = getJsonPath('popup.json');
 const homeJsonPath = getJsonPath('home_response.json');
@@ -252,11 +260,17 @@ function saveHome(data) {
 }
 
 function loadProducts() {
+  const now = Date.now();
+  if (productsListCache.products && now - productsListCache.at < PRODUCTS_LIST_CACHE_MS) {
+    return productsListCache.products;
+  }
   try {
     ensureJsonFile(productsResponsePath, { success: true, message: 'Products listing', data: { products: [] } });
     const raw = fs.readFileSync(productsResponsePath, 'utf-8');
     const data = JSON.parse(raw);
-    return data?.data?.products ?? [];
+    const products = data?.data?.products ?? [];
+    productsListCache = { at: now, products };
+    return products;
   } catch (e) {
     return [];
   }
@@ -286,6 +300,7 @@ function saveProducts(products) {
   const dir = path.dirname(productsResponsePath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(productsResponsePath, JSON.stringify(data, null, 2), 'utf-8');
+  invalidateProductsListCache();
 }
 
 function saveStores(stores) {
@@ -2836,21 +2851,20 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
     if (!range.allDates) {
       appendLooseSqlCreatedAtDateRange(conditions, params, range.dateFrom, range.dateTo);
     }
-    const wherePrefix = conditions.length ? ' WHERE ' + conditions.join(' AND ') + ' AND ' : ' WHERE ';
-    const activeSql = 'SELECT createdAt, status FROM orders' + wherePrefix + "(status IS NULL OR status NOT IN ('Delivered', 'Cancelled'))";
-    const deliveredSql = "SELECT createdAt, status FROM orders" + wherePrefix + "status = 'Delivered'";
-    const cancelledSql = "SELECT createdAt, status FROM orders" + wherePrefix + "status = 'Cancelled'";
-    let activeRows = db.prepare(activeSql).all(...params);
-    let deliveredRows = db.prepare(deliveredSql).all(...params);
-    let cancelledRows = db.prepare(cancelledSql).all(...params);
+    const wherePrefix = conditions.length ? ' WHERE ' + conditions.join(' AND ') : '';
+    let storeRows = db.prepare('SELECT createdAt, status FROM orders' + wherePrefix).all(...params);
     if (!range.allDates) {
-      activeRows = filterRowsByJordanCreatedAtRange(activeRows, range.dateFrom, range.dateTo);
-      deliveredRows = filterRowsByJordanCreatedAtRange(deliveredRows, range.dateFrom, range.dateTo);
-      cancelledRows = filterRowsByJordanCreatedAtRange(cancelledRows, range.dateFrom, range.dateTo);
+      storeRows = filterRowsByJordanCreatedAtRange(storeRows, range.dateFrom, range.dateTo);
     }
-    let active = activeRows.length;
-    let delivered = deliveredRows.length;
-    let cancelled = cancelledRows.length;
+    let active = 0;
+    let delivered = 0;
+    let cancelled = 0;
+    for (const r of storeRows) {
+      const s = String(r.status || '').trim();
+      if (s === 'Delivered') delivered++;
+      else if (s === 'Cancelled') cancelled++;
+      else active++;
+    }
 
     if (req.admin.role !== ROLES.STORE_ADMIN) {
       try {
@@ -2859,24 +2873,19 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         if (!range.allDates) {
           appendLooseSqlCreatedAtDateRange(boxConds, boxParams, range.dateFrom, range.dateTo);
         }
-        const boxPrefix = boxConds.length ? boxConds.join(' AND ') + ' AND ' : '';
-        let boxActiveRows = db
-          .prepare('SELECT createdAt, status FROM arheb_box_requests WHERE ' + boxPrefix + "status NOT IN ('delivered', 'cancelled')")
-          .all(...boxParams);
-        let boxDeliveredRows = db
-          .prepare('SELECT createdAt, status FROM arheb_box_requests WHERE ' + boxPrefix + "status = 'delivered'")
-          .all(...boxParams);
-        let boxCancelledRows = db
-          .prepare('SELECT createdAt, status FROM arheb_box_requests WHERE ' + boxPrefix + "status = 'cancelled'")
+        const boxWhere = boxConds.length ? ' WHERE ' + boxConds.join(' AND ') : '';
+        let boxRows = db
+          .prepare('SELECT createdAt, status FROM arheb_box_requests' + boxWhere)
           .all(...boxParams);
         if (!range.allDates) {
-          boxActiveRows = filterRowsByJordanCreatedAtRange(boxActiveRows, range.dateFrom, range.dateTo);
-          boxDeliveredRows = filterRowsByJordanCreatedAtRange(boxDeliveredRows, range.dateFrom, range.dateTo);
-          boxCancelledRows = filterRowsByJordanCreatedAtRange(boxCancelledRows, range.dateFrom, range.dateTo);
+          boxRows = filterRowsByJordanCreatedAtRange(boxRows, range.dateFrom, range.dateTo);
         }
-        active += boxActiveRows.length;
-        delivered += boxDeliveredRows.length;
-        cancelled += boxCancelledRows.length;
+        for (const r of boxRows) {
+          const s = String(r.status || '').trim().toLowerCase();
+          if (s === 'delivered') delivered++;
+          else if (s === 'cancelled') cancelled++;
+          else active++;
+        }
       } catch (e) { /* table may not exist */ }
     }
 
@@ -2944,6 +2953,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   // ——— Orders (sorted newest first; filter by date range, status, store, name, orderType, paymentType, driver) ———
   function buildAdminOrdersList(req) {
     const range = resolveOrdersListDateRange(req.query || {});
+    const listMode = req.query.list === '1' || req.query.list === 'true';
     const { status, storeId, storeIds, storeName, name, orderType, statusFilter, paymentType, driverId, unassigned, orderId } = req.query;
     const paymentTypeTrimmed =
       paymentType && String(paymentType).trim() ? String(paymentType).trim() : '';
@@ -3023,9 +3033,15 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       const storesList = loadStores();
       const storeById = Object.fromEntries(storesList.map((s) => [String(s.id), s]));
 
-      // Batch-load items for all orders in one query (N+1 findOrderItems.all blocked the event loop).
+      // List view (dashboard table): skip line items — detail modal loads full order via GET /orders/:id.
+      // Full/export mode: batch-load items once and map add-on names via a single product-catalog read.
       const itemsByOrderId = new Map();
-      if (orders.length > 0) {
+      let mapItemsForAdmin = null;
+      if (!listMode && orders.length > 0) {
+        const products = loadProducts();
+        const productsById = new Map(products.map((p) => [String(p.id), p]));
+        mapItemsForAdmin = (rows) =>
+          mapOrderItemsRows(rows, (id) => productsById.get(String(id)) || null);
         const ids = orders.map((o) => o.id);
         const placeholders = ids.map(() => '?').join(',');
         const allItems = db
@@ -3039,7 +3055,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       }
 
       storeOrders = orders.map((order) => {
-        const items = itemsByOrderId.get(order.id) || [];
+        const items = listMode ? [] : itemsByOrderId.get(order.id) || [];
         const store = order.storeId != null ? storeById[String(order.storeId)] : null;
         let driverEarningsJod = null;
         let deliveryNetAfterDriverJod = null;
@@ -3059,7 +3075,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             storeMapsUrl: store ? (store.mapsUrl || null) : null,
             storeLatitude: store?.latitude ?? store?.lat ?? null,
             storeLongitude: store?.longitude ?? store?.long ?? null,
-            items: mapOrderItemsForAdmin(items),
+            items: listMode ? [] : mapItemsForAdmin(items),
             driverEarningsJod,
             deliveryNetAfterDriverJod,
           },
@@ -3108,6 +3124,38 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         const boxWhere = boxCond.length ? ' WHERE ' + boxCond.join(' AND ') : '';
         const boxRows = db.prepare('SELECT * FROM arheb_box_requests' + boxWhere + ' ORDER BY createdAt DESC, id DESC').all(...boxParams);
         boxOrders = boxRows.map((r) => {
+          if (listMode) {
+            const parcelAmount = r.amount != null ? Number(r.amount) : 0;
+            let driverEarningsJod = null;
+            let deliveryNetAfterDriverJod = null;
+            if (r.driverId != null) {
+              const share = resolveArhebBoxDriverShare(db, r);
+              driverEarningsJod = share.earningsJod;
+              deliveryNetAfterDriverJod = round2Money(
+                Math.max(0, Number(r.deliveryFee) || 0) - (share.earningsJod || 0),
+              );
+            }
+            return enrichWithJordanTime({
+              id: r.id,
+              orderType: 'arheb_box',
+              storeName: 'Arheb Box',
+              name: r.userName,
+              phoneNumber: r.phoneNumber,
+              totalAmount: parcelAmount,
+              deliveryFee: r.deliveryFee != null ? Number(r.deliveryFee) : null,
+              serviceFee: r.serviceFee != null ? Number(r.serviceFee) : null,
+              feesTax: r.feesTax != null ? Number(r.feesTax) : null,
+              status: r.status,
+              paymentType: r.paymentMethod || 'cash',
+              driverId: r.driverId,
+              driverName: r.driverName,
+              createdAt: r.createdAt,
+              amount: parcelAmount,
+              items: [],
+              driverEarningsJod,
+              deliveryNetAfterDriverJod,
+            }, ['createdAt']);
+          }
           const enriched = enrichArhebBoxRow(r, db);
           const parcelAmount = enriched.amount != null ? Number(enriched.amount) : 0;
           let driverEarningsJod = null;
@@ -4987,6 +5035,32 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
   });
 
   app.get('/api/admin/drivers', auth, requirePermission(PERM.DRIVERS_VIEW), (req, res) => {
+    const minimal = req.query.minimal === '1' || req.query.minimal === 'true';
+    if (minimal) {
+      try {
+        const rows = db
+          .prepare(
+            'SELECT id, name, isBlocked FROM drivers WHERE (deleted IS NULL OR deleted = 0) ORDER BY id',
+          )
+          .all();
+        return res.status(200).json({
+          success: true,
+          data: {
+            drivers: rows.map((r) => ({
+              id: r.id,
+              name: r.name,
+              isBlocked: Boolean(r.isBlocked),
+            })),
+          },
+        });
+      } catch (e) {
+        if (e.message && e.message.includes('no such table')) {
+          return res.status(200).json({ success: true, data: { drivers: [] } });
+        }
+        console.error('Admin drivers list (minimal) error:', e);
+        return res.status(500).json({ success: false, message: 'Failed to list drivers' });
+      }
+    }
     try {
       ensureDriverRatingsTable(db);
       ensureDriverCommissionPercentColumn(db);
