@@ -72,14 +72,20 @@ function storeOrderMoneyFields(row, options = {}) {
   return { totalAmount, itemsSubtotal, deliveryFee, serviceFee, feesTax, feesTotal };
 }
 
-/** Arheb Box: `amount` is parcel/declared value; total adds delivery, service, tax. */
+/**
+ * Arheb Box money. `amount` is the parcel's declared value (shown separately as `itemsSubtotal`),
+ * NOT an extra charge. The payable total is the delivery + service + tax fees ONLY — this matches
+ * what the customer agrees to in the quote (POST /api/arheb-box/quote → invoice.total = fees only).
+ * The parcel value must never be added on top, or the customer/driver/dashboard all show double
+ * (e.g. #122: parcel 1.75 + fees 1.75 was wrongly shown as 3.50).
+ */
 function arhebBoxOrderMoneyFields(row) {
   const itemsSubtotal = safeMoney(row.amount, 0);
   const deliveryFee = safeMoney(row.deliveryFee, 0);
   const serviceFee = safeMoney(row.serviceFee, 0);
   const feesTax = safeMoney(row.feesTax, 0);
   const feesTotal = round2Money(deliveryFee + serviceFee + feesTax);
-  const totalAmount = round2Money(itemsSubtotal + feesTotal);
+  const totalAmount = feesTotal;
   return { totalAmount, itemsSubtotal, deliveryFee, serviceFee, feesTax, feesTotal };
 }
 
