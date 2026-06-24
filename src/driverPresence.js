@@ -10,8 +10,15 @@
 const jwt = require('jsonwebtoken');
 const fcm = require('./fcm');
 
-// driverId -> { socketId, latitude, longitude, lastSeen }
+// driverId -> { socketId, latitude, longitude, lastSeen, lastHeavyAt }
 const activeDrivers = new Map();
+
+/**
+ * Min interval between the DB-heavy parts of a driver's location update (row write, live-map
+ * broadcasts, near-arrival scans). Live tracking stays smooth at ~4s; in-memory position is
+ * still updated on every ping for nearest-driver matching.
+ */
+const PRESENCE_HEAVY_THROTTLE_MS = 4000;
 
 /** Reject null island (0,0) and other placeholder coords apps/DB sometimes send before a real GPS fix. */
 function isValidDriverGps(lat, lon) {
@@ -213,6 +220,18 @@ module.exports = function attachDriverPresence(io, db, JWT_SECRET) {
         cur.longitude = lon;
         cur.lastSeen = new Date().toISOString();
       }
+
+      // Throttle the DB-heavy work (driver row write, tracking broadcasts, near-arrival scans)
+      // to at most once per PRESENCE_HEAVY_THROTTLE_MS PER DRIVER. The in-memory position above
+      // is always current for nearest-driver matching; only the expensive synchronous SQLite
+      // work is rate-limited so a burst of location pings can't freeze the event loop.
+      const now = Date.now();
+      if (cur && cur.lastHeavyAt && now - cur.lastHeavyAt < PRESENCE_HEAVY_THROTTLE_MS) {
+        socket.emit('location_ack', { success: true, throttled: true });
+        return;
+      }
+      if (cur) cur.lastHeavyAt = now;
+
       try {
         db.prepare('UPDATE drivers SET latitude = ?, longitude = ? WHERE id = ?').run(lat, lon, driverId);
       } catch (e) {

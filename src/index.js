@@ -104,6 +104,18 @@ fs.mkdirSync(dataDir, { recursive: true });
 
 const dbPath = path.join(dataDir, 'auth.db');
 const db = new Database(dbPath);
+// Concurrency/performance pragmas. better-sqlite3 is synchronous, so the default rollback
+// journal makes every write take an exclusive lock that blocks ALL reads — under traffic this
+// serializes requests and causes timeouts / SQLITE_BUSY. WAL lets reads run during writes;
+// busy_timeout makes writers wait briefly instead of throwing; NORMAL is safe+fast with WAL.
+try {
+  db.pragma('journal_mode = WAL');
+  db.pragma('synchronous = NORMAL');
+  db.pragma('busy_timeout = 8000');
+  db.pragma('foreign_keys = ON');
+} catch (e) {
+  console.warn('[startup] could not apply SQLite performance pragmas:', e.message);
+}
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
