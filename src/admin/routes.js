@@ -167,6 +167,13 @@ const { loadStoreOrderStatsMap, sortStoresByMetric, buildStoreProfileStats } = r
 const { buildAdminStatsOverview, statsOverviewToExportRows } = require('../utils/adminStatsOverview');
 
 const storesResponsePath = getJsonPath('stores_listing_response.json');
+/** Avoid readFileSync+JSON.parse on every admin request (orders list calls this 3× per request). */
+let storesListCache = { at: 0, stores: null };
+const STORES_LIST_CACHE_MS = 30000;
+
+function invalidateStoresListCache() {
+  storesListCache = { at: 0, stores: null };
+}
 const productsResponsePath = getJsonPath('products_listing_response.json');
 const categoriesResponsePath = getJsonPath('categories_response.json');
 const popupJsonPath = getJsonPath('popup.json');
@@ -204,11 +211,17 @@ function coercePatchBoolean(v) {
 }
 
 function loadStores() {
+  const now = Date.now();
+  if (storesListCache.stores && now - storesListCache.at < STORES_LIST_CACHE_MS) {
+    return storesListCache.stores;
+  }
   try {
     ensureJsonFile(storesResponsePath, { success: true, message: 'Stores listing', data: { stores: [] } });
     const raw = fs.readFileSync(storesResponsePath, 'utf-8');
     const data = JSON.parse(raw);
-    return data?.data?.stores ?? [];
+    const stores = data?.data?.stores ?? [];
+    storesListCache = { at: now, stores };
+    return stores;
   } catch (e) {
     return [];
   }
@@ -288,6 +301,7 @@ function saveStores(stores) {
   const dir = path.dirname(storesResponsePath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(storesResponsePath, JSON.stringify(data, null, 2), 'utf-8');
+  invalidateStoresListCache();
 }
 
 function saveCategories(categories) {
@@ -3009,8 +3023,23 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       const storesList = loadStores();
       const storeById = Object.fromEntries(storesList.map((s) => [String(s.id), s]));
 
+      // Batch-load items for all orders in one query (N+1 findOrderItems.all blocked the event loop).
+      const itemsByOrderId = new Map();
+      if (orders.length > 0) {
+        const ids = orders.map((o) => o.id);
+        const placeholders = ids.map(() => '?').join(',');
+        const allItems = db
+          .prepare(`SELECT * FROM order_items WHERE orderId IN (${placeholders})`)
+          .all(...ids);
+        for (const item of allItems) {
+          const oid = item.orderId;
+          if (!itemsByOrderId.has(oid)) itemsByOrderId.set(oid, []);
+          itemsByOrderId.get(oid).push(item);
+        }
+      }
+
       storeOrders = orders.map((order) => {
-        const items = findOrderItems.all(order.id);
+        const items = itemsByOrderId.get(order.id) || [];
         const store = order.storeId != null ? storeById[String(order.storeId)] : null;
         let driverEarningsJod = null;
         let deliveryNetAfterDriverJod = null;

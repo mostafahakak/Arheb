@@ -102,12 +102,21 @@ function emitBoxStatus(requestId, status) {
   } catch (e) { /* ignore */ }
 }
 
+let storesListCache = { at: 0, stores: null };
+const STORES_LIST_CACHE_MS = 30000;
+
 function loadStores() {
+  const now = Date.now();
+  if (storesListCache.stores && now - storesListCache.at < STORES_LIST_CACHE_MS) {
+    return storesListCache.stores;
+  }
   try {
     const path = getJsonPath('stores_listing_response.json');
     const raw = fs.readFileSync(path, 'utf-8');
     const data = JSON.parse(raw);
-    return data?.data?.stores ?? [];
+    const stores = data?.data?.stores ?? [];
+    storesListCache = { at: now, stores };
+    return stores;
   } catch (e) {
     return [];
   }

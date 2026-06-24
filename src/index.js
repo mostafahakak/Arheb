@@ -512,6 +512,17 @@ function summarizeTraceBody(body) {
 }
 
 app.use((req, res, next) => {
+  const startedAt = Date.now();
+  res.on('finish', () => {
+    const durationMs = Date.now() - startedAt;
+    if (durationMs >= 500) {
+      console.warn(`[slow] ${req.method} ${req.path} -> ${res.statusCode} (${durationMs}ms)`);
+    }
+  });
+  next();
+});
+
+app.use((req, res, next) => {
   const traceable =
     req.path.startsWith('/api/auth/') ||
     req.path.startsWith('/api/driver/') ||

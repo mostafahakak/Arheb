@@ -18,7 +18,7 @@ const activeDrivers = new Map();
  * broadcasts, near-arrival scans). Live tracking stays smooth at ~4s; in-memory position is
  * still updated on every ping for nearest-driver matching.
  */
-const PRESENCE_HEAVY_THROTTLE_MS = 4000;
+const PRESENCE_HEAVY_THROTTLE_MS = 8000;
 
 /** Reject null island (0,0) and other placeholder coords apps/DB sometimes send before a real GPS fix. */
 function isValidDriverGps(lat, lon) {

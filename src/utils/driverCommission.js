@@ -8,7 +8,10 @@ function round2(n) {
   return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 }
 
+let _driverCommissionSettingsEnsured = false;
 function ensureDriverCommissionSettingsTable(db) {
+  if (_driverCommissionSettingsEnsured) return;
+  _driverCommissionSettingsEnsured = true;
   db.exec(`
     CREATE TABLE IF NOT EXISTS driver_commission_settings (
       id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -22,7 +25,10 @@ function ensureDriverCommissionSettingsTable(db) {
   ).run();
 }
 
+let _orderDriverShareColsEnsured = false;
 function ensureOrderDriverShareColumns(db) {
+  if (_orderDriverShareColsEnsured) return;
+  _orderDriverShareColsEnsured = true;
   try {
     db.exec(`ALTER TABLE orders ADD COLUMN driverCommissionType TEXT`);
   } catch (e) {
@@ -40,7 +46,10 @@ function ensureOrderDriverShareColumns(db) {
   }
 }
 
+let _arhebBoxDriverShareColsEnsured = false;
 function ensureArhebBoxDriverShareColumns(db) {
+  if (_arhebBoxDriverShareColsEnsured) return;
+  _arhebBoxDriverShareColsEnsured = true;
   try {
     db.exec(`ALTER TABLE arheb_box_requests ADD COLUMN driverCommissionType TEXT`);
   } catch (e) {
@@ -78,7 +87,10 @@ function ensureDriverRatingsTable(db) {
 }
 
 /** Per-driver commission rate (share of delivery fee), 0–1 e.g. 0.65 = 65%. Legacy; prefer commissionType + commissionValue. */
+let _driverCommissionPercentColEnsured = false;
 function ensureDriverCommissionPercentColumn(db) {
+  if (_driverCommissionPercentColEnsured) return;
+  _driverCommissionPercentColEnsured = true;
   try {
     db.exec(`ALTER TABLE drivers ADD COLUMN commissionPercent REAL`);
   } catch (e) {
@@ -87,8 +99,10 @@ function ensureDriverCommissionPercentColumn(db) {
 }
 
 /** Per-driver commission override: "percent" | "fixed" + numeric value (same model as global settings). */
+let _driverCommissionRuleColsEnsured = false;
 function ensureDriverCommissionRuleColumns(db) {
-  if (!db) return;
+  if (!db || _driverCommissionRuleColsEnsured) return;
+  _driverCommissionRuleColsEnsured = true;
   try {
     db.exec(`ALTER TABLE drivers ADD COLUMN commissionType TEXT`);
   } catch (e) {
