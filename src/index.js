@@ -101,6 +101,10 @@ ensurePersistentDirSeeded();
 const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY;
 const JWT_SECRET = process.env.JWT_SECRET;
 const PORT = process.env.PORT || 4000;
+// App/driver session token lifetime. Was 7d, which silently logged users out after a week (there is
+// no refresh flow). Auth middleware re-checks the user/driver row (deleted/blocked) on every request,
+// so a long-lived token is safe and revocation still works server-side. Override with APP_TOKEN_TTL.
+const APP_TOKEN_TTL = process.env.APP_TOKEN_TTL || '365d';
 
 if (!JWT_SECRET) {
   throw new Error('JWT_SECRET is required to sign JWT tokens');
@@ -603,7 +607,7 @@ function finalizePhoneAuthSession(firebasePhone, firebaseUid, verificationIdToke
   const token = jwt.sign(
     { phoneNumber: phoneKey, userId: newUserId },
     JWT_SECRET,
-    { expiresIn: '7d' },
+    { expiresIn: APP_TOKEN_TTL },
   );
 
   upsertUser.run({
@@ -643,7 +647,7 @@ function attachDriverClaimsToSession(sessionBody, phoneNumber, verificationIdTok
       mobile: driver.mobile,
     },
     JWT_SECRET,
-    { expiresIn: '7d' },
+    { expiresIn: APP_TOKEN_TTL },
   );
 
   const d = { ...driver };
@@ -697,7 +701,7 @@ function finalizeFirebaseIdentitySession(decoded, verificationIdToken) {
   const token = jwt.sign(
     { phoneNumber: userKey, userId: newUserId },
     JWT_SECRET,
-    { expiresIn: '7d' },
+    { expiresIn: APP_TOKEN_TTL },
   );
 
   upsertUser.run({

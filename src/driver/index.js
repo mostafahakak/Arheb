@@ -1,6 +1,9 @@
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const fs = require('fs');
+// Driver session token lifetime. Was 7d, which logged drivers out weekly (no refresh flow).
+// driverAuth re-checks the driver row (deleted/blocked) per request, so a long token stays safe.
+const DRIVER_TOKEN_TTL = process.env.APP_TOKEN_TTL || '365d';
 const { jordanMobileLookupKeys, normalizeJordanMobileKey, normalizeOtpDigits } = require('../utils/jordanMobile');
 const { getJsonPath } = require('../config/jsonPaths');
 const fcm = require('../fcm');
@@ -592,7 +595,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     const token = jwt.sign(
       { driverId: driver.id, mobile: driver.mobile },
       JWT_SECRET,
-      { expiresIn: '7d' },
+      { expiresIn: DRIVER_TOKEN_TTL },
     );
     const d = { ...driver };
     delete d.licenseNumber;
@@ -721,7 +724,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     const token = jwt.sign(
       { driverId: driver.id, mobile: driver.mobile },
       JWT_SECRET,
-      { expiresIn: '7d' },
+      { expiresIn: DRIVER_TOKEN_TTL },
     );
     const d = { ...driver };
     delete d.licenseNumber;
@@ -851,7 +854,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     const token = jwt.sign(
       { driverId: driver.id, mobile: driver.mobile },
       JWT_SECRET,
-      { expiresIn: '7d' },
+      { expiresIn: DRIVER_TOKEN_TTL },
     );
     const d = { ...driver };
     delete d.licenseNumber;
@@ -979,7 +982,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     const token = jwt.sign(
       { driverId: driver.id, mobile: driver.mobile },
       JWT_SECRET,
-      { expiresIn: '7d' },
+      { expiresIn: DRIVER_TOKEN_TTL },
     );
     const d = { ...driver };
     delete d.licenseNumber;

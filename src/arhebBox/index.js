@@ -66,9 +66,8 @@ function buildInvoice(deliveryFeeJod, serviceFeeJod, itemsSubtotalJod = 0) {
     feesTaxRate: FEES_TAX_RATE,
     feesTax: taxJod,
     feesTotal,
-    // Arheb Box payable total = fees only (delivery + service + tax). The parcel `amount`
-    // (itemsSubtotal) is a declared value, not an extra charge — matches the quote total.
-    total: feesTotal,
+    // Arheb Box payable total = parcel amount + delivery + service + tax.
+    total: round2(itemsSubtotal + feesTotal),
   };
 }
 

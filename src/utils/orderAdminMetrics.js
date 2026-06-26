@@ -30,12 +30,16 @@ function orderItemsSubtotalJod(order) {
 function orderGrandTotalJod(order) {
   if (!order) return 0;
   if (order.orderType === 'arheb_box') {
-    // Arheb Box payable total = delivery + service + tax (fees only). The parcel `amount` is a
-    // declared value, not an extra charge, so it is NOT added here (matches the quote total and
-    // arhebBoxOrderMoneyFields). Previously amount was added, double-counting the total.
+    // Arheb Box payable total = parcel amount + delivery + service + tax.
+    const amount = order.amount != null ? Number(order.amount) : Number(order.itemsSubtotal ?? 0);
     const d = Number(order.deliveryFee ?? order.invoice?.deliveryFee ?? 0) || 0;
     const s = Number(order.serviceFee ?? order.invoice?.serviceFee ?? 0) || 0;
     const ft = Number(order.feesTax ?? order.invoice?.feesTax ?? 0) || 0;
+    if (Number.isFinite(amount) && amount >= 0) {
+      return round2(amount + d + s + ft);
+    }
+    const inv = Number(order.invoice?.total);
+    if (Number.isFinite(inv)) return round2(inv);
     return round2(d + s + ft);
   }
   const items = orderItemsSubtotalJod(order);
