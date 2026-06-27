@@ -3128,6 +3128,25 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
         }
         const boxWhere = boxCond.length ? ' WHERE ' + boxCond.join(' AND ') : '';
         const boxRows = db.prepare('SELECT * FROM arheb_box_requests' + boxWhere + ' ORDER BY createdAt DESC, id DESC').all(...boxParams);
+        const driverNameById = {};
+        const driverIdsForNames = [...new Set(boxRows.filter((r) => r.driverId != null).map((r) => Number(r.driverId)))];
+        if (driverIdsForNames.length) {
+          try {
+            const placeholders = driverIdsForNames.map(() => '?').join(',');
+            db.prepare(`SELECT id, name FROM drivers WHERE id IN (${placeholders})`)
+              .all(...driverIdsForNames)
+              .forEach((d) => {
+                driverNameById[d.id] = d.name;
+              });
+          } catch (e) {
+            /* ignore */
+          }
+        }
+        const resolveBoxDriverName = (r) => {
+          if (r.driverName) return r.driverName;
+          if (r.driverId != null && driverNameById[r.driverId]) return driverNameById[r.driverId];
+          return null;
+        };
         boxOrders = boxRows.map((r) => {
           if (listMode) {
             const parcelAmount = r.amount != null ? Number(r.amount) : 0;
@@ -3153,7 +3172,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
               status: r.status,
               paymentType: r.paymentMethod || 'cash',
               driverId: r.driverId,
-              driverName: r.driverName,
+              driverName: resolveBoxDriverName(r),
               createdAt: r.createdAt,
               amount: parcelAmount,
               items: [],
@@ -3186,7 +3205,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             status: r.status,
             paymentType: r.paymentMethod || 'cash',
             driverId: r.driverId,
-            driverName: r.driverName,
+            driverName: resolveBoxDriverName(r),
             createdAt: r.createdAt,
             pickup: enriched.pickup,
             dropoff: enriched.dropoff,
@@ -4487,7 +4506,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       const row = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(id);
       if (!row) return res.status(404).json({ success: false, message: 'Arheb box request not found' });
       try {
-        db.prepare('DELETE FROM driver_requests WHERE orderId = ?').run(id);
+        db.prepare('DELETE FROM driver_requests WHERE orderId = ? OR orderId = ?').run(id, -id);
       } catch (e) {
         if (!e.message || !e.message.includes('no such table')) throw e;
       }
@@ -4520,9 +4539,26 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       return res.status(400).json({ success: false, message: 'status is required' });
     }
     try {
-      const rowBefore = db.prepare('SELECT id, phoneNumber, fcmToken FROM arheb_box_requests WHERE id = ?').get(id);
+      const rowBefore = db.prepare('SELECT id, phoneNumber, fcmToken, driverId, driverName FROM arheb_box_requests WHERE id = ?').get(id);
       if (!rowBefore) return res.status(404).json({ success: false, message: 'Arheb box request not found' });
       const nextStatus = status.trim();
+      if (String(nextStatus).toLowerCase() === 'delivered' && rowBefore.driverId == null) {
+        try {
+          const accepted = db
+            .prepare('SELECT driverId FROM driver_requests WHERE orderId = ? AND status = ? ORDER BY id DESC LIMIT 1')
+            .get(-id, 'accepted');
+          if (accepted?.driverId) {
+            const dr = db.prepare('SELECT name FROM drivers WHERE id = ?').get(accepted.driverId);
+            db.prepare('UPDATE arheb_box_requests SET driverId = ?, driverName = ? WHERE id = ? AND driverId IS NULL').run(
+              accepted.driverId,
+              dr?.name || null,
+              id,
+            );
+          }
+        } catch (e) {
+          /* ignore */
+        }
+      }
       const run = db.prepare('UPDATE arheb_box_requests SET status = ? WHERE id = ?').run(nextStatus, id);
       if (run.changes === 0) {
         return res.status(404).json({ success: false, message: 'Arheb box request not found' });
@@ -4590,6 +4626,12 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       if (!driver) return res.status(404).json({ success: false, message: 'Driver not found or blocked' });
       db.prepare('UPDATE arheb_box_requests SET driverId = ?, driverName = ?, status = ? WHERE id = ?').run(driverIdNum, driver.name, 'assigned', id);
       clearArhebBoxOfferExpansion(id);
+      try {
+        db.prepare('UPDATE driver_requests SET status = ? WHERE orderId = ? AND driverId = ?').run('accepted', -id, driverIdNum);
+        db.prepare('UPDATE driver_requests SET status = ? WHERE orderId = ? AND driverId != ?').run('rejected', -id, driverIdNum);
+      } catch (e) {
+        /* ignore */
+      }
       try {
         writeArhebBoxDriverEarningsSnapshot(db, id, driverIdNum);
       } catch (e) {

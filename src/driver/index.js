@@ -43,6 +43,24 @@ const ARHEB_STATUS_DRIVER_TO_PICK = 'driver_to_pick';
 /** Arheb Box: driver is heading to customer. */
 const ARHEB_STATUS_ON_THE_WAY = 'on_the_way';
 
+/** Only Arheb Box requests this driver was explicitly offered (sequential invite), not the whole open pool. */
+const ARHEB_BOX_OFFERED_TO_DRIVER_SQL = `
+  SELECT r.* FROM arheb_box_requests r
+  INNER JOIN driver_requests dr ON dr.orderId = -r.id AND dr.driverId = ? AND dr.status = 'pending'
+  WHERE r.driverId IS NULL
+  AND LOWER(TRIM(r.status)) NOT IN ('delivered', 'cancelled')
+  ORDER BY r.createdAt DESC
+`;
+
+function getArhebBoxRowById(db, requestId) {
+  try {
+    return db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
+  } catch (e) {
+    if (e.message && e.message.includes('no such table')) return null;
+    throw e;
+  }
+}
+
 function parseMapsUrl(url) {
   if (!url || typeof url !== 'string') return null;
   const patterns = [
@@ -1039,13 +1057,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     let arhebBoxUnassigned = [];
     let arhebBoxMyActive = [];
     try {
-      const boxUnassignedOpen = db
-        .prepare(
-          `SELECT * FROM arheb_box_requests WHERE driverId IS NULL
-           AND LOWER(TRIM(status)) NOT IN ('delivered', 'cancelled')
-           ORDER BY createdAt DESC LIMIT 20`,
-        )
-        .all();
+      const boxUnassignedOpen = db.prepare(`${ARHEB_BOX_OFFERED_TO_DRIVER_SQL} LIMIT 20`).all(driverId);
       arhebBoxUnassigned = boxUnassignedOpen.map((r) => enrichArhebBoxRow(r, db));
       arhebBoxMyActive = db
         .prepare(
@@ -1286,13 +1298,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     let arhebBoxAvailable = [];
     if (filter === 'available') {
       try {
-        const boxUnassignedOpen = db
-          .prepare(
-            `SELECT * FROM arheb_box_requests WHERE driverId IS NULL
-             AND LOWER(TRIM(status)) NOT IN ('delivered', 'cancelled')
-             ORDER BY createdAt DESC LIMIT 50`,
-          )
-          .all();
+        const boxUnassignedOpen = db.prepare(`${ARHEB_BOX_OFFERED_TO_DRIVER_SQL} LIMIT 50`).all(driverId);
         arhebBoxUnassigned = boxUnassignedOpen.map((r) => enrichArhebBoxRow(r, db));
         arhebBoxMyActive = db
           .prepare(
@@ -1473,18 +1479,118 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     });
   });
 
+  /** Decide whether a positive id from FCM/body is a store order or Arheb Box (driver_requests uses -requestId for box). */
+  function resolveDriverAcceptTarget(orderId, driverId) {
+    const storeOrder = findOrderById.get(orderId);
+    const boxRow = getArhebBoxRowById(db, orderId);
+    let storePending = false;
+    let boxPending = false;
+    try {
+      storePending = !!db
+        .prepare('SELECT 1 FROM driver_requests WHERE orderId = ? AND driverId = ? AND status = ?')
+        .get(orderId, driverId, 'pending');
+      boxPending = !!db
+        .prepare('SELECT 1 FROM driver_requests WHERE orderId = ? AND driverId = ? AND status = ?')
+        .get(-orderId, driverId, 'pending');
+    } catch (e) {
+      /* driver_requests may not exist */
+    }
+    if (boxPending && boxRow) return { type: 'arheb_box', requestId: orderId, row: boxRow };
+    if (storePending && storeOrder) return { type: 'store', orderId, order: storeOrder };
+    if (boxRow && !storeOrder) return { type: 'arheb_box', requestId: orderId, row: boxRow };
+    if (storeOrder) return { type: 'store', orderId, order: storeOrder };
+    if (boxRow) return { type: 'arheb_box', requestId: orderId, row: boxRow };
+    return null;
+  }
+
+  function acceptArhebBoxRequestAsDriver(req, res, requestId, driverId) {
+    let row;
+    try {
+      row = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
+    } catch (e) {
+      if (e.message && e.message.includes('no such table')) return res.status(404).json({ success: false, message: 'Request not found' });
+      throw e;
+    }
+    if (!row) return res.status(404).json({ success: false, message: 'Request not found' });
+    const statusLower = (row.status || '').toLowerCase();
+
+    if (row.driverId != null && row.driverId === driverId) {
+      const updated = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
+      return res.status(200).json({ success: true, message: 'Already assigned to you', data: { request: enrichArhebBoxRow(updated, db) } });
+    }
+    if (row.driverId != null && row.driverId !== driverId) {
+      return res.status(400).json({ success: false, message: 'Request already assigned to another driver' });
+    }
+
+    if (statusLower !== 'assigned' && statusLower !== 'confirmed' && statusLower !== 'pending') {
+      return res.status(400).json({ success: false, message: 'Request cannot be accepted in its current state' });
+    }
+
+    const driverRow = findDriverById.get(driverId);
+    const driverName = driverRow ? driverRow.name : null;
+    db.prepare('UPDATE arheb_box_requests SET driverId = ?, driverName = ?, status = ? WHERE id = ?').run(
+      driverId,
+      driverName,
+      ARHEB_STATUS_DRIVER_TO_PICK,
+      requestId,
+    );
+    try {
+      writeArhebBoxDriverEarningsSnapshot(db, requestId, driverId);
+    } catch (e) {
+      /* ignore */
+    }
+    emitBoxStatus(requestId, ARHEB_STATUS_DRIVER_TO_PICK);
+
+    const pseudoOrderId = -requestId;
+    try {
+      db.prepare('UPDATE driver_requests SET status = ? WHERE orderId = ? AND driverId = ?').run('accepted', pseudoOrderId, driverId);
+      db.prepare('UPDATE driver_requests SET status = ? WHERE orderId = ? AND driverId != ?').run('rejected', pseudoOrderId, driverId);
+    } catch (e) { /* ignore */ }
+
+    try {
+      const { broadcastDriverOrdersUpdated } = require('../driverPresence');
+      broadcastDriverOrdersUpdated(io, { type: 'arheb_box_accepted', requestId, driverId });
+    } catch (e) { /* ignore */ }
+
+    try {
+      const { clearArhebBoxOfferExpansion, clearArhebBoxSequentialOfferTimeout } = require('../utils/sequentialDriverOffer');
+      clearArhebBoxOfferExpansion(requestId);
+      clearArhebBoxSequentialOfferTimeout(requestId);
+    } catch (e) { /* ignore */ }
+
+    const rowAfter = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
+    notifyArhebBoxCustomerDriverToPick(db, rowAfter || row, requestId);
+    const updated = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
+    return res.status(200).json({
+      success: true,
+      message: 'Arheb Box request accepted',
+      data: { request: enrichArhebBoxRow(updated, db) },
+    });
+  }
+
   // POST /api/driver/orders/accept
   app.post('/api/driver/orders/accept', driverAuth, (req, res) => {
-    const { orderId: bodyOrderId, driverId: bodyDriverId } = req.body || {};
+    const { orderId: bodyOrderId, driverId: bodyDriverId, orderType } = req.body || {};
     const orderId = parseInt(bodyOrderId || req.body?.orderId, 10);
     const driverId = bodyDriverId != null ? parseInt(bodyDriverId, 10) : req.driver.id;
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'orderId is required' });
     if (driverId !== req.driver.id) return res.status(403).json({ success: false, message: 'You can only accept orders for yourself' });
-    const order = findOrderById.get(orderId);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    const acceptTarget =
+      String(orderType || '').toLowerCase() === 'arheb_box'
+        ? { type: 'arheb_box', requestId: orderId, row: getArhebBoxRowById(db, orderId) }
+        : resolveDriverAcceptTarget(orderId, driverId);
+    if (!acceptTarget) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (acceptTarget.type === 'arheb_box') {
+      if (!acceptTarget.row) return res.status(404).json({ success: false, message: 'Request not found' });
+      return acceptArhebBoxRequestAsDriver(req, res, acceptTarget.requestId, driverId);
+    }
+
+    const order = acceptTarget.order;
+    const storeOrderId = acceptTarget.orderId;
     if (order.driverId != null && Number(order.driverId) === Number(driverId)) {
-      const updated = findOrderById.get(orderId);
-      const items = findOrderItems.all(orderId);
+      const updated = findOrderById.get(storeOrderId);
+      const items = findOrderItems.all(storeOrderId);
       const driverRow = findDriverById.get(driverId);
       const storesList = loadStores();
       const store = updated.storeId ? storesList.find((s) => s.id === updated.storeId) : null;
@@ -1496,44 +1602,44 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     }
     if (order.driverId != null) return res.status(400).json({ success: false, message: 'Order already assigned to another driver' });
     if (updateDriverRequestStatus) {
-      const existing = db.prepare('SELECT id FROM driver_requests WHERE orderId = ? AND driverId = ? AND status = ?').get(orderId, driverId, 'pending');
+      const existing = db.prepare('SELECT id FROM driver_requests WHERE orderId = ? AND driverId = ? AND status = ?').get(storeOrderId, driverId, 'pending');
       if (existing) {
-        updateDriverRequestStatus.run('accepted', orderId, driverId);
-        if (rejectOtherRequestsForOrder) rejectOtherRequestsForOrder.run('rejected', orderId, driverId);
+        updateDriverRequestStatus.run('accepted', storeOrderId, driverId);
+        if (rejectOtherRequestsForOrder) rejectOtherRequestsForOrder.run('rejected', storeOrderId, driverId);
       }
     }
     const driverRowForAccept = findDriverById.get(driverId);
     const driverName = driverRowForAccept ? driverRowForAccept.name : null;
     try {
       const { clearStoreOrderOfferTimeout } = require('../utils/sequentialDriverOffer');
-      clearStoreOrderOfferTimeout(orderId);
+      clearStoreOrderOfferTimeout(storeOrderId);
     } catch (e) {
       /* ignore */
     }
-    assignDriverToOrder(db, orderId, driverId, driverName, STORE_ORDER_STATUS_AFTER_ASSIGN);
+    assignDriverToOrder(db, storeOrderId, driverId, driverName, STORE_ORDER_STATUS_AFTER_ASSIGN);
     const currentStatus = STORE_ORDER_STATUS_AFTER_ASSIGN;
-    emitOrderStatus(orderId, currentStatus);
+    emitOrderStatus(storeOrderId, currentStatus);
     try {
       const { broadcastDriverOrdersUpdated } = require('../driverPresence');
-      broadcastDriverOrdersUpdated(io, { type: 'order_accepted', orderId, driverId });
+      broadcastDriverOrdersUpdated(io, { type: 'order_accepted', orderId: storeOrderId, driverId });
     } catch (e) { /* ignore */ }
     fcm.sendToUserByPhone(
       db,
       order.phoneNumber,
       'Driver assigned',
-      `A driver has been assigned to Order #${orderId}.`,
+      `A driver has been assigned to Order #${storeOrderId}.`,
       null,
       {
-        orderId: String(orderId),
+        orderId: String(storeOrderId),
         status: currentStatus,
         type: 'order_tracking',
         screen: 'order_details',
-        deepLink: `arheb://orders/${orderId}`,
+        deepLink: `arheb://orders/${storeOrderId}`,
         click_action: 'FLUTTER_NOTIFICATION_CLICK',
       }
     ).catch(() => {});
-    const updated = findOrderById.get(orderId);
-    const items = findOrderItems.all(orderId);
+    const updated = findOrderById.get(storeOrderId);
+    const items = findOrderItems.all(storeOrderId);
     const driverRow = findDriverById.get(driverId);
     const storesList = loadStores();
     const store = updated.storeId ? storesList.find((s) => s.id === updated.storeId) : null;
@@ -1564,6 +1670,10 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
   function markStoreOrderOnTheWayAsDriver(req, orderId, driverId, res) {
     if (isNaN(orderId)) {
       return res.status(400).json({ success: false, message: 'orderId is required' });
+    }
+    const boxRow = getArhebBoxRowById(db, orderId);
+    if (boxRow && Number(boxRow.driverId) === Number(driverId)) {
+      return markArhebBoxOnTheWayAsDriver(req, res, orderId, driverId);
     }
     if (driverId !== req.driver.id) {
       return res.status(403).json({ success: false, message: 'You can only update your own assigned orders' });
@@ -1659,6 +1769,40 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
     const orderId = parseInt(req.params.orderId, 10);
     if (isNaN(orderId)) return res.status(400).json({ success: false, message: 'Invalid order ID' });
     const driverId = req.driver.id;
+    const pseudoOrderId = -orderId;
+    let arhebExisting = null;
+    try {
+      arhebExisting = db.prepare('SELECT id, status FROM driver_requests WHERE orderId = ? AND driverId = ?').get(pseudoOrderId, driverId);
+    } catch (e) {
+      /* ignore */
+    }
+    if (arhebExisting) {
+      if (arhebExisting.status !== 'pending') {
+        return res.status(400).json({ success: false, message: `Request already ${arhebExisting.status}` });
+      }
+      try {
+        db.prepare('UPDATE driver_requests SET status = ? WHERE orderId = ? AND driverId = ?').run('rejected', pseudoOrderId, driverId);
+      } catch (e) {
+        return res.status(500).json({ success: false, message: 'Failed to reject request' });
+      }
+      try {
+        const { broadcastDriverOrdersUpdated } = require('../driverPresence');
+        broadcastDriverOrdersUpdated(io, { type: 'arheb_box_request_rejected', requestId: orderId, driverId });
+      } catch (e) { /* ignore */ }
+      try {
+        let boxRow = getArhebBoxRowById(db, orderId);
+        if (boxRow && boxRow.driverId == null && io) {
+          const next = offerNextSequentialArhebBoxDriver(db, io, orderId, boxRow, sequentialOfferCtx);
+          if (next) {
+            const { broadcastDriverOrdersUpdated } = require('../driverPresence');
+            broadcastDriverOrdersUpdated(io, { type: 'arheb_box_new_request', requestId: orderId });
+          }
+        }
+      } catch (e) {
+        /* ignore chain offer */
+      }
+      return res.status(200).json({ success: true, message: 'Arheb Box request rejected' });
+    }
     try {
       const existing = db.prepare('SELECT id, status FROM driver_requests WHERE orderId = ? AND driverId = ?').get(orderId, driverId);
       if (!existing) {
@@ -1694,6 +1838,10 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
   function completeStoreOrderAsDriver(req, orderId, driverId, res) {
     if (isNaN(orderId)) {
       return res.status(400).json({ success: false, message: 'orderId is required' });
+    }
+    const boxRow = getArhebBoxRowById(db, orderId);
+    if (boxRow && Number(boxRow.driverId) === Number(driverId)) {
+      return completeArhebBoxAsDriver(req, res, orderId, driverId);
     }
     if (driverId !== req.driver.id) {
       return res.status(403).json({ success: false, message: 'You can only complete your own orders' });
@@ -1804,68 +1952,7 @@ module.exports = function attachDriverRoutes(app, db, JWT_SECRET, io = null) {
   app.post('/api/driver/arheb-box/:id/accept', driverAuth, (req, res) => {
     const requestId = parseInt(req.params.id, 10);
     if (isNaN(requestId)) return res.status(400).json({ success: false, message: 'Invalid request id' });
-    const driverId = req.driver.id;
-    let row;
-    try {
-      row = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
-    } catch (e) {
-      if (e.message && e.message.includes('no such table')) return res.status(404).json({ success: false, message: 'Request not found' });
-      throw e;
-    }
-    if (!row) return res.status(404).json({ success: false, message: 'Request not found' });
-    const statusLower = (row.status || '').toLowerCase();
-
-    if (row.driverId != null && row.driverId === driverId) {
-      const updated = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
-      return res.status(200).json({ success: true, message: 'Already assigned to you', data: { request: enrichArhebBoxRow(updated, db) } });
-    }
-    if (row.driverId != null && row.driverId !== driverId) {
-      return res.status(400).json({ success: false, message: 'Request already assigned to another driver' });
-    }
-
-    if (statusLower !== 'assigned' && statusLower !== 'confirmed' && statusLower !== 'pending') {
-      return res.status(400).json({ success: false, message: 'Request cannot be accepted in its current state' });
-    }
-
-    const driverRow = findDriverById.get(driverId);
-    const driverName = driverRow ? driverRow.name : null;
-    db.prepare('UPDATE arheb_box_requests SET driverId = ?, driverName = ?, status = ? WHERE id = ?').run(
-      driverId,
-      driverName,
-      ARHEB_STATUS_DRIVER_TO_PICK,
-      requestId,
-    );
-    try {
-      writeArhebBoxDriverEarningsSnapshot(db, requestId, driverId);
-    } catch (e) {
-      /* ignore */
-    }
-    emitBoxStatus(requestId, ARHEB_STATUS_DRIVER_TO_PICK);
-
-    const pseudoOrderId = -requestId;
-    try {
-      db.prepare('UPDATE driver_requests SET status = ? WHERE orderId = ? AND driverId = ?').run('accepted', pseudoOrderId, driverId);
-      db.prepare('UPDATE driver_requests SET status = ? WHERE orderId = ? AND driverId != ?').run('rejected', pseudoOrderId, driverId);
-    } catch (e) { /* ignore */ }
-
-    try {
-      const { broadcastDriverOrdersUpdated } = require('../driverPresence');
-      broadcastDriverOrdersUpdated(io, { type: 'arheb_box_accepted', requestId, driverId });
-    } catch (e) { /* ignore */ }
-
-    try {
-      const { clearArhebBoxOfferExpansion } = require('../utils/sequentialDriverOffer');
-      clearArhebBoxOfferExpansion(requestId);
-    } catch (e) { /* ignore */ }
-
-    const rowAfter = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
-    notifyArhebBoxCustomerDriverToPick(db, rowAfter || row, requestId);
-    const updated = db.prepare('SELECT * FROM arheb_box_requests WHERE id = ?').get(requestId);
-    return res.status(200).json({
-      success: true,
-      message: 'Arheb Box request accepted',
-      data: { request: enrichArhebBoxRow(updated, db) },
-    });
+    return acceptArhebBoxRequestAsDriver(req, res, requestId, req.driver.id);
   });
 
   function markArhebBoxOnTheWayAsDriver(req, res, requestId, driverId) {
