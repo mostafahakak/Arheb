@@ -66,8 +66,8 @@ function buildInvoice(deliveryFeeJod, serviceFeeJod, itemsSubtotalJod = 0) {
     feesTaxRate: FEES_TAX_RATE,
     feesTax: taxJod,
     feesTotal,
-    // Arheb Box payable total = parcel amount + delivery + service + tax.
-    total: round2(itemsSubtotal + feesTotal),
+    // Payable total = delivery + service + tax (parcel `itemsSubtotal` is declared value only, not charged).
+    total: feesTotal,
   };
 }
 
@@ -132,6 +132,7 @@ function enrichRequestRow(row, db) {
     amount: row.amount != null ? Number(row.amount) : null,
     itemsSubtotal: money.itemsSubtotal,
     totalAmount: money.totalAmount,
+    grandTotalJod: money.totalAmount,
     weightKg,
     deliveryFee: money.deliveryFee,
     serviceFee: money.serviceFee,
