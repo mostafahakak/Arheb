@@ -553,6 +553,9 @@ app.get('/', (req, res) => {
   res.status(200).json({ status: 'ok', service: 'arheb-backend' });
 });
 
+const { createApiPauseMiddleware } = require('./middleware/apiPause');
+app.use(createApiPauseMiddleware(db, JWT_SECRET));
+
 const testClientDir = path.join(__dirname, '..', 'test-client');
 if (fs.existsSync(testClientDir)) {
   app.use('/test-client', express.static(testClientDir));

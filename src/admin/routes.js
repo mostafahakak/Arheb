@@ -115,6 +115,13 @@ const {
   resolveArhebBoxDriverShare,
   assignDriverToOrder,
 } = require('../utils/driverCommission');
+const {
+  ensureContactUsApiPausedColumn,
+  contactUsApiPausedIsTruthy,
+  isApiPaused,
+  isApiPausedEnvForced,
+  invalidateApiPauseCache,
+} = require('../utils/apiPause');
 const { getStoreFcmToken } = require('../storeFcm');
 const {
   enrichWithJordanTime,
@@ -6178,6 +6185,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       ensureContactUsArhebBoxComingSoonColumn(db);
       ensureContactUsArhebBoxServiceFeeJodColumn(db);
       ensureContactUsEinvoicePausedColumn(db);
+      ensureContactUsApiPausedColumn(db);
       ensureContactUsAppVersionColumns(db);
       const appVersion = getContactAppVersions(db);
       const row = selectContactUsLatestRow(db);
@@ -6199,6 +6207,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
               arhebBoxComingSoon: false,
               arhebBoxServiceFeeJod: getArhebBoxServiceFeeJod(db),
               einvoicePaused: isEinvoicePaused(db),
+              apiPaused: isApiPaused(db),
+              apiPausedEnvForced: isApiPausedEnvForced(),
               appVersion,
               arhebBox,
             },
@@ -6223,6 +6233,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             arhebBoxServiceFeeJod: getArhebBoxServiceFeeJod(db),
             einvoicePaused:
               contactUsEinvoicePausedIsTruthy(row.einvoicePaused) || isEinvoicePaused(db),
+            apiPaused: contactUsApiPausedIsTruthy(row.apiPaused) || isApiPaused(db),
+            apiPausedEnvForced: isApiPausedEnvForced(),
             appVersion,
             arhebBox,
           },
@@ -6240,6 +6252,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
               driverDeliveryPercent: null,
               arhebBoxServiceFeeJod: 0,
               einvoicePaused: false,
+              apiPaused: isApiPaused(db),
+              apiPausedEnvForced: isApiPausedEnvForced(),
               appVersion: { android: '', ios: '' },
             },
           },
@@ -6281,6 +6295,14 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           ? 1
           : 0;
     }
+    const apiPausedRaw = body.apiPaused;
+    let apiPausedToStore = null;
+    if (apiPausedRaw !== undefined) {
+      apiPausedToStore =
+        apiPausedRaw === true || apiPausedRaw === 1 || apiPausedRaw === '1' || String(apiPausedRaw).toLowerCase() === 'true'
+          ? 1
+          : 0;
+    }
     let androidAppVerPatch = undefined;
     let iosAppVerPatch = undefined;
     try {
@@ -6309,6 +6331,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
       ensureContactUsArhebBoxComingSoonColumn(db);
       ensureContactUsArhebBoxServiceFeeJodColumn(db);
       ensureContactUsEinvoicePausedColumn(db);
+      ensureContactUsApiPausedColumn(db);
       ensureContactUsAppVersionColumns(db);
       let driverPctToStore = null;
       if (driverDeliveryPercentRaw !== undefined) {
@@ -6333,7 +6356,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           : null;
       if (!row) {
         db.prepare(
-          'INSERT INTO contact_us (email, phone, cliqNumber, driverDeliveryPercent, arhebBoxComingSoon, arhebBoxServiceFeeJod, einvoicePaused, appVersionAndroid, appVersionIos) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          'INSERT INTO contact_us (email, phone, cliqNumber, driverDeliveryPercent, arhebBoxComingSoon, arhebBoxServiceFeeJod, einvoicePaused, apiPaused, appVersionAndroid, appVersionIos) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         ).run(
           email ?? 'contact@arheb.com',
           phone ?? '+201234567890',
@@ -6342,6 +6365,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           comingSoonToStore != null ? comingSoonToStore : 0,
           serviceFeeToStore !== undefined ? serviceFeeToStore : 0,
           einvoicePausedToStore != null ? einvoicePausedToStore : 0,
+          apiPausedToStore != null ? apiPausedToStore : 0,
           androidAppVerPatch !== undefined ? androidAppVerPatch : '',
           iosAppVerPatch !== undefined ? iosAppVerPatch : '',
         );
@@ -6355,6 +6379,7 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             arhebBoxComingSoon = CASE WHEN ? = 1 THEN ? ELSE arhebBoxComingSoon END,
             arhebBoxServiceFeeJod = CASE WHEN ? = 1 THEN ? ELSE arhebBoxServiceFeeJod END,
             einvoicePaused = CASE WHEN ? = 1 THEN ? ELSE einvoicePaused END,
+            apiPaused = CASE WHEN ? = 1 THEN ? ELSE apiPaused END,
             appVersionAndroid = CASE WHEN ? = 1 THEN ? ELSE appVersionAndroid END,
             appVersionIos = CASE WHEN ? = 1 THEN ? ELSE appVersionIos END,
             updatedAt = CURRENT_TIMESTAMP
@@ -6371,12 +6396,17 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
           serviceFeeToStore !== undefined ? serviceFeeToStore : null,
           einvoicePausedToStore !== null ? 1 : 0,
           einvoicePausedToStore !== null ? einvoicePausedToStore : 0,
+          apiPausedToStore !== null ? 1 : 0,
+          apiPausedToStore !== null ? apiPausedToStore : 0,
           androidAppVerPatch !== undefined ? 1 : 0,
           androidAppVerPatch !== undefined ? androidAppVerPatch : null,
           iosAppVerPatch !== undefined ? 1 : 0,
           iosAppVerPatch !== undefined ? iosAppVerPatch : null,
           row.id,
         );
+      }
+      if (apiPausedToStore !== null) {
+        invalidateApiPauseCache();
       }
       const fallbackPct = getDriverCommissionSettings(db);
       const defaultPct = fallbackPct.type === 'percent' ? fallbackPct.value : 0.65;
@@ -6408,6 +6438,8 @@ module.exports = function attachAdminRoutes(app, db, JWT_SECRET, io = null) {
             arhebBoxServiceFeeJod: getArhebBoxServiceFeeJod(db),
             einvoicePaused:
               contactUsEinvoicePausedIsTruthy(updated.einvoicePaused) || isEinvoicePaused(db),
+            apiPaused: contactUsApiPausedIsTruthy(updated.apiPaused) || isApiPaused(db),
+            apiPausedEnvForced: isApiPausedEnvForced(),
             appVersion,
             arhebBox: getArhebBoxPublicFlags(db),
           },

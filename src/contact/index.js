@@ -8,6 +8,7 @@ const {
 } = require('../utils/driverCommission');
 const { getArhebBoxPublicFlags } = require('../arhebBox/flags');
 const { getPlatformCheckoutFeeTiers } = require('../utils/platformCheckoutFees');
+const { isApiPaused } = require('../utils/apiPause');
 
 module.exports = function attachContactRoutes(app, db, authenticateRequest) {
   // Create contact_us table
@@ -114,6 +115,7 @@ module.exports = function attachContactRoutes(app, db, authenticateRequest) {
             note:
               'Per-store checkoutDeliveryFeeJod from bulk checkout overrides this flat fee outside dashboard fixed zones.',
           },
+          apiPaused: isApiPaused(db),
         },
         timestamp: new Date().toISOString()
       });
