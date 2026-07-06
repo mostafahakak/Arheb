@@ -8,9 +8,8 @@ const PAUSE_RESPONSE = {
 };
 
 /**
- * When App info "Pause all APIs" is on (or ARHEB_API_PAUSED env), reject most traffic with 503.
- * Allowlist: health, admin login, authenticated admin dashboard APIs, payment callbacks/return,
- * and read-only contact/app_version so apps can show a maintenance message.
+ * When App info "Pause all APIs" is on (or ARHEB_API_PAUSED env), reject all API traffic with 503
+ * except Render health checks, admin login, and authenticated admin dashboard routes (/api/admin/*).
  */
 function createApiPauseMiddleware(db, JWT_SECRET) {
   return function apiPauseMiddleware(req, res, next) {
@@ -20,18 +19,8 @@ function createApiPauseMiddleware(db, JWT_SECRET) {
     const method = String(req.method || 'GET').toUpperCase();
 
     if (path === '/' || path === '/health' || path === '/healthz') return next();
-    if (path.startsWith('/test-client')) return next();
 
     if (method === 'POST' && path === '/api/admin/login') return next();
-
-    if (path === '/api/payment/callback' || path === '/api/payment/return') return next();
-
-    if (
-      method === 'GET' &&
-      (path === '/api/contact' || path === '/api/app_version' || path === '/app_version')
-    ) {
-      return next();
-    }
 
     if (path.startsWith('/api/admin/')) {
       const payload = verifyAdminToken(req.headers.authorization, JWT_SECRET);
